@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero hero--home">
+  <div class="hero-content">
+    <p class="hero-kicker">Personal archive, remixed.</p>
+    <h1>Stories, notes, and daily reels in one place.</h1>
+    <p class="hero-sub">Browse markdown posts, dive into notes, and watch each day unfold as a stitched reel.</p>
+    <div class="hero-actions">
+      <a class="pill-btn" href="{{ url_for('site.blog') }}">Enter Blog</a>
+      <a class="pill-btn" href="{{ url_for('site.everyday') }}">Daily Reel</a>
+      <a class="pill-btn" href="{{ url_for('site.note') }}">Enter Note</a>
+    </div>
+  </div>
+  <div class="hero-card">
+    <div class="hero-card-header">
+      <span class="dot"></span>
+      <span>Today</span>
+    </div>
+    <div class="hero-card-body" id="today-card">
+      <p class="muted">Load the latest Everyday entry.</p>
+      <button class="text-link" data-today-load>Refresh</button>
+    </div>
+  </div>
+</section>
+
+<section class="section-block">
+  <header class="section-head">
+    <h2>Quick Links</h2>
+    <p class="muted">Curated shortcuts from your admin panel.</p>
+  </header>
+  <div class="card-grid" id="quick-links">
+    <div class="card placeholder">No quick links yet.</div>
+  </div>
+</section>
+
+<section class="section-block">
+  <header class="section-head">
+    <h2>Friends</h2>
+    <p class="muted">People and places worth revisiting.</p>
+  </header>
+  <div class="card-grid" id="friend-links">
+    <div class="card placeholder">No friend links yet.</div>
+  </div>
+</section>
+
+<section class="section-block">
+  <header class="section-head">
+    <h2>Modules</h2>
+    <p class="muted">Three paths, one shared library.</p>
+  </header>
+  <div class="module-grid">
+    <article class="module-card">
+      <h3>Blog</h3>
+      <p>Markdown posts with rich attachments and Obsidian embeds.</p>
+      <a class="text-link" href="{{ url_for('site.blog') }}">Open Blog</a>
+    </article>
+    <article class="module-card">
+      <h3>Everyday</h3>
+      <p>Daily reels built from text, photos, audio, and video.</p>
+      <a class="text-link" href="{{ url_for('site.everyday') }}">Open Everyday</a>
+    </article>
+    <article class="module-card">
+      <h3>Note</h3>
+      <p>Knowledge fragments with the same Obsidian flavor.</p>
+      <a class="text-link" href="{{ url_for('site.note') }}">Open Note</a>
+    </article>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero hero--page">
+  <div>
+    <p class="hero-kicker">Blog archive</p>
+    <h1>Long-form posts and ideas.</h1>
+    <p class="hero-sub">Markdown sourced directly from OSS, rendered in-place with Obsidian embeds.</p>
+  </div>
+  <div class="hero-actions">
+    <button class="pill-btn ghost" data-refresh-list>Refresh list</button>
+  </div>
+</section>
+
+<section class="content-split">
+  <aside class="panel panel--list">
+    <div class="panel-head">
+      <h2>Posts</h2>
+      <input class="input" type="search" placeholder="Search title" id="blog-search" />
+    </div>
+    <div class="list-stack" id="blog-list">
+      <div class="card placeholder">Loading blog posts...</div>
+    </div>
+  </aside>
+
+  <article class="panel panel--viewer">
+    <div class="viewer-head">
+      <h2 id="blog-title">Select a post</h2>
+      <div class="viewer-meta" id="blog-meta"></div>
+    </div>
+    <div class="markdown-body" id="blog-content">
+      <p class="muted">Pick a post on the left to read.</p>
+    </div>
+    <div class="attachment-strip" id="blog-attachments"></div>
+  </article>
+</section>
+{% endblock %}

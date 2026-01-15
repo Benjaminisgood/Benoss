@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero hero--page">
+  <div>
+    <p class="hero-kicker">Note stack</p>
+    <h1>Short thoughts, captured fast.</h1>
+    <p class="hero-sub">Lightweight markdown pages from OSS, rendered with Obsidian syntax.</p>
+  </div>
+  <div class="hero-actions">
+    <button class="pill-btn ghost" data-refresh-list>Refresh list</button>
+  </div>
+</section>
+
+<section class="content-split">
+  <aside class="panel panel--list">
+    <div class="panel-head">
+      <h2>Notes</h2>
+      <input class="input" type="search" placeholder="Search title" id="note-search" />
+    </div>
+    <div class="list-stack" id="note-list">
+      <div class="card placeholder">Loading notes...</div>
+    </div>
+  </aside>
+
+  <article class="panel panel--viewer">
+    <div class="viewer-head">
+      <h2 id="note-title">Select a note</h2>
+      <div class="viewer-meta" id="note-meta"></div>
+    </div>
+    <div class="markdown-body" id="note-content">
+      <p class="muted">Pick a note on the left to read.</p>
+    </div>
+    <div class="attachment-strip" id="note-attachments"></div>
+  </article>
+</section>
+{% endblock %}

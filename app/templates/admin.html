@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero hero--page">
+  <div>
+    <p class="hero-kicker">Control room</p>
+    <h1>Manage links and users.</h1>
+    <p class="hero-sub">Admin tools for Benoss content and navigation.</p>
+  </div>
+</section>
+
+<section class="admin-shell">
+  <aside class="panel panel--form account-panel">
+    <div class="panel-head">
+      <h2>Account</h2>
+      <p class="muted">Signed in as {{ current_user.username }} ({{ current_user.role }}).</p>
+    </div>
+    <div class="status-pill" id="admin-status">Ready</div>
+    <div class="button-row">
+      <a class="pill-btn ghost" href="{{ url_for('site.logout') }}">Log out</a>
+    </div>
+  </aside>
+
+  <div class="admin-panels" id="admin-panels">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Quick links</h2>
+        <p class="muted">Homepage shortcuts.</p>
+      </div>
+      <div class="stack" id="quick-links-admin"></div>
+      <div class="form-grid">
+        <label class="field">
+          <span>Title</span>
+          <input class="input" type="text" id="quick-title" />
+        </label>
+        <label class="field">
+          <span>URL</span>
+          <input class="input" type="url" id="quick-url" />
+        </label>
+        <label class="field">
+          <span>Sort</span>
+          <input class="input" type="number" id="quick-sort" value="0" />
+        </label>
+        <button class="pill-btn" id="quick-add">Add link</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Friend links</h2>
+        <p class="muted">External friends and collaborators.</p>
+      </div>
+      <div class="stack" id="friend-links-admin"></div>
+      <div class="form-grid">
+        <label class="field">
+          <span>Title</span>
+          <input class="input" type="text" id="friend-title" />
+        </label>
+        <label class="field">
+          <span>URL</span>
+          <input class="input" type="url" id="friend-url" />
+        </label>
+        <label class="field">
+          <span>Avatar URL</span>
+          <input class="input" type="url" id="friend-avatar" />
+        </label>
+        <label class="field">
+          <span>Description</span>
+          <input class="input" type="text" id="friend-desc" />
+        </label>
+        <label class="field">
+          <span>Sort</span>
+          <input class="input" type="number" id="friend-sort" value="0" />
+        </label>
+        <button class="pill-btn" id="friend-add">Add friend</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Users</h2>
+        <p class="muted">Admin and editor accounts.</p>
+      </div>
+      <div class="stack" id="user-list"></div>
+      <div class="form-grid">
+        <label class="field">
+          <span>Username</span>
+          <input class="input" type="text" id="user-username" />
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input class="input" type="password" id="user-password" />
+        </label>
+        <label class="field">
+          <span>Role</span>
+          <select class="input" id="user-role">
+            <option value="user">user</option>
+            <option value="admin">admin</option>
+          </select>
+        </label>
+        <button class="pill-btn" id="user-add">Create user</button>
+      </div>
+    </section>
+  </div>
+</section>
+{% endblock %}
+{% block extra_scripts %}
+  <script defer src="{{ url_for('static', filename='js/admin.js') }}"></script>
+{% endblock %}

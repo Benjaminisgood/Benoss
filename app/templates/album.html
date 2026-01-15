@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero hero--page">
+  <div>
+    <p class="hero-kicker">Attachment library</p>
+    <h1>Every file, every module.</h1>
+    <p class="hero-sub">Browse images, audio, and videos across blog, note, and everyday.</p>
+  </div>
+</section>
+
+<section class="panel panel--filters">
+  <div class="filter-row">
+    <label class="field">
+      <span>Module</span>
+      <select class="input" id="album-module">
+        <option value="">All</option>
+        <option value="blog">Blog</option>
+        <option value="note">Note</option>
+        <option value="everyday">Everyday</option>
+      </select>
+    </label>
+    <label class="field">
+      <span>Type</span>
+      <select class="input" id="album-type">
+        <option value="">All</option>
+        <option value="image">Image</option>
+        <option value="video">Video</option>
+        <option value="audio">Audio</option>
+        <option value="file">File</option>
+      </select>
+    </label>
+    <label class="field">
+      <span>Limit</span>
+      <input class="input" type="number" id="album-limit" value="120" min="10" max="500" />
+    </label>
+    <button class="pill-btn" data-album-load>Load</button>
+  </div>
+</section>
+
+<section class="album-stream" id="album-grid" data-album-stream>
+  <div class="album-empty">Load attachments to view the album.</div>
+</section>
+<div class="album-stream-footer" data-album-sentinel>
+  <span class="album-stream-status" data-album-status>Loading...</span>
+  <button class="pill-btn ghost" type="button" data-album-more hidden>Load more</button>
+</div>
+{% endblock %}

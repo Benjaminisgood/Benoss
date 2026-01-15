@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero hero--page">
+  <div>
+    <p class="hero-kicker">Everyday manage</p>
+    <h1>Compose the daily reel.</h1>
+    <p class="hero-sub">Upload text, images, audio, and video. Reels are assembled on the fly.</p>
+  </div>
+  <div class="hero-actions">
+    <button class="pill-btn ghost" data-refresh-day>Reload day</button>
+  </div>
+</section>
+
+<section class="everyday-grid">
+  <aside class="panel panel--form">
+    <div class="panel-head">
+      <h2>Create entry</h2>
+      <p class="muted">Upload assets and write the daily note.</p>
+    </div>
+    <label class="field">
+      <span>Date</span>
+      <input class="input" type="date" id="everyday-date" />
+    </label>
+    <label class="field">
+      <span>Daily text</span>
+      <textarea class="textarea" id="everyday-text" rows="6" placeholder="Write the day in a few lines..."></textarea>
+    </label>
+    <div class="button-row">
+      <button class="pill-btn" data-save-text>Save text</button>
+    </div>
+    <label class="field">
+      <span>Upload media</span>
+      <input class="input" type="file" id="everyday-file" />
+    </label>
+    <label class="field">
+      <span>Caption</span>
+      <input class="input" type="text" id="everyday-caption" placeholder="Optional caption" />
+    </label>
+    <div class="button-row">
+      <button class="pill-btn" data-upload-file>Upload file</button>
+    </div>
+    <div class="status-pill" id="everyday-status">Ready</div>
+  </aside>
+
+  <aside class="panel panel--list">
+    <div class="panel-head">
+      <h2>Month view</h2>
+      <input class="input" type="month" id="everyday-month" />
+    </div>
+    <div class="list-stack" id="everyday-month-list">
+      <div class="card placeholder">Pick a month to load entries.</div>
+    </div>
+  </aside>
+
+  <article class="panel panel--viewer">
+    <div class="viewer-head">
+      <h2 id="everyday-title">Day detail</h2>
+      <div class="viewer-meta" id="everyday-meta"></div>
+    </div>
+    <div class="attachment-strip" id="everyday-attachments"></div>
+    <div class="reel-panel" id="everyday-reel">
+      <h3>Reel window</h3>
+      <div class="reel-window-shell" id="everyday-reel-window"></div>
+    </div>
+  </article>
+</section>
+{% endblock %}

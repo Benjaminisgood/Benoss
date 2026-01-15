@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero hero--page">
+  <div>
+    <p class="hero-kicker">Benoss access</p>
+    <h1>Sign in to continue.</h1>
+    <p class="hero-sub">Your site is private. Use your account to unlock the archive.</p>
+  </div>
+</section>
+
+<section class="panel panel--form login-panel">
+  <form method="post" action="{{ url_for('site.login', next=next_url) }}">
+    <label class="field">
+      <span>Username</span>
+      <input class="input" type="text" name="username" autocomplete="username" required />
+    </label>
+    <label class="field">
+      <span>Password</span>
+      <input class="input" type="password" name="password" autocomplete="current-password" required />
+    </label>
+    <div class="button-row">
+      <button class="pill-btn" type="submit">Sign in</button>
+    </div>
+    {% if error %}
+      <div class="status-pill">{{ error }}</div>
+    {% endif %}
+  </form>
+</section>
+{% endblock %}

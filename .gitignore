@@ -1,0 +1,57 @@
+# Ignore everything by default, then re-include the few things we want.
+*
+
+# Root files to keep.
+!/.gitignore
+!/.env.example
+!/*.md
+!/MANIFEST.in
+!/pyproject.toml
+
+# Source directories to keep.
+!/app/
+!/app/**
+!/scripts/
+!/scripts/**
+
+# Optional placeholder for an empty data directory.
+!/data/
+!/data/.gitkeep
+
+# Python cache/bytecode.
+**/__pycache__/
+**/*.py[cod]
+**/*.pyd
+
+# Tooling caches.
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.coverage
+**/htmlcov/
+
+# Virtualenvs.
+**/.venv/
+**/venv/
+**/env/
+
+# Environment files.
+**/.env
+**/.env.*
+
+# Local databases.
+**/*.sqlite
+**/*.sqlite3
+**/*.db
+
+# Logs.
+**/*.log
+
+# OS/IDE.
+**/.DS_Store
+**/Thumbs.db
+**/.idea/
+**/.vscode/
+
+# Re-allow env template.
+!**/.env.example
