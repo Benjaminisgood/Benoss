@@ -7,6 +7,7 @@
 !/*.md
 !/MANIFEST.in
 !/pyproject.toml
+!/benoss.sh
 
 # Source directories to keep.
 !/app/
