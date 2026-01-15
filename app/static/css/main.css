@@ -1231,6 +1231,18 @@ select.input {
     display: none;
   }
 
+  .nav-links {
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 0.6rem 1rem;
+  }
+
+  .nav-actions {
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+  }
+
   .nav-panel.is-open {
     display: flex;
   }
@@ -1300,7 +1312,13 @@ select.input {
   }
 
   .reel-nav {
-    display: none;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.65rem;
+  }
+
+  .reel-slide img,
+  .reel-slide video {
+    object-fit: contain;
   }
 
   .album-stream {
