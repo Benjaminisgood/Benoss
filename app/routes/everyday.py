@@ -5,12 +5,17 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify, request
 from werkzeug.utils import secure_filename
 
-from ..oss import object_exists, public_url, put_object_from_file, sign_put_url
-from ..services.album_service import media_type_for_path, upsert_everyday_attachment
+from ..oss import delete_object, object_exists, public_url, put_object_from_file, sign_put_url
+from ..services.album_service import (
+    delete_everyday_attachment,
+    media_type_for_path,
+    upsert_everyday_attachment,
+)
 from ..services.everyday_service import (
     add_attachment,
     get_day_entry,
     list_month,
+    remove_attachment,
     upsert_day_text,
 )
 from ..utils.ids import new_uuid
@@ -168,6 +173,50 @@ def upload_media():
             "entry": entry,
         }
     )
+
+
+@everyday_bp.route("/api/everyday/attachment", methods=["DELETE"])
+@login_required(role="admin")
+def delete_attachment():
+    payload = request.get_json(silent=True) or {}
+    date_str = str(payload.get("date", "")).strip()
+    uuid = str(payload.get("uuid", "")).strip()
+
+    if not date_str or not uuid:
+        return jsonify({"error": "missing fields"}), 400
+
+    try:
+        date_str = _validate_date(date_str)
+    except ValueError:
+        return jsonify({"error": "invalid date"}), 400
+
+    entry = get_day_entry(date_str)
+    attachments = entry.get("attachments", []) if isinstance(entry, dict) else []
+    if not isinstance(attachments, list):
+        attachments = []
+
+    target = None
+    for item in attachments:
+        if isinstance(item, dict) and item.get("uuid") == uuid:
+            target = item
+            break
+
+    if not target:
+        return jsonify({"error": "attachment not found"}), 404
+
+    updated = remove_attachment(date_str, uuid)
+    if updated is None:
+        return jsonify({"error": "attachment not found"}), 404
+
+    if target.get("oss_key"):
+        try:
+            delete_object(target["oss_key"])
+        except Exception:
+            current_app.logger.exception("Failed to delete attachment object %s", target["oss_key"])
+
+    delete_everyday_attachment(uuid)
+    enriched = _enrich_entry(updated)
+    return jsonify({"deleted": True, "uuid": uuid, "date": date_str, "entry": enriched})
 
 
 @everyday_bp.route("/api/everyday/upload/presign", methods=["POST"])

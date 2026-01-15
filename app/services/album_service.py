@@ -48,6 +48,16 @@ def upsert_everyday_attachment(
     return record
 
 
+def delete_everyday_attachment(uuid: str, commit: bool = True) -> bool:
+    record = EverydayAttachmentIndex.query.filter_by(uuid=uuid).first()
+    if record is None:
+        return False
+    db.session.delete(record)
+    if commit:
+        db.session.commit()
+    return True
+
+
 def list_everyday_attachments(
     media_type: Optional[str] = None,
     limit: int = 200,

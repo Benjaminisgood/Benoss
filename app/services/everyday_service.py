@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Optional
 
 from ..oss import get_object_json, put_object_json
 from ..utils.oss_paths import month_map_key
@@ -57,6 +57,26 @@ def add_attachment(date_str: str, attachment: Dict) -> Dict:
     data = load_month_map(month)
     day = data["days"].get(date_str, {"text": "", "attachments": []})
     day["attachments"].append(attachment)
+    data["days"][date_str] = day
+    save_month_map(month, data)
+    return day
+
+
+def remove_attachment(date_str: str, uuid: str) -> Optional[Dict]:
+    month = _month_str(date_str)
+    data = load_month_map(month)
+    day = data["days"].get(date_str, {"text": "", "attachments": []})
+    attachments = day.get("attachments", [])
+    if not isinstance(attachments, list):
+        attachments = []
+    kept = [
+        item
+        for item in attachments
+        if not (isinstance(item, dict) and item.get("uuid") == uuid)
+    ]
+    if len(kept) == len(attachments):
+        return None
+    day["attachments"] = kept
     data["days"][date_str] = day
     save_month_map(month, data)
     return day

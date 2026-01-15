@@ -203,10 +203,11 @@
     return result;
   };
 
-  const renderAttachmentStrip = (container, attachments) => {
+  const renderAttachmentStrip = (container, attachments, options = {}) => {
     if (!container) return;
+    const allowDelete = Boolean(options.allowDelete && typeof options.onDelete === 'function');
     container.innerHTML = '';
-    if (!attachments || attachments.length === 0) {
+    if (!Array.isArray(attachments) || attachments.length === 0) {
       return;
     }
     attachments.forEach((att) => {
@@ -233,6 +234,37 @@
         card.appendChild(link);
       }
       card.appendChild(label);
+      if (allowDelete) {
+        const actions = document.createElement('div');
+        actions.className = 'attachment-actions';
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'attachment-delete';
+        delBtn.textContent = 'Delete';
+        if (!att || !att.uuid) {
+          delBtn.disabled = true;
+          delBtn.title = 'Missing attachment id';
+        }
+        delBtn.addEventListener('click', async () => {
+          if (!att || !att.uuid) return;
+          const labelText = getMediaLabel(att) || 'this file';
+          if (!window.confirm(`Delete ${labelText}?`)) return;
+          delBtn.disabled = true;
+          delBtn.classList.add('is-busy');
+          delBtn.textContent = 'Deleting...';
+          try {
+            await options.onDelete(att);
+          } catch (err) {
+            window.alert(err.message || 'Failed to delete attachment');
+          } finally {
+            delBtn.disabled = false;
+            delBtn.classList.remove('is-busy');
+            delBtn.textContent = 'Delete';
+          }
+        });
+        actions.appendChild(delBtn);
+        card.appendChild(actions);
+      }
       container.appendChild(card);
     });
   };
@@ -712,6 +744,33 @@
       if (statusEl) statusEl.textContent = msg;
     };
 
+    const deleteAttachment = async (attachment) => {
+      if (!attachment || !attachment.uuid) {
+        throw new Error('Missing attachment id');
+      }
+      const dateStr = dateInput ? dateInput.value : '';
+      if (!dateStr) {
+        throw new Error('Missing date');
+      }
+      setStatus('Deleting attachment...');
+      try {
+        const data = await apiFetch('/api/everyday/attachment', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ date: dateStr, uuid: attachment.uuid }),
+        });
+        renderDay(dateStr, data.entry || {});
+        if (monthInput && monthInput.value && dateStr.startsWith(monthInput.value)) {
+          loadMonth(monthInput.value);
+        }
+        setStatus('Attachment deleted');
+        return data;
+      } catch (err) {
+        setStatus(err.message);
+        throw err;
+      }
+    };
+
     const renderDay = (dateStr, entry) => {
       if (dayTitle) dayTitle.textContent = dateStr;
       const reelData = renderReelWindow(entry, reelWindow);
@@ -719,7 +778,10 @@
         dayMeta.textContent = '';
       }
       if (textInput) textInput.value = entry.text || '';
-      renderAttachmentStrip(attachEl, entry.attachments || []);
+      renderAttachmentStrip(attachEl, entry.attachments || [], {
+        allowDelete: true,
+        onDelete: deleteAttachment,
+      });
     };
 
     const loadDay = async (dateStr) => {

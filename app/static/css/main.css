@@ -525,6 +525,37 @@ select.input {
   gap: 0.4rem;
 }
 
+.attachment-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.2rem;
+}
+
+.attachment-delete {
+  border: 1px solid var(--accent-2);
+  color: var(--accent-2);
+  background: transparent;
+  padding: 0.35rem 0.9rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.attachment-delete:hover {
+  transform: translateY(-1px);
+  background: rgba(240, 139, 75, 0.12);
+  box-shadow: 0 8px 16px rgba(240, 139, 75, 0.2);
+}
+
+.attachment-delete:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
 .attachment-card img,
 .attachment-card video,
 .attachment-card iframe,

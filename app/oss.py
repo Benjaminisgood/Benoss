@@ -78,6 +78,11 @@ def put_object_from_file(key: str, filename: str, content_type: Optional[str] = 
     bucket.put_object_from_file(key, filename, headers=headers)
 
 
+def delete_object(key: str) -> None:
+    bucket = _get_bucket()
+    bucket.delete_object(key)
+
+
 def _is_truthy(value: Optional[str]) -> bool:
     if value is None:
         return False
