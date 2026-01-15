@@ -14,7 +14,7 @@ set -Eeuo pipefail
 # Paths
 ########################################
 PROJECT_PATH="${BENOSS_PROJECT_PATH:-/ben/Benoss}"
-VENV_PATH="${BENOSS_VENV_PATH:-$PROJECT_PATH/venv}"
+VENV_PATH="${BENOSS_VENV_PATH:-$PROJECT_PATH/.venv}"
 
 # Runtime dirs (server-friendly defaults)
 RUNTIME_DIR="${BENOSS_RUNTIME_DIR:-/var/run/benoss}"
