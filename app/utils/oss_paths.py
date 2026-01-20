@@ -62,7 +62,7 @@ def resolve_module_key(module: str, rel_key: str) -> str:
     return join(module_prefix(module), rel_key)
 
 
-def resolve_attachment_key(module: str, base_rel_key: str, ref: str) -> str:
+def resolve_attachment_key(module: str, base_rel_key: str, ref: str, check_exists: bool = False) -> str:
     ref = ref.strip().strip("\"").strip("'")
     ref = ref.split("?")[0].split("#")[0]
     ref = ref.split("|")[0]
@@ -81,6 +81,13 @@ def resolve_attachment_key(module: str, base_rel_key: str, ref: str) -> str:
     rel_path = ensure_relative_key(rel_path)
     key = join(module_prefix(module), rel_path)
     if PurePosixPath(ref).suffix:
+        if check_exists:
+            try:
+                exists = object_exists(key)
+            except Exception:
+                return key
+            if not exists:
+                raise ValueError("attachment not found")
         return key
 
     try:

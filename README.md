@@ -44,10 +44,11 @@ python -m flask --app app run --host 0.0.0.0 --port 5000 --debug
 ## UI routes
 - `/` home
 - `/blog`, `/note` markdown readers
-- `/everyday` daily reel viewer (calendar)
-- `/everyday/manage` daily reel composer (admin)
-- `/album` attachment library
-- `/admin` admin UI (login required)
+- `/dailyreel` daily reel entry point (role-based redirect)
+- `/dailyreel/view` daily reel viewer (calendar)
+- `/dailyreel/manage` daily reel composer (admin)
+- `/everyday` asset library
+- `/control-room` account and admin tools (login required)
 - `/login` sign-in page (site access required)
 
 ## API (high level)

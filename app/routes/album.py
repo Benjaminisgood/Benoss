@@ -13,6 +13,7 @@ from ..services.album_service import (
     VIDEO_EXTS,
     list_everyday_attachments,
     media_type_for_path,
+    preview_url_for_key,
     upsert_everyday_attachment,
 )
 from ..utils.markdown import find_attachment_refs
@@ -36,11 +37,7 @@ def _build_source_link(module: str, source_id: str) -> str:
 
 
 def _preview_url(key: str, media_type: str) -> Optional[str]:
-    if media_type == "image":
-        return public_url(key, params={"x-oss-process": "image/resize,w_480/quality,q_70"})
-    if media_type == "video":
-        return public_url(key, params={"x-oss-process": "video/snapshot,t_1000,f_jpg,w_480"})
-    return None
+    return preview_url_for_key(key, media_type)
 
 
 def _build_item(module: str, key: str, media_type: str) -> dict:
@@ -145,18 +142,20 @@ def find_album_source():
     for key in list_objects(prefix, suffix=".md"):
         rel = key[len(prefix) + 1 :]
         content = get_object_text(key)
-        for ref in find_attachment_refs(content):
-            try:
-                att_key = resolve_attachment_key(module, rel, ref)
-            except ValueError:
-                continue
-            if Path(att_key).stem == uuid:
-                return jsonify(
-                    {
-                        "source_id": rel,
-                        "source_link": _build_source_link(module, rel),
-                    }
-                )
+        for candidates in find_attachment_refs(content):
+            for ref in candidates:
+                try:
+                    att_key = resolve_attachment_key(module, rel, ref, check_exists=True)
+                except ValueError:
+                    continue
+                if Path(att_key).stem == uuid:
+                    return jsonify(
+                        {
+                            "source_id": rel,
+                            "source_link": _build_source_link(module, rel),
+                        }
+                    )
+                break
     return jsonify({"source_id": None, "source_link": ""})
 
 

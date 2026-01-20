@@ -28,9 +28,6 @@ def note():
 @site_bp.route("/everyday")
 @login_required()
 def everyday():
-    date_param = request.args.get("date", "").strip()
-    if date_param:
-        return redirect(url_for("site.dailyreel_view", date=date_param))
     return render_template("everyday.html", page="everyday", title="Asset Library")
 
 
@@ -53,24 +50,6 @@ def dailyreel_view():
 @login_required(role="admin")
 def dailyreel_manage():
     return render_template("dailyreel_manage.html", page="dailyreel-manage", title="Daily Reel Studio")
-
-
-@site_bp.route("/everyday/manage")
-@login_required(role="admin")
-def everyday_manage_redirect():
-    return redirect(url_for("site.dailyreel_manage"))
-
-
-@site_bp.route("/album")
-@login_required()
-def album():
-    return redirect(url_for("site.everyday"))
-
-
-@site_bp.route("/admin")
-@login_required(role="admin")
-def admin():
-    return redirect(url_for("site.control_room"))
 
 
 @site_bp.route("/control-room")

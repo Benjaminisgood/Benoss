@@ -80,6 +80,63 @@
     return item.media_type || item.type || fallback;
   };
 
+  const createPdfCover = (src, opts = {}) => {
+    const safeSrc = normalizeUrl(src);
+    if (!safeSrc) return null;
+    const previewUrl = normalizeUrl(opts.preview);
+    const title = opts.title || opts.alt || 'PDF document';
+    const asLink = opts.asLink !== false;
+    const wrapper = asLink ? document.createElement('a') : document.createElement('div');
+    if (asLink) {
+      wrapper.href = safeSrc;
+      wrapper.target = '_blank';
+      wrapper.rel = 'noopener';
+    }
+    wrapper.className = 'pdf-cover';
+    wrapper.setAttribute('aria-label', title);
+
+    if (previewUrl) {
+      const img = document.createElement('img');
+      img.src = previewUrl;
+      img.alt = title;
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      img.addEventListener(
+        'error',
+        () => {
+          img.remove();
+        },
+        { once: true }
+      );
+      wrapper.appendChild(img);
+    }
+
+    const badge = document.createElement('span');
+    badge.className = 'pdf-badge';
+    badge.textContent = 'PDF';
+    wrapper.appendChild(badge);
+
+    if (title) {
+      const text = document.createElement('span');
+      text.className = 'pdf-title';
+      text.textContent = title;
+      wrapper.appendChild(text);
+    }
+
+    if (opts.showOpen !== false) {
+      const open = document.createElement('span');
+      open.className = 'pdf-open';
+      open.textContent = 'Open';
+      wrapper.appendChild(open);
+    }
+
+    if (opts.className) {
+      wrapper.className = `${wrapper.className} ${opts.className}`.trim();
+    }
+
+    return wrapper;
+  };
+
   const createMediaNode = (type, src, opts = {}) => {
     const safeSrc = normalizeUrl(src);
     if (!safeSrc) return null;
@@ -113,14 +170,18 @@
       if (title) node.title = title;
       if (alt) node.setAttribute('aria-label', alt);
     } else if (resolvedType === 'pdf') {
-      node = document.createElement('iframe');
-      node.src = safeSrc;
-      node.title = title || alt || 'PDF document';
-      node.loading = 'lazy';
+      node = createPdfCover(safeSrc, {
+        title,
+        alt,
+        preview: opts.preview,
+        showOpen: true,
+      });
     }
 
     if (!node) return null;
-    if (className) node.className = className;
+    if (className) {
+      node.className = `${node.className || ''} ${className}`.trim();
+    }
     return node;
   };
 
@@ -198,6 +259,14 @@
         new RegExp(`\\[\\[${escaped}${wikiSuffix}\\]\\]`, 'g'),
         `[${att.ref}](${att.url})`
       );
+      result = result.replace(
+        new RegExp(`(!\\[${escaped}\\]\\()([^\\s)]+)([^)]*\\))`, 'g'),
+        `$1${att.url}$3`
+      );
+      result = result.replace(
+        new RegExp(`(\\[${escaped}\\]\\()([^\\s)]+)([^)]*\\))`, 'g'),
+        `$1${att.url}$3`
+      );
       result = result.replace(new RegExp(`\\(${escaped}\\)`, 'g'), `(${att.url})`);
     });
     return result;
@@ -221,6 +290,7 @@
       const mediaNode = createMediaNode(resolvedType, att.url, {
         alt: getMediaLabel(att) || resolvedType,
         title: getMediaLabel(att) || '',
+        preview: att.preview_url || '',
       });
 
       if (mediaNode) {
@@ -231,6 +301,7 @@
         link.textContent = getMediaLabel(att) || 'file';
         link.className = 'text-link';
         link.target = '_blank';
+        link.rel = 'noopener';
         card.appendChild(link);
       }
       card.appendChild(label);
@@ -331,15 +402,39 @@
       audio = null;
     }
 
-    return { text, media, audio };
+    const documents = attachments.filter((att) => {
+      const mediaType = normalizeMediaType(att);
+      return mediaType === 'pdf' && getMediaUrl(att);
+    });
+
+    const audioTracks = attachments.filter((att) => {
+      const mediaType = normalizeMediaType(att);
+      return mediaType === 'audio' && getMediaUrl(att);
+    });
+
+    const otherFiles = attachments.filter((att) => {
+      const mediaType = normalizeMediaType(att);
+      return (
+        mediaType &&
+        !['image', 'video', 'audio', 'pdf'].includes(mediaType) &&
+        getMediaUrl(att)
+      );
+    });
+
+    return { text, media, audio, documents, audioTracks, otherFiles };
   };
 
   const renderReelWindow = (entry, container) => {
     if (!container) return null;
     const reelData = buildReelData(entry);
+    const reelMode = container.dataset.reelMode || 'viewer';
+    const hasExtras =
+      (reelData.documents && reelData.documents.length) ||
+      (reelData.audioTracks && reelData.audioTracks.length) ||
+      (reelData.otherFiles && reelData.otherFiles.length);
     container.innerHTML = '';
 
-    if (!reelData.media.length && !reelData.text && !reelData.audio) {
+    if (!reelData.media.length && !reelData.text && !reelData.audio && !hasExtras) {
       container.innerHTML = '<div class="card placeholder">No reel moments yet.</div>';
       return reelData;
     }
@@ -360,6 +455,10 @@
     const slides = reelData.media.length ? reelData.media : [{ media_type: 'empty' }];
     const isMusicOn = Boolean(reelData.audio && getMediaUrl(reelData.audio));
 
+    const emptyMessage = hasExtras
+      ? 'No photos or videos yet. Attachments below.'
+      : 'No photos or videos yet.';
+
     slides.forEach((item) => {
       const slide = document.createElement('div');
       slide.className = 'reel-slide';
@@ -369,7 +468,7 @@
       if (!url || mediaType === 'empty') {
         const placeholder = document.createElement('div');
         placeholder.className = 'reel-placeholder';
-        placeholder.textContent = 'No photos or videos yet.';
+        placeholder.textContent = emptyMessage;
         slide.appendChild(placeholder);
       } else if (mediaType === 'image') {
         const img = document.createElement('img');
@@ -409,12 +508,21 @@
 
     const meta = document.createElement('div');
     meta.className = 'reel-meta';
+    const formatCount = (count, label) => `${count} ${count === 1 ? label : `${label}s`}`;
     const mediaCount = reelData.media.length;
-    let metaText = mediaCount ? `${mediaCount} moments` : 'No media yet';
-    if (reelData.audio) {
-      metaText += ' - music';
+    const docCount = reelData.documents.length;
+    const audioCount = reelData.audioTracks.length;
+    const fileCount = reelData.otherFiles.length;
+    const metaParts = [];
+    if (mediaCount) {
+      metaParts.push(formatCount(mediaCount, 'moment'));
+    } else {
+      metaParts.push('No media yet');
     }
-    meta.textContent = metaText;
+    if (docCount) metaParts.push(formatCount(docCount, 'pdf'));
+    if (audioCount) metaParts.push(formatCount(audioCount, 'track'));
+    if (fileCount) metaParts.push(formatCount(fileCount, 'file'));
+    meta.textContent = metaParts.join(' - ');
     copy.appendChild(meta);
 
     const textWrap = document.createElement('div');
@@ -479,6 +587,69 @@
       audioWrap.appendChild(audioBtn);
       audioWrap.appendChild(audioEl);
       copy.appendChild(audioWrap);
+    }
+
+    const shouldShowAudioList =
+      reelData.audioTracks.length > 1 || (!reelData.media.length && reelData.audioTracks.length);
+    const shouldShowAttachments =
+      reelMode !== 'studio' &&
+      (reelData.documents.length || reelData.otherFiles.length || shouldShowAudioList);
+
+    if (shouldShowAttachments) {
+      const attachmentsWrap = document.createElement('div');
+      attachmentsWrap.className = 'reel-attachments';
+      const attachmentsTitle = document.createElement('div');
+      attachmentsTitle.className = 'reel-attachments-title';
+      attachmentsTitle.textContent = 'Attachments';
+      attachmentsWrap.appendChild(attachmentsTitle);
+
+      const attachmentsGrid = document.createElement('div');
+      attachmentsGrid.className = 'reel-grid';
+      attachmentsWrap.appendChild(attachmentsGrid);
+
+      const appendAttachmentItem = (item, label) => {
+        const card = document.createElement('div');
+        card.className = 'reel-item';
+        const tag = document.createElement('span');
+        tag.className = 'tag';
+        tag.textContent = label;
+        card.appendChild(tag);
+
+        const mediaType = normalizeMediaType(item) || 'file';
+        const mediaLabel = getMediaLabel(item) || label;
+        const mediaNode = createMediaNode(mediaType, getMediaUrl(item), {
+          alt: mediaLabel,
+          title: mediaLabel,
+          preview: item.preview_url || '',
+          className: 'reel-item-media',
+        });
+
+        if (mediaNode) {
+          card.appendChild(mediaNode);
+        } else {
+          const link = document.createElement('a');
+          link.href = getMediaUrl(item);
+          link.textContent = mediaLabel || 'Open file';
+          link.className = 'text-link';
+          link.target = '_blank';
+          link.rel = 'noopener';
+          card.appendChild(link);
+        }
+
+        const title = document.createElement('div');
+        title.className = 'reel-item-title';
+        title.textContent = mediaLabel;
+        card.appendChild(title);
+        attachmentsGrid.appendChild(card);
+      };
+
+      reelData.documents.forEach((item) => appendAttachmentItem(item, 'PDF'));
+      if (shouldShowAudioList) {
+        reelData.audioTracks.forEach((item) => appendAttachmentItem(item, 'Audio'));
+      }
+      reelData.otherFiles.forEach((item) => appendAttachmentItem(item, 'File'));
+
+      copy.appendChild(attachmentsWrap);
     }
 
     stage.appendChild(media);
@@ -736,7 +907,6 @@
 
   const initEverydayManage = () => {
     const dateInput = qs('#everyday-date');
-    const monthInput = qs('#everyday-month');
     const textInput = qs('#everyday-text');
     const captionInput = qs('#everyday-caption');
     const fileInput = qs('#everyday-file');
@@ -746,12 +916,37 @@
     const attachEl = qs('#everyday-attachments');
     const reelWindow = qs('#everyday-reel-window');
     const monthList = qs('#everyday-month-list');
+    const monthLabel = qs('#everyday-month-label');
+    const calendarLabel = qs('#calendar-label');
+    const calendarGrid = qs('#calendar-grid');
+    const prevBtn = qs('[data-calendar-prev]');
+    const nextBtn = qs('[data-calendar-next]');
+    const todayBtn = qs('[data-calendar-today]');
     const saveTextBtn = qs('[data-save-text]');
     const uploadBtn = qs('[data-upload-file]');
     const refreshBtn = qs('[data-refresh-day]');
 
+    const state = {
+      current: new Date(),
+      days: {},
+      selected: null,
+    };
+
+    state.current.setDate(1);
+
+    const monthKey = () => {
+      const year = state.current.getFullYear();
+      const month = String(state.current.getMonth() + 1).padStart(2, '0');
+      return `${year}-${month}`;
+    };
+
     const setStatus = (msg) => {
       if (statusEl) statusEl.textContent = msg;
+    };
+
+    const updateSelected = (dateStr) => {
+      if (dateInput) dateInput.value = dateStr;
+      state.selected = dateStr;
     };
 
     const deleteAttachment = async (attachment) => {
@@ -770,9 +965,7 @@
           body: JSON.stringify({ date: dateStr, uuid: attachment.uuid }),
         });
         renderDay(dateStr, data.entry || {});
-        if (monthInput && monthInput.value && dateStr.startsWith(monthInput.value)) {
-          loadMonth(monthInput.value);
-        }
+        loadMonth();
         setStatus('Attachment deleted');
         return data;
       } catch (err) {
@@ -782,6 +975,7 @@
     };
 
     const renderDay = (dateStr, entry) => {
+      updateSelected(dateStr);
       if (dayTitle) dayTitle.textContent = dateStr;
       const reelData = renderReelWindow(entry, reelWindow);
       if (dayMeta) {
@@ -794,68 +988,140 @@
       });
     };
 
+    const renderMonthList = (days) => {
+      if (!monthList) return;
+      const keys = Object.keys(days).sort();
+      monthList.innerHTML = '';
+      if (!keys.length) {
+        monthList.innerHTML = '<div class="card placeholder">No entries yet.</div>';
+        return;
+      }
+      keys.forEach((key) => {
+        const entry = days[key] || {};
+        const card = document.createElement('button');
+        card.type = 'button';
+        card.className = 'list-item';
+        const snippet = (entry.text || '').slice(0, 60) || 'No text';
+        const count = (entry.attachments || []).length;
+        card.innerHTML = `<strong>${key}</strong><span class="muted">${snippet}</span><span class="muted">${count} attachments</span>`;
+        card.addEventListener('click', () => loadDay(key));
+        monthList.appendChild(card);
+      });
+    };
+
     const loadDay = async (dateStr) => {
       if (!dateStr) return;
+      updateSelected(dateStr);
       setStatus('Loading day...');
       try {
         const data = await apiFetch(`/api/everyday/day?date=${dateStr}`);
         renderDay(dateStr, data.entry || {});
         setStatus('Loaded');
+        const params = new URLSearchParams(window.location.search);
+        params.set('date', dateStr);
+        history.replaceState(null, '', `${window.location.pathname}?${params}`);
       } catch (err) {
         setStatus(err.message);
       }
+      renderCalendar();
     };
 
-    const loadMonth = async (month) => {
-      if (!month || !monthList) return;
-      monthList.innerHTML = '<div class="card placeholder">Loading...</div>';
-      try {
-        const data = await apiFetch(`/api/everyday/month?month=${month}`);
-        const days = data.days || {};
-        const keys = Object.keys(days).sort();
-        monthList.innerHTML = '';
-        if (!keys.length) {
-          monthList.innerHTML = '<div class="card placeholder">No entries yet.</div>';
-          return;
+    const renderCalendar = () => {
+      if (!calendarGrid) return;
+      calendarGrid.innerHTML = '';
+      const year = state.current.getFullYear();
+      const month = state.current.getMonth();
+      const first = new Date(year, month, 1);
+      const startDay = first.getDay();
+      const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+      for (let i = 0; i < startDay; i += 1) {
+        const cell = document.createElement('div');
+        cell.className = 'calendar-day is-muted';
+        cell.textContent = '';
+        calendarGrid.appendChild(cell);
+      }
+
+      for (let day = 1; day <= daysInMonth; day += 1) {
+        const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        const cell = document.createElement('button');
+        cell.type = 'button';
+        cell.className = 'calendar-day';
+        cell.textContent = String(day);
+        cell.dataset.date = dateStr;
+        if (state.days[dateStr]) {
+          cell.classList.add('has-entry');
         }
-        keys.forEach((key) => {
-          const entry = days[key] || {};
-          const card = document.createElement('button');
-          card.type = 'button';
-          card.className = 'list-item';
-          const snippet = (entry.text || '').slice(0, 60) || 'No text';
-          const count = (entry.attachments || []).length;
-          card.innerHTML = `<strong>${key}</strong><span class="muted">${snippet}</span><span class="muted">${count} attachments</span>`;
-          card.addEventListener('click', () => {
-            if (dateInput) dateInput.value = key;
-            loadDay(key);
-          });
-          monthList.appendChild(card);
-        });
-      } catch (err) {
-        monthList.innerHTML = `<div class="card placeholder">${err.message}</div>`;
+        if (state.selected === dateStr) {
+          cell.classList.add('is-active');
+        }
+        const today = formatDate(new Date());
+        if (today === dateStr) {
+          cell.classList.add('is-today');
+        }
+        cell.addEventListener('click', () => loadDay(dateStr));
+        calendarGrid.appendChild(cell);
       }
     };
 
-    if (dateInput) {
-      const params = new URLSearchParams(window.location.search);
-      const dateParam = params.get('date');
-      dateInput.value = dateParam || formatDate(new Date());
-      loadDay(dateInput.value);
-      dateInput.addEventListener('change', () => {
-        if (dateInput.value) {
-          loadDay(dateInput.value);
-          const params = new URLSearchParams(window.location.search);
-          params.set('date', dateInput.value);
-          history.replaceState(null, '', `${window.location.pathname}?${params}`);
+    const loadMonth = async () => {
+      const labelText = monthKey();
+      if (calendarLabel) calendarLabel.textContent = labelText;
+      if (monthLabel) monthLabel.textContent = labelText;
+      if (monthList) monthList.innerHTML = '<div class="card placeholder">Loading entries...</div>';
+      try {
+        const data = await apiFetch(`/api/everyday/month?month=${labelText}`);
+        state.days = data.days || {};
+      } catch (err) {
+        state.days = {};
+        if (monthList) {
+          monthList.innerHTML = `<div class="card placeholder">${err.message}</div>`;
         }
+        renderCalendar();
+        return;
+      }
+      renderCalendar();
+      renderMonthList(state.days);
+    };
+
+    if (prevBtn) {
+      prevBtn.addEventListener('click', () => {
+        state.current.setMonth(state.current.getMonth() - 1);
+        loadMonth();
       });
     }
 
-    if (monthInput) {
-      monthInput.value = formatDate(new Date()).slice(0, 7);
-      loadMonth(monthInput.value);
-      monthInput.addEventListener('change', (event) => loadMonth(event.target.value));
+    if (nextBtn) {
+      nextBtn.addEventListener('click', () => {
+        state.current.setMonth(state.current.getMonth() + 1);
+        loadMonth();
+      });
+    }
+
+    if (todayBtn) {
+      todayBtn.addEventListener('click', () => {
+        const today = new Date();
+        state.current = new Date(today.getFullYear(), today.getMonth(), 1);
+        loadMonth();
+        loadDay(formatDate(today));
+      });
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const initialDate = params.get('date');
+    if (initialDate) {
+      const init = new Date(initialDate);
+      if (!Number.isNaN(init.getTime())) {
+        state.current = new Date(init.getFullYear(), init.getMonth(), 1);
+        loadMonth();
+        loadDay(formatDate(init));
+      } else {
+        loadMonth();
+        loadDay(formatDate(new Date()));
+      }
+    } else {
+      loadMonth();
+      loadDay(formatDate(new Date()));
     }
 
     if (saveTextBtn) {
@@ -871,7 +1137,7 @@
           });
           renderDay(dateStr, data.entry || {});
           setStatus('Saved');
-          loadMonth(monthInput ? monthInput.value : '');
+          loadMonth();
         } catch (err) {
           setStatus(err.message);
         }
@@ -951,7 +1217,7 @@
         setStatus('Uploaded');
         if (captionInput) captionInput.value = '';
         if (fileInput) fileInput.value = '';
-        loadMonth(monthInput ? monthInput.value : '');
+        loadMonth();
       });
     }
 
@@ -1258,7 +1524,6 @@
       const wrapper = document.createElement('button');
       wrapper.type = 'button';
       wrapper.className = 'album-item';
-      wrapper.setAttribute('aria-label', 'Open attachment preview');
       const card = document.createElement('article');
       card.className = 'album-card';
       const preview = document.createElement('div');
@@ -1268,6 +1533,13 @@
       const imageUrl = item.url || '';
       const videoPreviewUrl = item.preview_url || '';
       const resolvedType = resolveMediaType(item, item.media_type || 'file');
+      const typeLabel = resolvedType || item.media_type || 'file';
+      const moduleLabel = item.source_module || 'attachment';
+      const labelParts = [`Open ${typeLabel} from ${moduleLabel}`];
+      if (displayName) {
+        labelParts.push(displayName);
+      }
+      wrapper.setAttribute('aria-label', labelParts.join(': '));
 
       if (resolvedType === 'image') {
         const img = document.createElement('img');
@@ -1301,34 +1573,47 @@
         }
       } else if (resolvedType === 'audio') {
         const fallback = document.createElement('div');
-        fallback.className = 'album-fallback';
+        fallback.className = 'album-fallback album-fallback--audio';
         fallback.textContent = displayName || 'Audio file';
         preview.appendChild(fallback);
       } else if (resolvedType === 'pdf') {
-        const fallback = document.createElement('div');
-        fallback.className = 'album-fallback';
-        fallback.textContent = displayName || 'PDF document';
-        preview.appendChild(fallback);
+        const cover = createPdfCover(imageUrl, {
+          title: displayName || item.uuid || 'PDF document',
+          preview: imagePreviewUrl,
+          asLink: false,
+          showOpen: false,
+        });
+        if (cover) {
+          preview.appendChild(cover);
+        } else {
+          const fallback = document.createElement('div');
+          fallback.className = 'album-fallback album-fallback--pdf';
+          fallback.textContent = displayName || 'PDF document';
+          preview.appendChild(fallback);
+        }
       } else {
         const fallback = document.createElement('div');
-        fallback.className = 'album-fallback';
+        fallback.className = 'album-fallback album-fallback--file';
         const label = document.createElement('span');
         label.textContent = displayName || item.uuid;
         fallback.appendChild(label);
         preview.appendChild(fallback);
       }
 
-      const body = document.createElement('div');
-      body.className = 'album-body';
-      const meta = document.createElement('div');
-      meta.className = 'album-meta';
-      const strong = document.createElement('strong');
-      strong.textContent = resolvedType || item.media_type;
-      meta.appendChild(strong);
-      meta.append(` - ${item.source_module} - ${displayName || item.uuid}`);
-      body.appendChild(meta);
+      const badges = document.createElement('div');
+      badges.className = 'album-badges';
+      const typeBadge = document.createElement('span');
+      typeBadge.className = 'album-badge';
+      typeBadge.textContent = typeLabel;
+      badges.appendChild(typeBadge);
+      if (moduleLabel) {
+        const moduleBadge = document.createElement('span');
+        moduleBadge.className = 'album-badge';
+        moduleBadge.textContent = moduleLabel;
+        badges.appendChild(moduleBadge);
+      }
+      preview.appendChild(badges);
       card.appendChild(preview);
-      card.appendChild(body);
       wrapper.appendChild(card);
       wrapper.addEventListener('click', () => openModal(item));
       requestAnimationFrame(() => resizeGridItem(wrapper));

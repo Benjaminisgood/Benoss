@@ -9,6 +9,7 @@ from ..oss import delete_object, object_exists, public_url, put_object_from_file
 from ..services.album_service import (
     delete_everyday_attachment,
     media_type_for_path,
+    preview_url_for_key,
     upsert_everyday_attachment,
 )
 from ..services.everyday_service import (
@@ -40,8 +41,19 @@ def _enrich_entry(entry: dict) -> dict:
     attachments = []
     for item in entry.get("attachments", []):
         enriched = dict(item)
-        if item.get("oss_key") and not item.get("url"):
-            enriched["url"] = public_url(item["oss_key"])
+        oss_key = item.get("oss_key")
+        if oss_key:
+            resolved_type = enriched.get("media_type") or "file"
+            derived_type = media_type_for_path(oss_key)
+            if derived_type != "file" or resolved_type == "file":
+                resolved_type = derived_type
+            enriched["media_type"] = resolved_type
+            if not item.get("url"):
+                enriched["url"] = public_url(oss_key)
+            if not item.get("preview_url"):
+                preview_url = preview_url_for_key(oss_key, resolved_type)
+                if preview_url:
+                    enriched["preview_url"] = preview_url
         attachments.append(enriched)
     enriched_entry = dict(entry)
     enriched_entry["attachments"] = attachments

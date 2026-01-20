@@ -7,6 +7,7 @@
     <p class="hero-sub">Upload text, images, audio, and video. Reels are assembled on the fly.</p>
   </div>
   <div class="hero-actions">
+    <button class="pill-btn" data-calendar-today>Today</button>
     <button class="pill-btn ghost" data-refresh-day>Reload day</button>
   </div>
 </section>
@@ -17,10 +18,7 @@
       <h2>Create entry</h2>
       <p class="muted">Upload assets and write the daily note.</p>
     </div>
-    <label class="field">
-      <span>Date</span>
-      <input class="input" type="date" id="everyday-date" />
-    </label>
+    <input type="hidden" id="everyday-date" />
     <label class="field">
       <span>Daily text</span>
       <textarea class="textarea" id="everyday-text" rows="6" placeholder="Write the day in a few lines..."></textarea>
@@ -42,13 +40,28 @@
     <div class="status-pill" id="everyday-status">Ready</div>
   </aside>
 
-  <aside class="panel panel--list">
+  <aside class="panel panel--list calendar-panel">
+    <div class="calendar-header">
+      <button class="pill-btn ghost" data-calendar-prev>Prev</button>
+      <div class="calendar-title" id="calendar-label">Month</div>
+      <button class="pill-btn ghost" data-calendar-next>Next</button>
+    </div>
+    <div class="calendar-week">
+      <span>Sun</span>
+      <span>Mon</span>
+      <span>Tue</span>
+      <span>Wed</span>
+      <span>Thu</span>
+      <span>Fri</span>
+      <span>Sat</span>
+    </div>
+    <div class="calendar-grid" id="calendar-grid"></div>
     <div class="panel-head">
       <h2>Month view</h2>
-      <input class="input" type="month" id="everyday-month" />
+      <p class="muted" id="everyday-month-label"></p>
     </div>
     <div class="list-stack" id="everyday-month-list">
-      <div class="card placeholder">Pick a month to load entries.</div>
+      <div class="card placeholder">Loading entries...</div>
     </div>
   </aside>
 
@@ -61,6 +74,7 @@
     <div class="reel-panel" id="everyday-reel">
       <h3>Reel window</h3>
       {% set reel_window_id = 'everyday-reel-window' %}
+      {% set reel_mode = 'studio' %}
       {% include "dailyreel_window.html" %}
     </div>
   </article>

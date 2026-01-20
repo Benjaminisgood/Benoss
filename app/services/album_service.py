@@ -20,7 +20,19 @@ def media_type_for_path(path: str) -> str:
         return "video"
     if ext in AUDIO_EXTS:
         return "audio"
+    if ext in DOC_EXTS:
+        return "pdf"
     return "file"
+
+
+def preview_url_for_key(key: str, media_type: str) -> Optional[str]:
+    if media_type == "image":
+        return public_url(key, params={"x-oss-process": "image/resize,w_480/quality,q_70"})
+    if media_type == "video":
+        return public_url(key, params={"x-oss-process": "video/snapshot,t_1000,f_jpg,w_480"})
+    if media_type == "pdf":
+        return public_url(key, params={"x-oss-process": "doc/preview,format=jpg,page=1"})
+    return None
 
 
 def upsert_everyday_attachment(
@@ -69,12 +81,18 @@ def list_everyday_attachments(
     records = query.order_by(EverydayAttachmentIndex.created_at.desc()).offset(offset).limit(limit).all()
     items = []
     for record in records:
+        resolved_type = record.media_type
+        if record.oss_key:
+            derived_type = media_type_for_path(record.oss_key)
+            if derived_type != "file" or resolved_type == "file":
+                resolved_type = derived_type
         items.append(
             {
                 "uuid": record.uuid,
-                "media_type": record.media_type,
+                "media_type": resolved_type,
                 "oss_key": record.oss_key,
                 "url": public_url(record.oss_key),
+                "preview_url": preview_url_for_key(record.oss_key, resolved_type),
                 "source_module": "everyday",
                 "source_id": record.source_id,
             }

@@ -3,7 +3,7 @@ import os
 from flask import Blueprint, jsonify, request
 
 from ..oss import get_object_text, list_objects, public_url
-from ..services.album_service import media_type_for_path
+from ..services.album_service import media_type_for_path, preview_url_for_key
 from ..utils.markdown import extract_title, find_attachment_refs
 from ..utils.oss_paths import blog_prefix, ensure_relative_key, resolve_attachment_key, resolve_module_key
 from ..utils.session_auth import login_required
@@ -43,19 +43,27 @@ def get_blog_item():
     title = extract_title(content, os.path.splitext(os.path.basename(rel_key))[0])
 
     attachments = []
-    for ref in find_attachment_refs(content):
-        try:
-            att_key = resolve_attachment_key("blog", rel_key, ref)
-        except ValueError:
-            continue
-        attachments.append(
-            {
-                "ref": ref,
-                "oss_key": att_key,
-                "url": public_url(att_key),
-                "media_type": media_type_for_path(att_key),
-            }
-        )
+    seen_refs = set()
+    for candidates in find_attachment_refs(content):
+        for ref in candidates:
+            if ref in seen_refs:
+                break
+            try:
+                att_key = resolve_attachment_key("blog", rel_key, ref, check_exists=True)
+            except ValueError:
+                continue
+            media_type = media_type_for_path(att_key)
+            attachments.append(
+                {
+                    "ref": ref,
+                    "oss_key": att_key,
+                    "url": public_url(att_key),
+                    "media_type": media_type,
+                    "preview_url": preview_url_for_key(att_key, media_type),
+                }
+            )
+            seen_refs.add(ref)
+            break
 
     return jsonify(
         {

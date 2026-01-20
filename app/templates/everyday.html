@@ -4,29 +4,32 @@
   <div>
     <p class="hero-kicker">Asset library</p>
     <h1>Every file, every module.</h1>
-    <p class="hero-sub">Browse images, audio, and video across blog, note, and daily reel.</p>
+    <p class="hero-sub">Browse images, audio, video, and documents across blog, note, and daily reel.</p>
   </div>
   <div class="hero-actions filter-row">
-    <label class="field">
-      <span>Module</span>
-      <select class="input" id="album-module">
-        <option value="">All</option>
-        <option value="blog">Blog</option>
-        <option value="note">Note</option>
-        <option value="everyday">Daily Reel</option>
-      </select>
-    </label>
-    <label class="field">
-      <span>Type</span>
-      <select class="input" id="album-type">
-        <option value="">All</option>
-        <option value="image">Image</option>
-        <option value="video">Video</option>
-        <option value="audio">Audio</option>
-        <option value="file">File</option>
-      </select>
-    </label>
-    <button class="pill-btn" data-album-load>Refresh</button>
+    <div class="filter-shell">
+      <label class="filter-group">
+        <span>Module</span>
+        <select class="filter-select" id="album-module">
+          <option value="">All</option>
+          <option value="blog">Blog</option>
+          <option value="note">Note</option>
+          <option value="everyday">Daily Reel</option>
+        </select>
+      </label>
+      <label class="filter-group">
+        <span>Type</span>
+        <select class="filter-select" id="album-type">
+          <option value="">All</option>
+          <option value="image">Image</option>
+          <option value="video">Video</option>
+          <option value="audio">Audio</option>
+          <option value="pdf">PDF</option>
+          <option value="file">File</option>
+        </select>
+      </label>
+      <button class="pill-btn" data-album-load>Refresh</button>
+    </div>
   </div>
 </section>
 
@@ -61,6 +64,7 @@
       <div class="viewer-meta" id="modal-dailyreel-meta"></div>
     </div>
     {% set reel_window_id = 'modal-dailyreel-window' %}
+    {% set reel_mode = 'viewer' %}
     {% include "dailyreel_window.html" %}
   </article>
 </template>
