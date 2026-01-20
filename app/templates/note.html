@@ -22,15 +22,7 @@
     </div>
   </aside>
 
-  <article class="panel panel--viewer">
-    <div class="viewer-head">
-      <h2 id="note-title">Select a note</h2>
-      <div class="viewer-meta" id="note-meta"></div>
-    </div>
-    <div class="markdown-body" id="note-content">
-      <p class="muted">Pick a note on the left to read.</p>
-    </div>
-    <div class="attachment-strip" id="note-attachments"></div>
-  </article>
+  {% set window_prefix = 'note' %}
+  {% include "note_window.html" %}
 </section>
 {% endblock %}

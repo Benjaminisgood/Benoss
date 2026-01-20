@@ -1001,8 +1001,11 @@ select.input {
   --album-shadow: 0 16px 36px rgba(25, 18, 8, 0.12);
   --album-shadow-hover: 0 22px 46px rgba(25, 18, 8, 0.18);
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-auto-rows: 12px;
+  grid-auto-flow: dense;
   gap: var(--album-gap);
+  align-items: start;
 }
 
 .album-stream .grid-sizer {
@@ -1012,6 +1015,12 @@ select.input {
 .album-item {
   width: auto;
   padding: 0;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
 }
 
 .album-card {
@@ -1029,6 +1038,11 @@ select.input {
 .album-item:hover .album-card {
   transform: translateY(-4px);
   box-shadow: var(--album-shadow-hover);
+}
+
+.album-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
 }
 
 .album-preview {
@@ -1107,10 +1121,70 @@ select.input {
   font-size: 0.9rem;
 }
 
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+}
+
+.modal[hidden] {
+  display: none;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(18, 14, 10, 0.55);
+  backdrop-filter: blur(6px);
+}
+
+.modal-panel {
+  position: relative;
+  width: min(960px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  background: var(--card);
+  border-radius: 20px;
+  padding: 1.6rem;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  z-index: 1;
+}
+
+.modal-close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.15rem;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.modal-content {
+  margin-top: 2.4rem;
+}
+
+body.modal-open {
+  overflow: hidden;
+}
+
 .admin-shell {
   display: grid;
   grid-template-columns: minmax(240px, 320px) 1fr;
   gap: 1.6rem;
+}
+
+.admin-shell--single {
+  grid-template-columns: 1fr;
 }
 
 .admin-panels {
@@ -1214,7 +1288,7 @@ select.input {
   }
 
   .album-stream {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   }
 
   .nav-panel {
@@ -1254,7 +1328,7 @@ select.input {
 
 @media (max-width: 720px) {
   .album-stream {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
   }
 }
 

@@ -2,65 +2,66 @@
 {% block content %}
 <section class="hero hero--page">
   <div>
-    <p class="hero-kicker">Everyday reels</p>
-    <h1>Daily moments, stitched together.</h1>
-    <p class="hero-sub">Upload text, images, audio, and video. Reels are assembled on the fly.</p>
+    <p class="hero-kicker">Asset library</p>
+    <h1>Every file, every module.</h1>
+    <p class="hero-sub">Browse images, audio, and video across blog, note, and daily reel.</p>
   </div>
-  <div class="hero-actions">
-    <button class="pill-btn ghost" data-refresh-day>Reload day</button>
+  <div class="hero-actions filter-row">
+    <label class="field">
+      <span>Module</span>
+      <select class="input" id="album-module">
+        <option value="">All</option>
+        <option value="blog">Blog</option>
+        <option value="note">Note</option>
+        <option value="everyday">Daily Reel</option>
+      </select>
+    </label>
+    <label class="field">
+      <span>Type</span>
+      <select class="input" id="album-type">
+        <option value="">All</option>
+        <option value="image">Image</option>
+        <option value="video">Video</option>
+        <option value="audio">Audio</option>
+        <option value="file">File</option>
+      </select>
+    </label>
+    <button class="pill-btn" data-album-load>Refresh</button>
   </div>
 </section>
 
-<section class="everyday-grid">
-  <aside class="panel panel--form">
-    <div class="panel-head">
-      <h2>Create entry</h2>
-      <p class="muted">Upload assets and write the daily note.</p>
-    </div>
-    <label class="field">
-      <span>Date</span>
-      <input class="input" type="date" id="everyday-date" />
-    </label>
-    <label class="field">
-      <span>Daily text</span>
-      <textarea class="textarea" id="everyday-text" rows="6" placeholder="Write the day in a few lines..."></textarea>
-    </label>
-    <div class="button-row">
-      <button class="pill-btn" data-save-text>Save text</button>
-    </div>
-    <label class="field">
-      <span>Upload media</span>
-      <input class="input" type="file" id="everyday-file" />
-    </label>
-    <label class="field">
-      <span>Caption</span>
-      <input class="input" type="text" id="everyday-caption" placeholder="Optional caption" />
-    </label>
-    <div class="button-row">
-      <button class="pill-btn" data-upload-file>Upload file</button>
-    </div>
-    <div class="status-pill" id="everyday-status">Ready</div>
-  </aside>
+<section class="album-stream" id="album-grid" data-album-stream>
+  <div class="album-empty">Load attachments to view the library.</div>
+</section>
+<div class="album-stream-footer" data-album-sentinel>
+  <span class="album-stream-status" data-album-status>Loading...</span>
+  <button class="pill-btn ghost" type="button" data-album-more hidden>Load more</button>
+</div>
 
-  <aside class="panel panel--list">
-    <div class="panel-head">
-      <h2>Month view</h2>
-      <input class="input" type="month" id="everyday-month" />
-    </div>
-    <div class="list-stack" id="everyday-month-list">
-      <div class="card placeholder">Pick a month to load entries.</div>
-    </div>
-  </aside>
+<div class="modal" id="resource-modal" hidden>
+  <div class="modal-backdrop" data-modal-close></div>
+  <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Resource preview">
+    <button class="modal-close" type="button" data-modal-close>Close</button>
+    <div class="modal-content" id="resource-modal-content"></div>
+  </div>
+</div>
 
+<template id="modal-blog-template">
+  {% set window_prefix = 'modal-blog' %}
+  {% include "blog_window.html" %}
+</template>
+<template id="modal-note-template">
+  {% set window_prefix = 'modal-note' %}
+  {% include "note_window.html" %}
+</template>
+<template id="modal-dailyreel-template">
   <article class="panel panel--viewer">
     <div class="viewer-head">
-      <h2 id="everyday-title">Day detail</h2>
-      <div class="viewer-meta" id="everyday-meta"></div>
+      <h2 id="modal-dailyreel-title">Daily reel</h2>
+      <div class="viewer-meta" id="modal-dailyreel-meta"></div>
     </div>
-    <div class="reel-panel" id="everyday-reel">
-      <h3>Reel window</h3>
-      <div class="reel-window-shell" id="everyday-reel-window"></div>
-    </div>
+    {% set reel_window_id = 'modal-dailyreel-window' %}
+    {% include "dailyreel_window.html" %}
   </article>
-</section>
+</template>
 {% endblock %}

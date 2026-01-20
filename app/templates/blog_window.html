@@ -1,0 +1,11 @@
+{% set prefix = window_prefix or 'blog' %}
+<article class="panel panel--viewer">
+  <div class="viewer-head">
+    <h2 id="{{ prefix }}-title">Select a post</h2>
+    <div class="viewer-meta" id="{{ prefix }}-meta"></div>
+  </div>
+  <div class="markdown-body" id="{{ prefix }}-content">
+    <p class="muted">Pick a post on the left to read.</p>
+  </div>
+  <div class="attachment-strip" id="{{ prefix }}-attachments"></div>
+</article>

@@ -178,7 +178,60 @@
     });
   };
 
+  const loadAccounts = async () => {
+    const descriptionEl = qs('#account-description');
+    const listEl = qs('#account-list');
+    if (!descriptionEl && !listEl) return;
+    const data = await apiFetch('/api/account');
+    if (descriptionEl) {
+      descriptionEl.value = data.current_user?.description || '';
+    }
+    if (listEl) {
+      listEl.innerHTML = '';
+      if (!data.accounts || data.accounts.length === 0) {
+        listEl.innerHTML = '<div class="card placeholder">No other accounts yet.</div>';
+      } else {
+        data.accounts.forEach((account) => {
+          const row = document.createElement('div');
+          row.className = 'stack-item';
+          const description = account.description || 'No description yet.';
+          const wrapper = document.createElement('div');
+          const title = document.createElement('strong');
+          title.textContent = account.username;
+          const meta = document.createElement('div');
+          meta.className = 'album-meta';
+          meta.textContent = description;
+          wrapper.appendChild(title);
+          wrapper.appendChild(meta);
+          row.appendChild(wrapper);
+          listEl.appendChild(row);
+        });
+      }
+    }
+  };
+
+  const bindAccountSave = () => {
+    const button = qs('#account-save');
+    const descriptionEl = qs('#account-description');
+    if (!button || !descriptionEl) return;
+    button.addEventListener('click', async () => {
+      setStatus('Saving description...');
+      try {
+        await apiFetch('/api/account/description', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ description: descriptionEl.value || '' }),
+        });
+        setStatus('Description saved');
+        loadAccounts();
+      } catch (err) {
+        setStatus(err.message);
+      }
+    });
+  };
+
   const loadAll = async () => {
+    await loadAccounts();
     await loadQuickLinks();
     await loadFriendLinks();
     await loadUsers();
@@ -194,6 +247,7 @@
     bindQuickAdd();
     bindFriendAdd();
     bindUserAdd();
+    bindAccountSave();
   };
 
   init();

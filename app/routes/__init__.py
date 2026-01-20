@@ -1,3 +1,4 @@
+from .account import account_bp
 from .admin import admin_bp
 from .album import album_bp
 from .blog import blog_bp
@@ -13,3 +14,4 @@ def register_blueprints(app):
     app.register_blueprint(everyday_bp)
     app.register_blueprint(album_bp)
     app.register_blueprint(admin_bp)
+    app.register_blueprint(account_bp)

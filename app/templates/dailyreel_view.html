@@ -2,7 +2,7 @@
 {% block content %}
 <section class="hero hero--page">
   <div>
-    <p class="hero-kicker">Everyday viewer</p>
+    <p class="hero-kicker">Daily reel viewer</p>
     <h1>Daily reels, calendar first.</h1>
     <p class="hero-sub">Pick a date to see the reel, text, and attachments.</p>
   </div>
@@ -35,7 +35,8 @@
       <h2 id="viewer-date">Select a day</h2>
       <div class="viewer-meta" id="viewer-meta"></div>
     </div>
-    <div class="reel-window-shell" id="viewer-reel-window"></div>
+    {% set reel_window_id = 'viewer-reel-window' %}
+    {% include "dailyreel_window.html" %}
   </article>
 </section>
 {% endblock %}

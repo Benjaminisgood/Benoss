@@ -37,21 +37,13 @@
         <div class="nav-links">
           <a class="nav-link{% if page == 'home' %} is-active{% endif %}" href="{{ url_for('site.home') }}">Home</a>
           <a class="nav-link{% if page == 'blog' %} is-active{% endif %}" href="{{ url_for('site.blog') }}">Blog</a>
-          {% set everyday_active = page in ['everyday-view', 'everyday-manage'] %}
-          {% if current_user and current_user.role == 'admin' %}
-            <a class="nav-link{% if everyday_active %} is-active{% endif %}" href="{{ url_for('site.everyday_manage') }}">Everyday</a>
-          {% else %}
-            <a class="nav-link{% if everyday_active %} is-active{% endif %}" href="{{ url_for('site.everyday') }}">Everyday</a>
-          {% endif %}
+          {% set everyday_active = page == 'everyday' %}
+          <a class="nav-link{% if everyday_active %} is-active{% endif %}" href="{{ url_for('site.everyday') }}">Everyday</a>
           <a class="nav-link{% if page == 'note' %} is-active{% endif %}" href="{{ url_for('site.note') }}">Note</a>
-          <a class="nav-link{% if page == 'album' %} is-active{% endif %}" href="{{ url_for('site.album') }}">Attachments</a>
         </div>
         <div class="nav-actions">
-          {% if current_user and current_user.role == 'admin' %}
-            <a class="nav-action" href="{{ url_for('site.admin') }}">Admin</a>
-          {% endif %}
           {% if current_user %}
-            <a class="nav-action" href="{{ url_for('site.logout') }}">Log out</a>
+            <a class="nav-action" href="{{ url_for('site.control_room') }}">{{ current_user.username }}</a>
           {% endif %}
         </div>
       </div>

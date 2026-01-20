@@ -28,25 +28,55 @@ def note():
 @site_bp.route("/everyday")
 @login_required()
 def everyday():
-    return render_template("everyday_view.html", page="everyday-view", title="Everyday")
+    date_param = request.args.get("date", "").strip()
+    if date_param:
+        return redirect(url_for("site.dailyreel_view", date=date_param))
+    return render_template("everyday.html", page="everyday", title="Asset Library")
+
+
+@site_bp.route("/dailyreel")
+@login_required()
+def dailyreel():
+    user = g.get("user")
+    if user and user.role == "admin":
+        return redirect(url_for("site.dailyreel_manage"))
+    return redirect(url_for("site.dailyreel_view"))
+
+
+@site_bp.route("/dailyreel/view")
+@login_required()
+def dailyreel_view():
+    return render_template("dailyreel_view.html", page="dailyreel-view", title="Daily Reel")
+
+
+@site_bp.route("/dailyreel/manage")
+@login_required(role="admin")
+def dailyreel_manage():
+    return render_template("dailyreel_manage.html", page="dailyreel-manage", title="Daily Reel Studio")
 
 
 @site_bp.route("/everyday/manage")
 @login_required(role="admin")
-def everyday_manage():
-    return render_template("everyday_manage.html", page="everyday-manage", title="Everyday Manage")
+def everyday_manage_redirect():
+    return redirect(url_for("site.dailyreel_manage"))
 
 
 @site_bp.route("/album")
 @login_required()
 def album():
-    return render_template("album.html", page="album", title="Attachments")
+    return redirect(url_for("site.everyday"))
 
 
 @site_bp.route("/admin")
 @login_required(role="admin")
 def admin():
-    return render_template("admin.html", page="admin", title="Admin")
+    return redirect(url_for("site.control_room"))
+
+
+@site_bp.route("/control-room")
+@login_required()
+def control_room():
+    return render_template("control_room.html", page="control-room", title="Control Room")
 
 
 @site_bp.route("/login", methods=["GET", "POST"])

@@ -269,6 +269,23 @@
     });
   };
 
+  const renderMarkdownWindow = async (moduleName, key, prefix, scope = document) => {
+    const titleEl = qs(`#${prefix}-title`, scope);
+    const metaEl = qs(`#${prefix}-meta`, scope);
+    const contentEl = qs(`#${prefix}-content`, scope);
+    const attachEl = qs(`#${prefix}-attachments`, scope);
+    if (contentEl) {
+      contentEl.innerHTML = '<p class="muted">Loading...</p>';
+    }
+    const data = await apiFetch(`/api/${moduleName}/item?key=${encodeURIComponent(key)}`);
+    const content = applyAttachmentRefs(data.content || '', data.attachments || []);
+    renderMarkdown(content, contentEl);
+    if (titleEl) titleEl.textContent = data.title || key;
+    if (metaEl) metaEl.textContent = data.key || key;
+    renderAttachmentStrip(attachEl, data.attachments);
+    return data;
+  };
+
   const normalizeMediaType = (item) => {
     return resolveMediaType(item, '');
   };
@@ -624,7 +641,6 @@
           <h3>${date}</h3>
           <p class="muted">${text.slice(0, 120)}</p>
           <p class="muted">${count} attachments</p>
-          <a class="text-link" href="/everyday?date=${date}">Open day</a>
         `;
       } catch (err) {
         todayCard.innerHTML = '<p class="muted">Unable to load today.</p>';
@@ -695,14 +711,8 @@
       qsa('.list-item', listEl).forEach((el) => {
         el.classList.toggle('is-active', el.dataset.key === key);
       });
-      contentEl.innerHTML = '<p class="muted">Loading...</p>';
       try {
-        const data = await apiFetch(`/api/${moduleName}/item?key=${encodeURIComponent(key)}`);
-        const content = applyAttachmentRefs(data.content || '', data.attachments || []);
-        renderMarkdown(content, contentEl);
-        if (titleEl) titleEl.textContent = data.title || key;
-        if (metaEl) metaEl.textContent = data.key || key;
-        renderAttachmentStrip(attachEl, data.attachments);
+        await renderMarkdownWindow(moduleName, key, moduleName);
         const params = new URLSearchParams(window.location.search);
         params.set('key', key);
         history.replaceState(null, '', `${window.location.pathname}?${params}`);
@@ -1097,28 +1107,24 @@
   const initAlbum = () => {
     const moduleSelect = qs('#album-module');
     const typeSelect = qs('#album-type');
-    const limitInput = qs('#album-limit');
     const loadBtn = qs('[data-album-load]');
     const grid = qs('#album-grid');
     const status = qs('[data-album-status]');
     const moreBtn = qs('[data-album-more]');
     const sentinel = qs('[data-album-sentinel]');
+    const modal = qs('#resource-modal');
+    const modalContent = qs('#resource-modal-content');
+    const blogTemplate = qs('#modal-blog-template');
+    const noteTemplate = qs('#modal-note-template');
+    const dailyreelTemplate = qs('#modal-dailyreel-template');
     if (!grid) return;
 
     const supportsObserver = 'IntersectionObserver' in window;
     let streamObserver = null;
     let offset = 0;
-    let limit = 120;
+    const limit = 120;
     let loading = false;
     let hasMore = true;
-
-    const readLimit = () => {
-      const value = Number(limitInput && limitInput.value);
-      if (!Number.isFinite(value) || value <= 0) {
-        return 120;
-      }
-      return value;
-    };
 
     const setStatus = (text) => {
       if (status) {
@@ -1144,9 +1150,115 @@
       grid.innerHTML = '<div class="album-empty">Loading...</div>';
     };
 
+    const resizeGridItem = (item) => {
+      if (!item) return;
+      const styles = window.getComputedStyle(grid);
+      const rowHeight = parseFloat(styles.getPropertyValue('grid-auto-rows')) || 1;
+      const rowGap = parseFloat(styles.getPropertyValue('gap')) || 0;
+      const card = qs('.album-card', item);
+      if (!card) return;
+      const height = card.getBoundingClientRect().height;
+      const span = Math.ceil((height + rowGap) / (rowHeight + rowGap));
+      item.style.gridRowEnd = `span ${span}`;
+    };
+
+    const resizeAllGridItems = () => {
+      qsa('.album-item', grid).forEach((item) => resizeGridItem(item));
+    };
+
+    const showModalMessage = (message) => {
+      if (!modalContent) return;
+      modalContent.innerHTML = `<div class="card placeholder">${message}</div>`;
+    };
+
+    const closeModal = () => {
+      if (!modal) return;
+      modal.hidden = true;
+      document.body.classList.remove('modal-open');
+      if (modalContent) {
+        modalContent.innerHTML = '';
+      }
+    };
+
+    const resolveSourceId = async (item) => {
+      if (item.source_id) {
+        return item.source_id;
+      }
+      if (!item.uuid || (item.source_module !== 'blog' && item.source_module !== 'note')) {
+        return null;
+      }
+      const data = await apiFetch(
+        `/api/album/source?module=${item.source_module}&uuid=${encodeURIComponent(item.uuid)}`
+      );
+      if (data.source_id) {
+        item.source_id = data.source_id;
+      }
+      return data.source_id || null;
+    };
+
+    const openModal = async (item) => {
+      if (!modal || !modalContent) return;
+      let template = null;
+      let prefix = '';
+      if (item.source_module === 'blog') {
+        template = blogTemplate;
+        prefix = 'modal-blog';
+      } else if (item.source_module === 'note') {
+        template = noteTemplate;
+        prefix = 'modal-note';
+      } else if (item.source_module === 'everyday') {
+        template = dailyreelTemplate;
+      }
+      if (!template) {
+        showModalMessage('No preview available.');
+        modal.hidden = false;
+        document.body.classList.add('modal-open');
+        return;
+      }
+      modalContent.innerHTML = '';
+      modalContent.appendChild(template.content.cloneNode(true));
+      modal.hidden = false;
+      document.body.classList.add('modal-open');
+
+      try {
+        if (item.source_module === 'blog' || item.source_module === 'note') {
+          const sourceId = await resolveSourceId(item);
+          if (!sourceId) {
+            showModalMessage('Source entry not found.');
+            return;
+          }
+          await renderMarkdownWindow(item.source_module, sourceId, prefix, modalContent);
+          return;
+        }
+        if (item.source_module === 'everyday') {
+          const dateStr = item.source_id;
+          if (!dateStr) {
+            showModalMessage('Missing daily reel date.');
+            return;
+          }
+          const titleEl = qs('#modal-dailyreel-title', modalContent);
+          if (titleEl) {
+            titleEl.textContent = dateStr;
+          }
+          const reelEl = qs('#modal-dailyreel-window', modalContent);
+          if (reelEl) {
+            reelEl.innerHTML = '<div class="card placeholder">Loading reel...</div>';
+          }
+          const data = await apiFetch(`/api/everyday/day?date=${dateStr}`);
+          if (reelEl) {
+            renderReelWindow(data.entry || {}, reelEl);
+          }
+        }
+      } catch (err) {
+        showModalMessage(err.message);
+      }
+    };
+
     const buildCard = (item) => {
-      const wrapper = document.createElement('div');
+      const wrapper = document.createElement('button');
+      wrapper.type = 'button';
       wrapper.className = 'album-item';
+      wrapper.setAttribute('aria-label', 'Open attachment preview');
       const card = document.createElement('article');
       card.className = 'album-card';
       const preview = document.createElement('div');
@@ -1171,6 +1283,7 @@
             { once: true }
           );
         }
+        img.addEventListener('load', () => resizeGridItem(wrapper), { once: true });
         preview.appendChild(img);
       } else if (resolvedType === 'video') {
         if (videoPreviewUrl) {
@@ -1178,6 +1291,7 @@
           img.alt = displayName || item.uuid;
           img.decoding = 'async';
           img.src = videoPreviewUrl;
+          img.addEventListener('load', () => resizeGridItem(wrapper), { once: true });
           preview.appendChild(img);
         } else {
           const fallback = document.createElement('div');
@@ -1212,55 +1326,12 @@
       strong.textContent = resolvedType || item.media_type;
       meta.appendChild(strong);
       meta.append(` - ${item.source_module} - ${displayName || item.uuid}`);
-      const fileLink = document.createElement('a');
-      fileLink.className = 'text-link';
-      fileLink.href = item.url;
-      fileLink.target = '_blank';
-      fileLink.rel = 'noopener';
-      fileLink.textContent = 'Open file';
-
       body.appendChild(meta);
-      body.appendChild(fileLink);
-      if (item.source_link) {
-        const sourceLink = document.createElement('a');
-        sourceLink.className = 'text-link';
-        sourceLink.href = item.source_link;
-        sourceLink.textContent = 'Open source';
-        body.appendChild(sourceLink);
-      } else if (item.source_module === 'blog' || item.source_module === 'note') {
-        const sourceBtn = document.createElement('button');
-        sourceBtn.className = 'text-link';
-        sourceBtn.type = 'button';
-        sourceBtn.textContent = 'Find source';
-        sourceBtn.addEventListener('click', async () => {
-          const existing = sourceBtn.dataset.sourceLink;
-          if (existing) {
-            window.open(existing, '_blank', 'noopener');
-            return;
-          }
-          sourceBtn.textContent = 'Searching...';
-          sourceBtn.disabled = true;
-          try {
-            const data = await apiFetch(
-              `/api/album/source?module=${item.source_module}&uuid=${encodeURIComponent(item.uuid)}`
-            );
-            if (data.source_link) {
-              sourceBtn.dataset.sourceLink = data.source_link;
-              sourceBtn.textContent = 'Open source';
-            } else {
-              sourceBtn.textContent = 'No source found';
-            }
-          } catch (err) {
-            sourceBtn.textContent = err.message;
-          } finally {
-            sourceBtn.disabled = false;
-          }
-        });
-        body.appendChild(sourceBtn);
-      }
       card.appendChild(preview);
       card.appendChild(body);
       wrapper.appendChild(card);
+      wrapper.addEventListener('click', () => openModal(item));
+      requestAnimationFrame(() => resizeGridItem(wrapper));
       return wrapper;
     };
 
@@ -1274,6 +1345,7 @@
       }
       const nodes = items.map((item) => buildCard(item));
       nodes.forEach((node) => grid.appendChild(node));
+      requestAnimationFrame(() => resizeAllGridItems());
     };
 
     const showEmpty = (message) => {
@@ -1287,7 +1359,6 @@
       if (reset) {
         offset = 0;
         hasMore = true;
-        limit = readLimit();
         resetGrid();
       }
       loading = true;
@@ -1325,6 +1396,14 @@
       loadBtn.addEventListener('click', () => loadAlbum(true));
     }
 
+    if (moduleSelect) {
+      moduleSelect.addEventListener('change', () => loadAlbum(true));
+    }
+
+    if (typeSelect) {
+      typeSelect.addEventListener('change', () => loadAlbum(true));
+    }
+
     if (moreBtn) {
       moreBtn.addEventListener('click', () => loadAlbum());
     }
@@ -1345,6 +1424,22 @@
       moreBtn.hidden = false;
     }
 
+    if (modal) {
+      modal.addEventListener('click', (event) => {
+        if (event.target && event.target.matches('[data-modal-close]')) {
+          closeModal();
+        }
+      });
+    }
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        closeModal();
+      }
+    });
+
+    window.addEventListener('resize', () => resizeAllGridItems());
+
     loadAlbum(true);
   };
 
@@ -1353,7 +1448,7 @@
   if (page === 'home') initHome();
   if (page === 'blog') initMarkdownPage('blog');
   if (page === 'note') initMarkdownPage('note');
-  if (page === 'everyday-manage') initEverydayManage();
-  if (page === 'everyday-view') initEverydayView();
-  if (page === 'album') initAlbum();
+  if (page === 'dailyreel-manage') initEverydayManage();
+  if (page === 'dailyreel-view') initEverydayView();
+  if (page === 'everyday') initAlbum();
 })();

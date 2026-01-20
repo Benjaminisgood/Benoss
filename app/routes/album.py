@@ -31,7 +31,7 @@ def _build_source_link(module: str, source_id: str) -> str:
     if module == "note":
         return f"/note?key={source_id}"
     if module == "everyday":
-        return f"/everyday?date={source_id}"
+        return f"/dailyreel/view?date={source_id}"
     return ""
 
 

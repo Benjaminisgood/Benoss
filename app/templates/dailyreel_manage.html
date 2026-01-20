@@ -2,7 +2,7 @@
 {% block content %}
 <section class="hero hero--page">
   <div>
-    <p class="hero-kicker">Everyday manage</p>
+    <p class="hero-kicker">Daily reel studio</p>
     <h1>Compose the daily reel.</h1>
     <p class="hero-sub">Upload text, images, audio, and video. Reels are assembled on the fly.</p>
   </div>
@@ -60,7 +60,8 @@
     <div class="attachment-strip" id="everyday-attachments"></div>
     <div class="reel-panel" id="everyday-reel">
       <h3>Reel window</h3>
-      <div class="reel-window-shell" id="everyday-reel-window"></div>
+      {% set reel_window_id = 'everyday-reel-window' %}
+      {% include "dailyreel_window.html" %}
     </div>
   </article>
 </section>
