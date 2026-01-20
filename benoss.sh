@@ -1,24 +1,25 @@
 #!/usr/bin/env bash
-# benoss: manage Benoss Flask/Gunicorn service on Linux servers (e.g., Alibaba Cloud ECS)
+# benoss: manage Benoss Flask/Gunicorn service (local or server)
 # Usage: benoss {start|stop|status|restart|ip|logs|check}
 #
 # Notes:
 # - Keep all ports in one place (PORTS section)
-# - Project path default: /ben/Benoss (override with BENOSS_PROJECT_PATH env var)
+# - Project path default: this script's directory (override with BENOSS_PROJECT_PATH)
 # - Uses a PID file + lock to avoid double-start
-# - Writes logs to /var/log/benoss by default (override with BENOSS_LOG_DIR)
+# - Runtime/log dirs default to .run/ and logs/ under the project (override with BENOSS_RUNTIME_DIR/BENOSS_LOG_DIR)
 #
 set -Eeuo pipefail
 
 ########################################
 # Paths
 ########################################
-PROJECT_PATH="${BENOSS_PROJECT_PATH:-/ben/Benoss}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_PATH="${BENOSS_PROJECT_PATH:-$SCRIPT_DIR}"
 VENV_PATH="${BENOSS_VENV_PATH:-$PROJECT_PATH/.venv}"
 
-# Runtime dirs (server-friendly defaults)
-RUNTIME_DIR="${BENOSS_RUNTIME_DIR:-/var/run/benoss}"
-LOG_DIR="${BENOSS_LOG_DIR:-/var/log/benoss}"
+# Runtime dirs (local-friendly defaults)
+RUNTIME_DIR="${BENOSS_RUNTIME_DIR:-$PROJECT_PATH/.run}"
+LOG_DIR="${BENOSS_LOG_DIR:-$PROJECT_PATH/logs}"
 
 PID_FILE="${BENOSS_PID_FILE:-$RUNTIME_DIR/benoss.pid}"
 LOCK_FILE="${BENOSS_LOCK_FILE:-$RUNTIME_DIR/benoss.lock}"
@@ -62,7 +63,8 @@ need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Missing command: $1"; }
 ensure_dirs() {
   # Create runtime/log dirs with safe permissions
   umask 027
-  mkdir -p "$RUNTIME_DIR" "$LOG_DIR"
+  mkdir -p "$RUNTIME_DIR" "$LOG_DIR" || die "Cannot create runtime/log dirs. Set BENOSS_RUNTIME_DIR/BENOSS_LOG_DIR to writable paths."
+  [[ -w "$RUNTIME_DIR" && -w "$LOG_DIR" ]] || die "Runtime/log dirs not writable. Set BENOSS_RUNTIME_DIR/BENOSS_LOG_DIR to writable paths."
 }
 
 python_bin() {
@@ -75,6 +77,50 @@ gunicorn_bin() {
   local g="$VENV_PATH/bin/gunicorn"
   [[ -x "$g" ]] || die "Gunicorn not found at $g (pip install gunicorn in venv)"
   echo "$g"
+}
+
+acquire_lock() {
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$LOCK_FILE"
+    if ! flock -n 9; then
+      die "Another benoss command is running (lock: $LOCK_FILE)"
+    fi
+    return 0
+  fi
+
+  # Fallback for macOS (no flock): mkdir lock with PID
+  local lock_dir="${LOCK_FILE}.d"
+  if mkdir "$lock_dir" 2>/dev/null; then
+    echo "$$" > "$lock_dir/pid"
+    return 0
+  fi
+
+  local lock_pid=""
+  if [[ -f "$lock_dir/pid" ]]; then
+    lock_pid="$(cat "$lock_dir/pid" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$lock_pid" ]] || ! kill -0 "$lock_pid" 2>/dev/null; then
+    rm -f "$lock_dir/pid" 2>/dev/null || true
+    rmdir "$lock_dir" 2>/dev/null || true
+    if mkdir "$lock_dir" 2>/dev/null; then
+      echo "$$" > "$lock_dir/pid"
+      return 0
+    fi
+  fi
+
+  die "Another benoss command is running (lock: $LOCK_FILE)"
+}
+
+release_lock() {
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>&- || true
+    return 0
+  fi
+
+  local lock_dir="${LOCK_FILE}.d"
+  rm -f "$lock_dir/pid" 2>/dev/null || true
+  rmdir "$lock_dir" 2>/dev/null || true
 }
 
 is_running() {
@@ -148,6 +194,7 @@ cmd_check() {
   g="$(gunicorn_bin)"
 
   info "Project: $PROJECT_PATH"
+  info "Runtime: $RUNTIME_DIR"
   info "Python:  $py"
   info "Gunicorn:$g"
   info "Bind:    $BIND_HOST:$APP_PORT"
@@ -168,13 +215,12 @@ cmd_start() {
   g="$(gunicorn_bin)"
 
   # Ensure single start via lock
-  exec 9>"$LOCK_FILE"
-  if ! flock -n 9; then
-    die "Another benoss command is running (lock: $LOCK_FILE)"
-  fi
+  acquire_lock
+  trap 'release_lock' EXIT
 
   if is_running; then
     ok "Already running (PID=$(cat "$PID_FILE"))"
+    release_lock
     return 0
   fi
 
@@ -224,6 +270,8 @@ cmd_start() {
     ip="${line#*: }"
     [[ -n "${ip:-}" ]] && echo "   - $iface: http://$ip:${APP_PORT}"
   done < "$INFO_FILE"
+
+  release_lock
 }
 
 cmd_stop() {
