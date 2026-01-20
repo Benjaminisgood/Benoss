@@ -240,9 +240,76 @@
 
   const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-  const applyAttachmentRefs = (content, attachments) => {
+  const parseWikiRef = (value) => {
+    if (!value) return { path: '', label: '' };
+    let raw = value.trim();
+    let label = '';
+    const pipeIndex = raw.indexOf('|');
+    if (pipeIndex !== -1) {
+      label = raw.slice(pipeIndex + 1).trim();
+      raw = raw.slice(0, pipeIndex).trim();
+    }
+    const hashIndex = raw.indexOf('#');
+    if (hashIndex !== -1) {
+      raw = raw.slice(0, hashIndex).trim();
+    }
+    const queryIndex = raw.indexOf('?');
+    if (queryIndex !== -1) {
+      raw = raw.slice(0, queryIndex).trim();
+    }
+    return { path: raw, label };
+  };
+
+  const normalizeRelativePath = (path) => {
+    if (!path) return '';
+    const parts = path.split('/').filter((part) => part && part !== '.');
+    const out = [];
+    for (const part of parts) {
+      if (part === '..') return '';
+      out.push(part);
+    }
+    return out.join('/');
+  };
+
+  const resolveMarkdownKey = (path, baseKey) => {
+    if (!path) return '';
+    let normalized = path.replace(/\\/g, '/').trim();
+    if (!normalized) return '';
+    if (normalized.startsWith('/')) {
+      normalized = normalized.replace(/^\/+/, '');
+    } else if (normalized.startsWith('./')) {
+      const baseDir = baseKey ? baseKey.split('/').slice(0, -1).join('/') : '';
+      normalized = baseDir ? `${baseDir}/${normalized.slice(2)}` : normalized.slice(2);
+    }
+    normalized = normalizeRelativePath(normalized);
+    return normalized;
+  };
+
+  const applyMarkdownDocLinks = (content, options = {}) => {
+    const moduleName = options.moduleName || '';
+    if (!moduleName) return content;
+    const baseKey = options.baseKey || '';
+    return content.replace(/\[\[([^\]]+)\]\]/g, (match, inner, offset, source) => {
+      if (offset > 0 && source[offset - 1] === '!') return match;
+      const parsed = parseWikiRef(inner);
+      const path = parsed.path || '';
+      if (!path) return match;
+      const lower = path.toLowerCase();
+      if (lower.startsWith('http://') || lower.startsWith('https://') || lower.startsWith('data:')) {
+        return match;
+      }
+      if (!lower.endsWith('.md')) return match;
+      const key = resolveMarkdownKey(path, baseKey);
+      if (!key) return match;
+      const label = parsed.label || path;
+      const href = `/${moduleName}?key=${encodeURIComponent(key)}`;
+      return `[${label}](${href})`;
+    });
+  };
+
+  const applyAttachmentRefs = (content, attachments, options = {}) => {
     if (!attachments || !attachments.length) {
-      return content;
+      return applyMarkdownDocLinks(content, options);
     }
     let result = content;
     attachments.forEach((att) => {
@@ -269,7 +336,7 @@
       );
       result = result.replace(new RegExp(`\\(${escaped}\\)`, 'g'), `(${att.url})`);
     });
-    return result;
+    return applyMarkdownDocLinks(result, options);
   };
 
   const renderAttachmentStrip = (container, attachments, options = {}) => {
@@ -349,7 +416,10 @@
       contentEl.innerHTML = '<p class="muted">Loading...</p>';
     }
     const data = await apiFetch(`/api/${moduleName}/item?key=${encodeURIComponent(key)}`);
-    const content = applyAttachmentRefs(data.content || '', data.attachments || []);
+    const content = applyAttachmentRefs(data.content || '', data.attachments || [], {
+      moduleName,
+      baseKey: data.key || key,
+    });
     renderMarkdown(content, contentEl);
     if (titleEl) titleEl.textContent = data.title || key;
     if (metaEl) metaEl.textContent = data.key || key;
