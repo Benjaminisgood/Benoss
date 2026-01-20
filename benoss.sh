@@ -1,3 +1,4 @@
+#接下来给benoss.sh的每一行代码后面都加上详细的对代码讲解的注释，帮助不懂bash语法规则的小白进行理解和学习。重复出现的语法酌情讲解，重复出现的重点可以在最开始一起讲解。指令的缩写需要给我其缩写的理由以方便理解和记忆，每一行都要注释！不许偷懒，也不能影响这个sh文件的正常功能，一行行的改，我要看到每一行的修改前后对比。完成注释后删去此行。
 #!/usr/bin/env bash
 # benoss: manage Benoss Flask/Gunicorn service (local or server)
 # Usage: benoss {start|stop|status|restart|ip|logs|check}
