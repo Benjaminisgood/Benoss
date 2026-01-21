@@ -1,7 +1,7 @@
 #接下来给benoss.sh的每一行代码后面都加上详细的对代码讲解的注释，帮助不懂bash语法规则的小白进行理解和学习。重复出现的语法酌情讲解，重复出现的重点可以在最开始一起讲解。指令的缩写需要给我其缩写的理由以方便理解和记忆，每一行都要注释！不许偷懒，也不能影响这个sh文件的正常功能，一行行的改，我要看到每一行的修改前后对比。完成注释后删去此行。
 #!/usr/bin/env bash
 # benoss: manage Benoss Flask/Gunicorn service (local or server)
-# Usage: benoss {start|stop|status|restart|ip|logs|check}
+# Usage: benoss {start|stop|status|restart|ip|logs|check|update}
 #
 # Notes:
 # - Keep all ports in one place (PORTS section)
@@ -53,6 +53,14 @@ GUNICORN_PRELOAD="${GUNICORN_PRELOAD:-0}"   # 1 to enable, 0 to disable
 APP_MODULE="${BENOSS_APP_MODULE:-app:create_app()}"
 
 ########################################
+# Update/backup settings
+########################################
+REPO_URL="${BENOSS_REPO_URL:-https://github.com/Benjaminisgood/Benoss.git}"
+BACKUP_ITEMS="${BENOSS_BACKUP_ITEMS:-.env data}"
+DEFAULT_BACKUP_BASE="${HOME:-$PROJECT_PATH}/.benoss-backups"
+BACKUP_BASE="${BENOSS_BACKUP_BASE:-$DEFAULT_BACKUP_BASE}"
+
+########################################
 # Helpers
 ########################################
 die() { echo "❌ $*" >&2; exit 1; }
@@ -60,6 +68,34 @@ info() { echo "ℹ️  $*"; }
 ok() { echo "✅ $*"; }
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Missing command: $1"; }
+
+copy_path() {
+  local src="$1"
+  local dest="$2"
+
+  if [[ -d "$src" ]]; then
+    rm -rf "$dest"
+    mkdir -p "$(dirname "$dest")"
+    cp -R "$src" "$dest"
+  else
+    mkdir -p "$(dirname "$dest")"
+    cp -p "$src" "$dest"
+  fi
+}
+
+is_preserved_rel() {
+  local rel="$1"
+  shift
+  local keep
+
+  for keep in "$@"; do
+    if [[ "$rel" == "$keep" || "$rel" == "$keep/"* ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
 
 ensure_dirs() {
   # Create runtime/log dirs with safe permissions
@@ -165,7 +201,7 @@ get_ips() {
 
 show_help() {
   cat <<EOF
-Usage: $(basename "$0") {start|stop|status|restart|ip|logs|check}
+Usage: $(basename "$0") {start|stop|status|restart|ip|logs|check|update}
 
 Config via env vars:
   BENOSS_PROJECT_PATH=$PROJECT_PATH
@@ -175,9 +211,13 @@ Config via env vars:
   BENOSS_LOG_DIR=$LOG_DIR
   BENOSS_RUNTIME_DIR=$RUNTIME_DIR
   BENOSS_APP_MODULE=$APP_MODULE
+  BENOSS_REPO_URL=$REPO_URL
+  BENOSS_BACKUP_ITEMS=$BACKUP_ITEMS
+  BENOSS_BACKUP_BASE=$BACKUP_BASE
 
 Examples:
   BENOSS_APP_PORT=5004 $(basename "$0") start
+  BENOSS_BACKUP_ITEMS=".env data uploads" $(basename "$0") update
   $(basename "$0") logs
 EOF
 }
@@ -202,6 +242,118 @@ cmd_check() {
   info "Workers: $GUNICORN_WORKERS  Threads: $GUNICORN_THREADS"
   info "Logs:    $LOG_FILE"
   ok "Check passed."
+}
+
+cmd_update() {
+  need_cmd git
+  ensure_dirs
+  [[ -d "$PROJECT_PATH" ]] || die "Project path not found: $PROJECT_PATH"
+
+  acquire_lock
+  trap 'release_lock' EXIT
+
+  local was_running=0
+  if is_running; then
+    was_running=1
+    info "Service is running; stopping for update."
+    cmd_stop
+  fi
+
+  local timestamp backup_dir
+  timestamp="$(date +%Y%m%d-%H%M%S)"
+  backup_dir="${BACKUP_BASE%/}/$timestamp"
+  mkdir -p "$backup_dir" || die "Cannot create backup dir: $backup_dir"
+
+  local -a backup_items=()
+  local item normalized
+  for item in $BACKUP_ITEMS; do
+    normalized="${item#./}"
+    normalized="${normalized%/}"
+    [[ -n "$normalized" ]] || continue
+    if [[ -e "$PROJECT_PATH/$normalized" ]]; then
+      backup_items+=("$normalized")
+    else
+      info "Skip missing path: $normalized"
+    fi
+  done
+
+  if (( ${#backup_items[@]} == 0 )); then
+    die "No backup items found. Set BENOSS_BACKUP_ITEMS to existing paths."
+  fi
+
+  info "Backing up: ${backup_items[*]}"
+  for item in "${backup_items[@]}"; do
+    copy_path "$PROJECT_PATH/$item" "$backup_dir/$item"
+  done
+  ok "Backup saved to $backup_dir"
+
+  local tmp_dir
+  tmp_dir="$(mktemp -d -t benoss-update.XXXXXX)"
+  info "Cloning $REPO_URL"
+  if ! git clone --depth 1 "$REPO_URL" "$tmp_dir"; then
+    rm -rf "$tmp_dir" || true
+    die "Git clone failed."
+  fi
+
+  local -a preserve_items=()
+  preserve_items+=("${backup_items[@]}")
+
+  local rel
+  if [[ "$RUNTIME_DIR" == "$PROJECT_PATH/"* ]]; then
+    rel="${RUNTIME_DIR#$PROJECT_PATH/}"
+    rel="${rel%/}"
+    preserve_items+=("$rel")
+  fi
+  if [[ "$LOG_DIR" == "$PROJECT_PATH/"* ]]; then
+    rel="${LOG_DIR#$PROJECT_PATH/}"
+    rel="${rel%/}"
+    preserve_items+=("$rel")
+  fi
+  if [[ "$BACKUP_BASE" == "$PROJECT_PATH/"* ]]; then
+    rel="${BACKUP_BASE#$PROJECT_PATH/}"
+    rel="${rel%/}"
+    preserve_items+=("$rel")
+  fi
+
+  if command -v rsync >/dev/null 2>&1; then
+    local -a rsync_excludes=()
+    local keep
+    for keep in "${preserve_items[@]}"; do
+      rsync_excludes+=("--exclude=/$keep")
+    done
+    if ! rsync -a --delete "${rsync_excludes[@]}" "$tmp_dir/" "$PROJECT_PATH/"; then
+      rm -rf "$tmp_dir" || true
+      die "Rsync failed."
+    fi
+  else
+    info "rsync not found; replacing files manually."
+    local entry rel_entry
+    shopt -s dotglob nullglob
+    for entry in "$PROJECT_PATH"/*; do
+      rel_entry="${entry#$PROJECT_PATH/}"
+      if is_preserved_rel "$rel_entry" "${preserve_items[@]}"; then
+        continue
+      fi
+      rm -rf "$entry" || die "Failed to remove $entry"
+    done
+    shopt -u dotglob nullglob
+    if ! cp -R "$tmp_dir"/. "$PROJECT_PATH"/; then
+      rm -rf "$tmp_dir" || true
+      die "Copy failed."
+    fi
+  fi
+
+  for item in "${backup_items[@]}"; do
+    copy_path "$backup_dir/$item" "$PROJECT_PATH/$item"
+  done
+
+  rm -rf "$tmp_dir" || true
+
+  if (( was_running )); then
+    info "Service was stopped for update. Run $(basename "$0") start to start again."
+  fi
+
+  ok "Update complete."
 }
 
 cmd_start() {
@@ -367,6 +519,7 @@ case "${1:-}" in
   ip)      cmd_ip ;;
   logs)    cmd_logs ;;
   check)   cmd_check ;;
+  update)  cmd_update ;;
   -h|--help|help|"") show_help ;;
   *) die "Unknown command: $1 (try --help)" ;;
 esac
