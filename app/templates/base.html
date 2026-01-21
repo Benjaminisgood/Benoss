@@ -37,8 +37,8 @@
         <div class="nav-links">
           <a class="nav-link{% if page == 'home' %} is-active{% endif %}" href="{{ url_for('site.home') }}">Home</a>
           <a class="nav-link{% if page == 'blog' %} is-active{% endif %}" href="{{ url_for('site.blog') }}">Blog</a>
-          {% set everyday_active = page == 'everyday' %}
-          <a class="nav-link{% if everyday_active %} is-active{% endif %}" href="{{ url_for('site.everyday') }}">Everyday</a>
+          {% set echoes_active = page == 'echoes' %}
+          <a class="nav-link{% if echoes_active %} is-active{% endif %}" href="{{ url_for('site.everyday') }}">Echoes</a>
           <a class="nav-link{% if page == 'note' %} is-active{% endif %}" href="{{ url_for('site.note') }}">Note</a>
         </div>
         <div class="nav-actions">
@@ -57,7 +57,7 @@
   <footer class="global-footer">
     <div class="footer-inner">
       <span class="footer-brand">Benoss</span>
-      <span class="footer-meta">Blog / Everyday / Note</span>
+      <span class="footer-meta">Blog / Echoes / Note</span>
     </div>
   </footer>
 

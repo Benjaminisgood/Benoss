@@ -28,7 +28,7 @@ def note():
 @site_bp.route("/everyday")
 @login_required()
 def everyday():
-    return render_template("everyday.html", page="everyday", title="Asset Library")
+    return render_template("echoes.html", page="echoes", title="Echoes")
 
 
 @site_bp.route("/dailyreel")

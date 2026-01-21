@@ -1805,5 +1805,5 @@
   if (page === 'note') initMarkdownPage('note');
   if (page === 'dailyreel-manage') initEverydayManage();
   if (page === 'dailyreel-view') initEverydayView();
-  if (page === 'everyday') initAlbum();
+  if (page === 'echoes') initAlbum();
 })();
