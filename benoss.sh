@@ -69,6 +69,57 @@ ok() { echo "✅ $*"; }
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Missing command: $1"; }
 
+prompt_yes_no() {
+  local prompt="$1"
+  local reply=""
+
+  [[ -t 0 ]] || return 1
+  read -r -p "$prompt [y/N] " reply || return 1
+  case "$reply" in
+    [Yy]|[Yy][Ee][Ss]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+host_python_bin() {
+  if command -v python3 >/dev/null 2>&1; then
+    echo "python3"
+    return 0
+  fi
+
+  if command -v python >/dev/null 2>&1; then
+    echo "python"
+    return 0
+  fi
+
+  return 1
+}
+
+create_venv() {
+  local host_py
+  host_py="$(host_python_bin)" || die "Python not found (need python3/python to create venv)."
+
+  info "Creating virtualenv at $VENV_PATH"
+  "$host_py" -m venv "$VENV_PATH" || die "Failed to create venv at $VENV_PATH."
+
+  info "Installing dependencies..."
+  "$VENV_PATH/bin/python" -m pip install -e "$PROJECT_PATH" || die "Dependency install failed."
+}
+
+ensure_venv() {
+  if [[ -x "$VENV_PATH/bin/python" ]]; then
+    return 0
+  fi
+
+  info "Virtualenv not found at $VENV_PATH."
+  if prompt_yes_no "Create a new virtualenv and install dependencies"; then
+    create_venv
+    return 0
+  fi
+
+  die "Venv not found at $VENV_PATH (create it or set BENOSS_VENV_PATH)."
+}
+
 copy_path() {
   local src="$1"
   local dest="$2"
@@ -180,6 +231,52 @@ port_in_use() {
     # best-effort: try /proc (may miss)
     grep -qi ":$(printf '%04X' "$APP_PORT")" /proc/net/tcp 2>/dev/null
   fi
+}
+
+pids_on_port() {
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$APP_PORT" -sTCP:LISTEN -t 2>/dev/null | sort -u
+    return 0
+  fi
+
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp "( sport = :$APP_PORT )" 2>/dev/null \
+      | awk 'NR>1{print}' \
+      | grep -o 'pid=[0-9]\+' \
+      | cut -d= -f2 \
+      | sort -u
+    return 0
+  fi
+
+  return 0
+}
+
+handle_port_conflict() {
+  local -a pids=()
+  local pid
+
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] && pids+=("$pid")
+  done < <(pids_on_port)
+
+  if (( ${#pids[@]} == 0 )); then
+    return 1
+  fi
+
+  info "Port $APP_PORT is in use by PID(s): ${pids[*]}"
+  if ! prompt_yes_no "Force terminate these process(es)"; then
+    return 1
+  fi
+
+  for pid in "${pids[@]}"; do
+    kill -KILL "$pid" 2>/dev/null || true
+  done
+
+  sleep 1
+  port_in_use && return 1
+
+  ok "Port $APP_PORT freed."
+  return 0
 }
 
 get_ips() {
@@ -364,6 +461,7 @@ cmd_start() {
 
   # Basic dependency sanity
   local py g
+  ensure_venv
   py="$(python_bin)"
   g="$(gunicorn_bin)"
 
@@ -378,7 +476,9 @@ cmd_start() {
   fi
 
   if port_in_use; then
-    die "Port $APP_PORT is already in use. Set BENOSS_APP_PORT to another port or stop the conflicting service."
+    if ! handle_port_conflict; then
+      die "Port $APP_PORT is already in use. Set BENOSS_APP_PORT to another port or stop the conflicting service."
+    fi
   fi
 
   # Build gunicorn args
