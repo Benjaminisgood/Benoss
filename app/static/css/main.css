@@ -488,6 +488,18 @@ select.input {
   margin-bottom: 0.8rem;
 }
 
+.field--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.input--checkbox {
+  width: auto;
+  padding: 0;
+  margin: 0;
+}
+
 .button-row {
   display: flex;
   gap: 0.6rem;

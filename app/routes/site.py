@@ -1,4 +1,4 @@
-from flask import Blueprint, g, redirect, render_template, request, url_for
+from flask import Blueprint, g, redirect, render_template, request, session, url_for
 
 from ..models import User
 from ..utils.session_auth import login_required, login_user, logout_user, safe_next_url
@@ -62,20 +62,31 @@ def control_room():
 def login():
     next_url = safe_next_url(request.args.get("next", ""))
     error = None
+    remember_default = True
     if g.get("user"):
         return redirect(next_url or url_for("site.home"))
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
+        remember = request.form.get("remember") == "on"
+        remember_default = remember
         if not username or not password:
             error = "Missing credentials"
         else:
             user = User.query.filter_by(username=username, is_active=True).first()
             if user and user.check_password(password):
                 login_user(user)
+                session.permanent = remember
                 return redirect(next_url or url_for("site.home"))
             error = "Invalid username or password"
-    return render_template("login.html", page="login", title="Login", error=error, next_url=next_url)
+    return render_template(
+        "login.html",
+        page="login",
+        title="Login",
+        error=error,
+        next_url=next_url,
+        remember_default=remember_default,
+    )
 
 
 @site_bp.route("/logout")

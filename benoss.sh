@@ -1,7 +1,7 @@
 #接下来给benoss.sh的每一行代码后面都加上详细的对代码讲解的注释，帮助不懂bash语法规则的小白进行理解和学习。重复出现的语法酌情讲解，重复出现的重点可以在最开始一起讲解。指令的缩写需要给我其缩写的理由以方便理解和记忆，每一行都要注释！不许偷懒，也不能影响这个sh文件的正常功能，一行行的改，我要看到每一行的修改前后对比。完成注释后删去此行。
 #!/usr/bin/env bash
 # benoss: manage Benoss Flask/Gunicorn service (local or server)
-# Usage: benoss {start|stop|status|restart|ip|logs|check|update}
+# Usage: benoss {start|stop|status|restart|ip|logs|check|update|init}
 #
 # Notes:
 # - Keep all ports in one place (PORTS section)
@@ -95,6 +95,10 @@ host_python_bin() {
   return 1
 }
 
+install_deps() {
+  "$VENV_PATH/bin/python" -m pip install -e "$PROJECT_PATH" || die "Dependency install failed."
+}
+
 create_venv() {
   local host_py
   host_py="$(host_python_bin)" || die "Python not found (need python3/python to create venv)."
@@ -103,7 +107,7 @@ create_venv() {
   "$host_py" -m venv "$VENV_PATH" || die "Failed to create venv at $VENV_PATH."
 
   info "Installing dependencies..."
-  "$VENV_PATH/bin/python" -m pip install -e "$PROJECT_PATH" || die "Dependency install failed."
+  install_deps
 }
 
 ensure_venv() {
@@ -118,6 +122,28 @@ ensure_venv() {
   fi
 
   die "Venv not found at $VENV_PATH (create it or set BENOSS_VENV_PATH)."
+}
+
+ensure_deps() {
+  local py="$VENV_PATH/bin/python"
+  local -a missing=()
+  local pkg
+
+  for pkg in gunicorn Flask Flask-SQLAlchemy oss2 python-dotenv; do
+    "$py" -m pip show "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+  done
+
+  if (( ${#missing[@]} == 0 )); then
+    return 0
+  fi
+
+  info "Missing dependencies: ${missing[*]}"
+  if prompt_yes_no "Install dependencies now"; then
+    install_deps
+    return 0
+  fi
+
+  die "Dependencies missing (run $(basename "$0") init or install deps)."
 }
 
 copy_path() {
@@ -298,7 +324,7 @@ get_ips() {
 
 show_help() {
   cat <<EOF
-Usage: $(basename "$0") {start|stop|status|restart|ip|logs|check|update}
+Usage: $(basename "$0") {start|stop|status|restart|ip|logs|check|update|init}
 
 Config via env vars:
   BENOSS_PROJECT_PATH=$PROJECT_PATH
@@ -314,8 +340,11 @@ Config via env vars:
 
 Examples:
   BENOSS_APP_PORT=5004 $(basename "$0") start
+  $(basename "$0") init
   BENOSS_BACKUP_ITEMS=".env data uploads" $(basename "$0") update
   $(basename "$0") logs
+  $(basename "$0") logs --tail 200 --grep ERROR
+  $(basename "$0") logs --rotate
 EOF
 }
 
@@ -462,6 +491,7 @@ cmd_start() {
   # Basic dependency sanity
   local py g
   ensure_venv
+  ensure_deps
   py="$(python_bin)"
   g="$(gunicorn_bin)"
 
@@ -592,6 +622,26 @@ cmd_restart() {
   cmd_start
 }
 
+cmd_init() {
+  ensure_dirs
+  [[ -d "$PROJECT_PATH" ]] || die "Project path not found: $PROJECT_PATH"
+  cd "$PROJECT_PATH"
+
+  ensure_venv
+  ensure_deps
+
+  if [[ ! -f "$PROJECT_PATH/.env" ]]; then
+    info ".env not found. Create it before starting the service."
+  fi
+
+  if prompt_yes_no "Initialize database now (flask init-db)"; then
+    "$VENV_PATH/bin/python" -m flask --app app init-db || die "Database init failed."
+    ok "Database initialized."
+  fi
+
+  ok "Init complete."
+}
+
 cmd_ip() {
   ensure_dirs
   echo "📡 IP addresses:"
@@ -604,8 +654,127 @@ cmd_ip() {
 
 cmd_logs() {
   ensure_dirs
+  local tail_lines=200
+  local mode="follow"
+  local grep_pat=""
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --tail)
+        [[ $# -ge 2 ]] || die "Missing value for --tail"
+        tail_lines="$2"
+        shift 2
+        ;;
+      --follow|-f)
+        mode="follow"
+        shift
+        ;;
+      --print)
+        mode="print"
+        shift
+        ;;
+      --grep)
+        [[ $# -ge 2 ]] || die "Missing value for --grep"
+        grep_pat="$2"
+        shift 2
+        ;;
+      --clear)
+        mode="clear"
+        shift
+        ;;
+      --rotate)
+        mode="rotate"
+        shift
+        ;;
+      --path)
+        mode="path"
+        shift
+        ;;
+      --size)
+        mode="size"
+        shift
+        ;;
+      --help|-h)
+        cat <<EOF
+Usage: $(basename "$0") logs [options]
+  --tail N        Show last N lines (default: 200)
+  --follow, -f    Follow logs (default)
+  --print         Print once and exit
+  --grep PATTERN  Filter output by PATTERN
+  --clear         Truncate log file
+  --rotate        Rotate log file with timestamp
+  --path          Show log file path
+  --size          Show log file size
+EOF
+        return 0
+        ;;
+      *)
+        die "Unknown logs option: $1"
+        ;;
+    esac
+  done
+
+  case "$mode" in
+    path)
+      echo "$LOG_FILE"
+      return 0
+      ;;
+    size)
+      if [[ -f "$LOG_FILE" ]]; then
+        if command -v du >/dev/null 2>&1; then
+          du -h "$LOG_FILE"
+        else
+          wc -c "$LOG_FILE"
+        fi
+      else
+        echo "0 $LOG_FILE"
+      fi
+      return 0
+      ;;
+    clear)
+      : > "$LOG_FILE" || die "Cannot clear log file: $LOG_FILE"
+      ok "Log cleared: $LOG_FILE"
+      return 0
+      ;;
+    rotate)
+      local ts rotated
+      ts="$(date +%Y%m%d-%H%M%S)"
+      rotated="${LOG_FILE}.${ts}"
+      if [[ -f "$LOG_FILE" ]]; then
+        mv "$LOG_FILE" "$rotated" || die "Failed to rotate log to $rotated"
+        : > "$LOG_FILE" || die "Cannot create log file: $LOG_FILE"
+        ok "Log rotated: $rotated"
+      else
+        : > "$LOG_FILE" || die "Cannot create log file: $LOG_FILE"
+        ok "Log created: $LOG_FILE"
+      fi
+      return 0
+      ;;
+  esac
+
   [[ -f "$LOG_FILE" ]] || die "Log file not found: $LOG_FILE"
-  tail -n 200 -f "$LOG_FILE"
+
+  if [[ -n "$grep_pat" ]]; then
+    if command -v rg >/dev/null 2>&1; then
+      if [[ "$mode" == "follow" ]]; then
+        tail -n "$tail_lines" -f "$LOG_FILE" | rg --line-buffered "$grep_pat"
+      else
+        tail -n "$tail_lines" "$LOG_FILE" | rg "$grep_pat"
+      fi
+    else
+      if [[ "$mode" == "follow" ]]; then
+        tail -n "$tail_lines" -f "$LOG_FILE" | grep -E "$grep_pat"
+      else
+        tail -n "$tail_lines" "$LOG_FILE" | grep -E "$grep_pat"
+      fi
+    fi
+  else
+    if [[ "$mode" == "follow" ]]; then
+      tail -n "$tail_lines" -f "$LOG_FILE"
+    else
+      tail -n "$tail_lines" "$LOG_FILE"
+    fi
+  fi
 }
 
 ########################################
@@ -620,6 +789,7 @@ case "${1:-}" in
   logs)    cmd_logs ;;
   check)   cmd_check ;;
   update)  cmd_update ;;
+  init)    cmd_init ;;
   -h|--help|help|"") show_help ;;
   *) die "Unknown command: $1 (try --help)" ;;
 esac

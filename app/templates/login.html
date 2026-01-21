@@ -18,6 +18,10 @@
       <span>Password</span>
       <input class="input" type="password" name="password" autocomplete="current-password" required />
     </label>
+    <label class="field field--inline">
+      <input class="input input--checkbox" type="checkbox" name="remember" {% if remember_default %}checked{% endif %} />
+      <span>Remember me</span>
+    </label>
     <div class="button-row">
       <button class="pill-btn" type="submit">Sign in</button>
     </div>

@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -25,6 +26,9 @@ class Config:
         f"sqlite:///{DATA_DIR / 'benoss.sqlite'}",
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    PERMANENT_SESSION_LIFETIME = timedelta(days=int(_get_env("REMEMBER_DAYS", 30)))
+    SESSION_COOKIE_SAMESITE = _get_env("SESSION_COOKIE_SAMESITE", "Lax")
+    SESSION_COOKIE_SECURE = _get_env("SESSION_COOKIE_SECURE", "0") == "1"
 
     OSS_ENDPOINT = _get_env("ALIYUN_OSS_ENDPOINT")
     OSS_ACCESS_KEY_ID = _get_env("ALIYUN_OSS_ACCESS_KEY_ID")
