@@ -106,6 +106,24 @@ def resolve_attachment_key(module: str, base_rel_key: str, ref: str, check_exist
     raise ValueError("attachment not found")
 
 
+def attachment_key_for_ref(module: str, base_rel_key: str, ref: str) -> str:
+    ref = ref.strip()
+    if not ref:
+        raise ValueError("empty attachment ref")
+
+    if ref.startswith("/"):
+        rel_path = ref.lstrip("/")
+    else:
+        if "/" not in ref and "\\" not in ref:
+            rel_path = ref
+        else:
+            base_dir = posixpath.dirname(base_rel_key)
+            rel_path = posixpath.normpath(posixpath.join(base_dir, ref))
+
+    rel_path = ensure_relative_key(rel_path)
+    return join(module_prefix(module), rel_path)
+
+
 def month_map_key(month: str) -> str:
     parts = month.split("-")
     year = parts[0]

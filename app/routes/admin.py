@@ -1,12 +1,325 @@
-from flask import Blueprint, jsonify, request
+import os
+import re
+from pathlib import Path
+
+from flask import Blueprint, current_app, jsonify, request
 
 from ..extensions import db
 from ..models import FriendLink, QuickLink, User
+from ..oss import delete_object, get_object_text, object_exists, put_object_from_file, put_object_text
 from ..utils.auth import generate_token, require_role
+from ..utils.ids import new_uuid
+from ..utils.markdown import find_attachment_refs
+from ..utils.oss_paths import (
+    attachment_key_for_ref,
+    ensure_relative_key,
+    resolve_attachment_key,
+    resolve_module_key,
+)
 from ..utils.session_auth import login_required
 
 
 admin_bp = Blueprint("admin", __name__)
+
+
+_MD_LINK_RE = re.compile(r'(!?\[[^\]]*\]\()([^)]+)(\))')
+
+
+def _normalize_attachment_ref(ref: str) -> str:
+    ref = ref.strip().strip("\"").strip("'")
+    ref = ref.split("?")[0].split("#")[0]
+    ref = ref.split("|")[0]
+    return ref
+
+
+def _clean_upload_name(filename: str) -> str:
+    if not filename:
+        return ""
+    cleaned = filename.replace("\\", "/").strip()
+    if not cleaned:
+        return ""
+    name = cleaned.split("/")[-1].strip()
+    if name in {"", ".", ".."}:
+        return ""
+    return name
+
+
+def _split_md_target(target: str) -> tuple[str, str, bool]:
+    target = target.strip()
+    if not target:
+        return "", "", False
+    if target[0] == "<" and ">" in target:
+        end = target.find(">")
+        url = target[1:end]
+        rest = target[end + 1 :]
+        return url, rest, True
+    parts = target.split(maxsplit=1)
+    url = parts[0]
+    rest = target[len(url) :]
+    return url, rest, False
+
+
+def _rewrite_attachment_refs(content: str, mapping: dict) -> str:
+    if not mapping:
+        return content
+    updated = content
+    for old_ref, new_ref in mapping.items():
+        pattern = re.compile(rf'(!?\[\[){re.escape(old_ref)}([^\]]*)\]\]')
+        updated = pattern.sub(rf"\1{new_ref}\2]]", updated)
+
+    def _replace_md_target(match: re.Match) -> str:
+        target = match.group(2)
+        url, rest, wrapped = _split_md_target(target)
+        if not url:
+            return match.group(0)
+        normalized = _normalize_attachment_ref(url)
+        new_ref = mapping.get(normalized)
+        if not new_ref:
+            return match.group(0)
+        new_url = f"<{new_ref}>" if wrapped else new_ref
+        return f"{match.group(1)}{new_url}{rest}{match.group(3)}"
+
+    updated = _MD_LINK_RE.sub(_replace_md_target, updated)
+    return updated
+
+
+def _collect_attachment_keys(module: str, rel_key: str, content: str) -> list[str]:
+    keys = []
+    seen_refs = set()
+    seen_keys = set()
+    for candidates in find_attachment_refs(content):
+        for ref in candidates:
+            if ref in seen_refs:
+                break
+            try:
+                att_key = resolve_attachment_key(module, rel_key, ref, check_exists=True)
+            except ValueError:
+                continue
+            if att_key not in seen_keys:
+                keys.append(att_key)
+                seen_keys.add(att_key)
+            seen_refs.add(ref)
+            break
+    return keys
+
+
+def _build_upload_lookup(files) -> tuple[dict, dict]:
+    by_name = {}
+    by_stem = {}
+    for file_obj in files:
+        name = _clean_upload_name(file_obj.filename or "")
+        if not name:
+            continue
+        if name in by_name:
+            raise ValueError(f"duplicate attachment name: {name}")
+        by_name[name] = file_obj
+        stem = Path(name).stem
+        by_stem.setdefault(stem, []).append(name)
+    return by_name, by_stem
+
+
+def _match_upload_ref(ref: str, by_name: dict, by_stem: dict) -> str:
+    base = Path(ref).name
+    if base in by_name:
+        return base
+    if not Path(base).suffix:
+        stem = Path(base).stem
+        names = by_stem.get(stem) or []
+        if len(names) == 1:
+            return names[0]
+    return ""
+
+
+@admin_bp.route("/api/admin/posts", methods=["POST"])
+@require_role("admin")
+def upload_post():
+    module = request.form.get("module", "").strip()
+    if module not in {"blog", "note"}:
+        return jsonify({"error": "invalid module"}), 400
+
+    md_file = request.files.get("markdown")
+    if not md_file or not md_file.filename:
+        return jsonify({"error": "missing markdown file"}), 400
+
+    raw_key = request.form.get("key", "").strip()
+    if raw_key:
+        try:
+            rel_key = ensure_relative_key(raw_key.replace("\\", "/"))
+        except ValueError:
+            return jsonify({"error": "invalid key"}), 400
+    else:
+        filename = _clean_upload_name(md_file.filename or "")
+        if not filename:
+            return jsonify({"error": "missing filename"}), 400
+        rel_key = filename
+
+    if not rel_key.lower().endswith(".md"):
+        return jsonify({"error": "markdown key must end with .md"}), 400
+
+    try:
+        content = md_file.read().decode("utf-8")
+    except UnicodeDecodeError:
+        return jsonify({"error": "markdown must be utf-8"}), 400
+
+    attachments = request.files.getlist("attachments")
+    if not attachments:
+        attachments = request.files.getlist("attachments[]")
+    attachments = [item for item in attachments if item and item.filename]
+
+    try:
+        by_name, by_stem = _build_upload_lookup(attachments)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    ref_to_file = {}
+    missing_refs = []
+    for candidates in find_attachment_refs(content):
+        matched = False
+        for ref in candidates:
+            if ref in ref_to_file:
+                matched = True
+                break
+            file_name = _match_upload_ref(ref, by_name, by_stem)
+            if file_name:
+                ref_to_file[ref] = file_name
+                matched = True
+                break
+        if not matched and candidates:
+            missing_refs.append(candidates[0])
+
+    file_name_map = {}
+    for file_name in set(ref_to_file.values()):
+        ext = os.path.splitext(file_name)[1]
+        file_name_map[file_name] = f"{new_uuid()}{ext}"
+
+    ref_map = {}
+    for ref, file_name in ref_to_file.items():
+        new_name = file_name_map[file_name]
+        if "/" in ref:
+            prefix = ref.rsplit("/", 1)[0]
+            new_ref = f"{prefix}/{new_name}"
+        else:
+            new_ref = new_name
+        ref_map[ref] = new_ref
+
+    updated_content = _rewrite_attachment_refs(content, ref_map)
+
+    upload_targets = {}
+    for ref, file_name in ref_to_file.items():
+        new_ref = ref_map[ref]
+        try:
+            oss_key = attachment_key_for_ref(module, rel_key, new_ref)
+        except ValueError:
+            return jsonify({"error": "invalid attachment path"}), 400
+        existing = upload_targets.get(oss_key)
+        if existing and existing != file_name:
+            return jsonify({"error": "conflicting attachment upload"}), 400
+        upload_targets[oss_key] = file_name
+
+    warnings = []
+    if missing_refs:
+        warnings.append("Missing attachments: " + ", ".join(sorted(set(missing_refs))))
+    unused_files = [name for name in by_name if name not in file_name_map]
+    if unused_files:
+        warnings.append("Unused uploads: " + ", ".join(sorted(unused_files)))
+
+    tmp_dir = Path(current_app.config["UPLOAD_TMP_DIR"])
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    uploaded_keys = []
+    try:
+        for oss_key, file_name in upload_targets.items():
+            file_obj = by_name[file_name]
+            ext = os.path.splitext(file_name)[1]
+            tmp_path = tmp_dir / f"{new_uuid()}{ext}"
+            try:
+                file_obj.save(tmp_path)
+                put_object_from_file(oss_key, str(tmp_path), content_type=file_obj.mimetype or None)
+                uploaded_keys.append(oss_key)
+            finally:
+                tmp_path.unlink(missing_ok=True)
+    except Exception:
+        for key in uploaded_keys:
+            try:
+                delete_object(key)
+            except Exception:
+                current_app.logger.exception("Failed to rollback attachment %s", key)
+        current_app.logger.exception("Failed to upload attachments")
+        return jsonify({"error": "attachment upload failed"}), 500
+
+    md_key = resolve_module_key(module, rel_key)
+    try:
+        put_object_text(md_key, updated_content, content_type="text/markdown; charset=utf-8")
+    except Exception:
+        for key in uploaded_keys:
+            try:
+                delete_object(key)
+            except Exception:
+                current_app.logger.exception("Failed to rollback attachment %s", key)
+        current_app.logger.exception("Failed to upload markdown %s", md_key)
+        return jsonify({"error": "markdown upload failed"}), 500
+
+    return jsonify(
+        {
+            "uploaded": True,
+            "key": rel_key,
+            "attachments_uploaded": len(upload_targets),
+            "warnings": warnings,
+        }
+    )
+
+
+@admin_bp.route("/api/admin/posts", methods=["DELETE"])
+@require_role("admin")
+def delete_post():
+    payload = request.get_json(silent=True) or {}
+    module = str(payload.get("module", "")).strip()
+    rel_key = str(payload.get("key", "")).strip()
+
+    if module not in {"blog", "note"}:
+        return jsonify({"error": "invalid module"}), 400
+    if not rel_key:
+        return jsonify({"error": "missing key"}), 400
+    try:
+        rel_key = ensure_relative_key(rel_key)
+    except ValueError:
+        return jsonify({"error": "invalid key"}), 400
+    if not rel_key.lower().endswith(".md"):
+        return jsonify({"error": "invalid markdown key"}), 400
+
+    md_key = resolve_module_key(module, rel_key)
+    if not object_exists(md_key):
+        return jsonify({"error": "not found"}), 404
+    try:
+        content = get_object_text(md_key)
+    except Exception:
+        current_app.logger.exception("Failed to read markdown %s", md_key)
+        return jsonify({"error": "failed to read markdown"}), 500
+
+    attachment_keys = _collect_attachment_keys(module, rel_key, content)
+    failed = []
+    deleted_count = 0
+    for key in attachment_keys:
+        try:
+            delete_object(key)
+            deleted_count += 1
+        except Exception:
+            failed.append(key)
+            current_app.logger.exception("Failed to delete attachment %s", key)
+
+    try:
+        delete_object(md_key)
+    except Exception:
+        current_app.logger.exception("Failed to delete markdown %s", md_key)
+        return jsonify({"error": "failed to delete markdown"}), 500
+
+    return jsonify(
+        {
+            "deleted": True,
+            "key": rel_key,
+            "attachments_deleted": deleted_count,
+            "attachments_failed": failed,
+        }
+    )
 
 
 @admin_bp.route("/api/admin/login", methods=["POST"])

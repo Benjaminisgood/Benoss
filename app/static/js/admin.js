@@ -178,6 +178,87 @@
     });
   };
 
+  const loadPostList = async (module) => {
+    const container = qs(`#${module}-admin-list`);
+    if (!container) return;
+    const data = await apiFetch(`/api/${module}`);
+    container.innerHTML = '';
+    if (!data.items || data.items.length === 0) {
+      container.innerHTML = `<div class="card placeholder">No ${module} posts yet.</div>`;
+      return;
+    }
+    data.items.forEach((item) => {
+      const row = document.createElement('div');
+      row.className = 'stack-item';
+      const meta = item.key || '';
+      const title = item.title || item.key;
+      row.innerHTML = `<div><strong>${title}</strong><div class="album-meta">${meta}</div></div>`;
+      const del = document.createElement('button');
+      del.textContent = 'Delete';
+      del.addEventListener('click', async () => {
+        if (!window.confirm(`Delete ${title}?`)) return;
+        try {
+          setStatus(`Deleting ${module}...`);
+          await apiFetch('/api/admin/posts', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ module, key: item.key }),
+          });
+          setStatus('Deleted');
+          loadPostList(module);
+        } catch (err) {
+          setStatus(err.message);
+        }
+      });
+      row.appendChild(del);
+      container.appendChild(row);
+    });
+  };
+
+  const bindPostUpload = (module) => {
+    const button = qs(`#${module}-upload`);
+    const mdInput = qs(`#${module}-md`);
+    const attachmentsInput = qs(`#${module}-attachments`);
+    const pathInput = qs(`#${module}-path`);
+    if (!button) return;
+    button.addEventListener('click', async () => {
+      const mdFile = mdInput?.files?.[0] || null;
+      if (!mdFile) {
+        setStatus('Missing markdown file');
+        return;
+      }
+      const formData = new FormData();
+      formData.append('module', module);
+      const customKey = pathInput?.value?.trim() || '';
+      if (customKey) formData.append('key', customKey);
+      formData.append('markdown', mdFile);
+      const attachments = attachmentsInput?.files ? Array.from(attachmentsInput.files) : [];
+      attachments.forEach((file) => {
+        formData.append('attachments', file);
+      });
+      button.disabled = true;
+      button.classList.add('is-busy');
+      setStatus(`Uploading ${module}...`);
+      try {
+        const data = await apiFetch('/api/admin/posts', { method: 'POST', body: formData });
+        if (data.warnings && data.warnings.length) {
+          setStatus(`Upload complete. ${data.warnings.join(' | ')}`);
+        } else {
+          setStatus('Upload complete');
+        }
+        if (pathInput) pathInput.value = '';
+        if (mdInput) mdInput.value = '';
+        if (attachmentsInput) attachmentsInput.value = '';
+        loadPostList(module);
+      } catch (err) {
+        setStatus(err.message);
+      } finally {
+        button.disabled = false;
+        button.classList.remove('is-busy');
+      }
+    });
+  };
+
   const loadAccounts = async () => {
     const descriptionEl = qs('#account-description');
     const listEl = qs('#account-list');
@@ -235,6 +316,8 @@
     await loadQuickLinks();
     await loadFriendLinks();
     await loadUsers();
+    await loadPostList('blog');
+    await loadPostList('note');
   };
 
   const init = async () => {
@@ -248,6 +331,8 @@
     bindFriendAdd();
     bindUserAdd();
     bindAccountSave();
+    bindPostUpload('blog');
+    bindPostUpload('note');
   };
 
   init();

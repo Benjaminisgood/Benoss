@@ -12,10 +12,16 @@
   <aside class="panel control-panel">
     <div class="control-section">
       <div class="panel-head">
+        <h2>Status</h2>
+        <p class="muted">Latest admin action.</p>
+      </div>
+      <div class="status-pill" id="admin-status">Ready</div>
+    </div>
+    <div class="control-section">
+      <div class="panel-head">
         <h2>Accounts</h2>
         <p class="muted">Signed in as {{ current_user.username }} ({{ current_user.role }}).</p>
       </div>
-      <div class="status-pill" id="admin-status">Ready</div>
       <div class="form-stack">
         <label class="field">
           <span>Your description</span>
@@ -115,6 +121,52 @@
           </select>
         </label>
         <button class="pill-btn" id="user-add">Create user</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Blog posts</h2>
+        <p class="muted">Upload markdown with attachments. Attachments are renamed to UUIDs.</p>
+      </div>
+      <div class="stack" id="blog-admin-list"></div>
+      <div class="form-grid">
+        <label class="field">
+          <span>Markdown</span>
+          <input class="input" type="file" id="blog-md" accept=".md,text/markdown" />
+        </label>
+        <label class="field">
+          <span>Attachments</span>
+          <input class="input" type="file" id="blog-attachments" multiple />
+        </label>
+        <label class="field">
+          <span>Path (optional)</span>
+          <input class="input" type="text" id="blog-path" placeholder="folder/post.md" />
+        </label>
+        <button class="pill-btn" id="blog-upload">Upload blog</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Note posts</h2>
+        <p class="muted">Upload markdown with attachments. Attachments are renamed to UUIDs.</p>
+      </div>
+      <div class="stack" id="note-admin-list"></div>
+      <div class="form-grid">
+        <label class="field">
+          <span>Markdown</span>
+          <input class="input" type="file" id="note-md" accept=".md,text/markdown" />
+        </label>
+        <label class="field">
+          <span>Attachments</span>
+          <input class="input" type="file" id="note-attachments" multiple />
+        </label>
+        <label class="field">
+          <span>Path (optional)</span>
+          <input class="input" type="text" id="note-path" placeholder="folder/post.md" />
+        </label>
+        <button class="pill-btn" id="note-upload">Upload note</button>
       </div>
     </section>
   </div>
