@@ -121,7 +121,8 @@ ensure_venv() {
     return 0
   fi
 
-  die "Venv not found at $VENV_PATH (create it or set BENOSS_VENV_PATH)."
+  info "Venv not found at $VENV_PATH. Start/init cancelled (create it or set BENOSS_VENV_PATH)."
+  return 1
 }
 
 ensure_deps() {
@@ -355,7 +356,10 @@ cmd_check() {
   need_cmd bash
   ensure_dirs
   [[ -d "$PROJECT_PATH" ]] || die "Project path not found: $PROJECT_PATH"
-  [[ -d "$VENV_PATH" ]] || die "Venv not found: $VENV_PATH"
+  if ! ensure_venv; then
+    info "Check stopped: no virtualenv available."
+    return 1
+  fi
   local py g
   py="$(python_bin)"
   g="$(gunicorn_bin)"
@@ -490,7 +494,10 @@ cmd_start() {
 
   # Basic dependency sanity
   local py g
-  ensure_venv
+  if ! ensure_venv; then
+    info "Start stopped: virtualenv missing."
+    return 1
+  fi
   ensure_deps
   py="$(python_bin)"
   g="$(gunicorn_bin)"
@@ -627,7 +634,10 @@ cmd_init() {
   [[ -d "$PROJECT_PATH" ]] || die "Project path not found: $PROJECT_PATH"
   cd "$PROJECT_PATH"
 
-  ensure_venv
+  if ! ensure_venv; then
+    info "Init stopped: virtualenv missing."
+    return 1
+  fi
   ensure_deps
 
   if [[ ! -f "$PROJECT_PATH/.env" ]]; then
