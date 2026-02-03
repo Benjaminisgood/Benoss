@@ -25,6 +25,13 @@ A redesigned backend for three modules: blog, note, and everyday. Content lives 
         media/uuid.ext
 ```
 
+## Markdown post layout rules
+- Each post is a directory; the post "key" is the directory name (e.g. `YYYY-MM-DD-name`).
+- The markdown file must be named `index.md`. Lists and detail reads only look for `**/index.md`.
+- Uploads via admin always write to `{module}/{date}-{name}/index.md` and place attachments in the same folder.
+- Attachment filenames do not need to be UUIDs if you upload manually, but the markdown references must match the actual filenames/paths.
+- Non-`index.md` markdown files (for example `{module}/foo.md`) are not listed or readable by the blog/note endpoints.
+
 ## Setup
 1. Create a virtualenv and install deps:
 ```
