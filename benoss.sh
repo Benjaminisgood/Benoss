@@ -31,7 +31,7 @@ INFO_FILE="${BENOSS_INFO_FILE:-$RUNTIME_DIR/ip.info}"
 # Ports (single source of truth)
 ########################################
 # Main HTTP port exposed by Gunicorn
-APP_PORT="${BENOSS_APP_PORT:-5000}"
+APP_PORT="${BENOSS_APP_PORT:-5002}"
 # Bind address (0.0.0.0 for server; change to 127.0.0.1 if you only reverse-proxy locally)
 BIND_HOST="${BENOSS_BIND_HOST:-0.0.0.0}"
 
