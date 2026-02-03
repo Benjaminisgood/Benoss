@@ -56,3 +56,6 @@
 
 # Re-allow env template.
 !**/.env.example
+
+
+data
