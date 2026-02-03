@@ -841,8 +841,8 @@ select.input {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
-  gap: 1.2rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
   align-items: stretch;
 }
 
@@ -992,8 +992,50 @@ select.input {
   border-radius: 16px;
   border: 1px solid var(--border);
   padding: 0.8rem;
-  max-height: 240px;
-  overflow: auto;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.reel-text-body {
+  min-height: 1.2rem;
+}
+
+.reel-text.is-collapsed .reel-text-body {
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-height: 7.5rem;
+}
+
+.reel-text.is-collapsed::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 2.2rem;
+  height: 2rem;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0), #fff 70%);
+  pointer-events: none;
+}
+
+.reel-text-toggle {
+  align-self: flex-start;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04rem;
+  text-transform: uppercase;
+  cursor: pointer;
+  padding: 0;
+}
+
+.reel-text-toggle.is-hidden {
+  display: none;
 }
 
 .reel-audio {

@@ -340,7 +340,7 @@ Config via env vars:
   BENOSS_BACKUP_BASE=$BACKUP_BASE
 
 Examples:
-  BENOSS_APP_PORT=5004 $(basename "$0") start
+  BENOSS_APP_PORT=5002 $(basename "$0") start
   $(basename "$0") init
   BENOSS_BACKUP_ITEMS=".env data uploads" $(basename "$0") update
   $(basename "$0") logs

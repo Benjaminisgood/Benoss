@@ -596,12 +596,28 @@
     copy.appendChild(meta);
 
     const textWrap = document.createElement('div');
-    textWrap.className = 'reel-text markdown-body';
-    if (reelData.text) {
-      renderMarkdown(reelData.text, textWrap);
-    } else {
-      textWrap.innerHTML = '<p class="muted">No text yet.</p>';
+    textWrap.className = 'reel-text is-collapsed';
+    const textBody = document.createElement('div');
+    textBody.className = 'reel-text-body markdown-body';
+    if (container.id) {
+      textBody.id = `${container.id}-text`;
     }
+    if (reelData.text) {
+      renderMarkdown(reelData.text, textBody);
+    } else {
+      textBody.innerHTML = '<p class="muted">No text yet.</p>';
+      textWrap.classList.remove('is-collapsed');
+    }
+    const textToggle = document.createElement('button');
+    textToggle.type = 'button';
+    textToggle.className = 'reel-text-toggle is-hidden';
+    textToggle.textContent = 'More';
+    textToggle.setAttribute('aria-expanded', 'false');
+    if (textBody.id) {
+      textToggle.setAttribute('aria-controls', textBody.id);
+    }
+    textWrap.appendChild(textBody);
+    textWrap.appendChild(textToggle);
     copy.appendChild(textWrap);
 
     let audioEl = null;
@@ -813,6 +829,31 @@
     }
 
     container.appendChild(shell);
+
+    if (reelData.text) {
+      window.requestAnimationFrame(() => {
+        let canExpand = textBody.scrollHeight > textBody.clientHeight + 6;
+        if (textBody.clientHeight === 0) {
+          canExpand = reelData.text.length > 200;
+        }
+        if (!canExpand) {
+          textWrap.classList.remove('is-collapsed');
+          textToggle.classList.add('is-hidden');
+          return;
+        }
+        textToggle.classList.remove('is-hidden');
+        const updateLabel = () => {
+          const isCollapsed = textWrap.classList.contains('is-collapsed');
+          textToggle.textContent = isCollapsed ? 'More' : 'Less';
+          textToggle.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+        };
+        updateLabel();
+        textToggle.addEventListener('click', () => {
+          textWrap.classList.toggle('is-collapsed');
+          updateLabel();
+        });
+      });
+    }
     return reelData;
   };
 

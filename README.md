@@ -38,7 +38,7 @@ python -m flask --app app init-db
 4. Sign in at `/login` using the seeded admin user (from `.env`), then create more users in `/admin`.
 5. Run the app:
 ```
-python -m flask --app app run --host 0.0.0.0 --port 5000 --debug
+python -m flask --app app run --host 0.0.0.0 --port 5002 --debug
 ```
 
 ## UI routes
