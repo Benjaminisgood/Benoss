@@ -127,7 +127,7 @@
     <section class="panel">
       <div class="panel-head">
         <h2>Blog posts</h2>
-        <p class="muted">Upload markdown with attachments. Attachments are renamed to UUIDs.</p>
+        <p class="muted">Uploads are stored as YYYY-MM-DD-name/index.md with UUID attachments.</p>
       </div>
       <div class="stack" id="blog-admin-list"></div>
       <div class="form-grid">
@@ -140,8 +140,8 @@
           <input class="input" type="file" id="blog-attachments" multiple />
         </label>
         <label class="field">
-          <span>Path (optional)</span>
-          <input class="input" type="text" id="blog-path" placeholder="folder/post.md" />
+          <span>Name (optional)</span>
+          <input class="input" type="text" id="blog-path" placeholder="post-name" />
         </label>
         <button class="pill-btn" id="blog-upload">Upload blog</button>
       </div>
@@ -150,7 +150,7 @@
     <section class="panel">
       <div class="panel-head">
         <h2>Note posts</h2>
-        <p class="muted">Upload markdown with attachments. Attachments are renamed to UUIDs.</p>
+        <p class="muted">Uploads are stored as YYYY-MM-DD-name/index.md with UUID attachments.</p>
       </div>
       <div class="stack" id="note-admin-list"></div>
       <div class="form-grid">
@@ -163,8 +163,8 @@
           <input class="input" type="file" id="note-attachments" multiple />
         </label>
         <label class="field">
-          <span>Path (optional)</span>
-          <input class="input" type="text" id="note-path" placeholder="folder/post.md" />
+          <span>Name (optional)</span>
+          <input class="input" type="text" id="note-path" placeholder="post-name" />
         </label>
         <button class="pill-btn" id="note-upload">Upload note</button>
       </div>

@@ -275,13 +275,23 @@
     if (!path) return '';
     let normalized = path.replace(/\\/g, '/').trim();
     if (!normalized) return '';
+    const baseDir = baseKey
+      ? baseKey.toLowerCase().endsWith('.md')
+        ? baseKey.split('/').slice(0, -1).join('/')
+        : baseKey
+      : '';
     if (normalized.startsWith('/')) {
       normalized = normalized.replace(/^\/+/, '');
     } else if (normalized.startsWith('./')) {
-      const baseDir = baseKey ? baseKey.split('/').slice(0, -1).join('/') : '';
       normalized = baseDir ? `${baseDir}/${normalized.slice(2)}` : normalized.slice(2);
     }
     normalized = normalizeRelativePath(normalized);
+    const lower = normalized.toLowerCase();
+    if (lower.endsWith('/index.md')) {
+      normalized = normalized.slice(0, -'/index.md'.length);
+    } else if (lower.endsWith('.md')) {
+      normalized = normalized.slice(0, -3);
+    }
     return normalized;
   };
 

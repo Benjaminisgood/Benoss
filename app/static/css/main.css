@@ -814,10 +814,13 @@ select.input {
 
 .reel-window-shell {
   margin-top: 1rem;
+  max-width: 100%;
 }
 
 .reel-window {
   position: relative;
+  width: 100%;
+  max-width: 100%;
   border-radius: 20px;
   border: 1px solid var(--border);
   background: linear-gradient(140deg, rgba(255, 249, 243, 0.96), rgba(246, 239, 230, 0.94));
@@ -844,6 +847,7 @@ select.input {
   grid-template-columns: minmax(0, 1fr);
   gap: 1rem;
   align-items: stretch;
+  min-width: 0;
 }
 
 .reel-media {
@@ -852,6 +856,7 @@ select.input {
   overflow: hidden;
   background: #161412;
   border: 1px solid rgba(255, 255, 255, 0.4);
+  min-width: 0;
 }
 
 .reel-track {
@@ -978,6 +983,7 @@ select.input {
   display: flex;
   flex-direction: column;
   gap: 0.8rem;
+  min-width: 0;
 }
 
 .reel-meta {
@@ -1000,6 +1006,8 @@ select.input {
 
 .reel-text-body {
   min-height: 1.2rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .reel-text.is-collapsed .reel-text-body {

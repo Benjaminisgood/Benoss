@@ -139,8 +139,13 @@ def find_album_source():
         return jsonify({"error": "missing uuid"}), 400
 
     prefix = blog_prefix() if module == "blog" else note_prefix()
-    for key in list_objects(prefix, suffix=".md"):
+    for key in list_objects(prefix, suffix="index.md"):
         rel = key[len(prefix) + 1 :]
+        if rel == "index.md":
+            continue
+        rel_dir = str(Path(rel).parent)
+        if rel_dir in {"", "."}:
+            continue
         content = get_object_text(key)
         for candidates in find_attachment_refs(content):
             for ref in candidates:
@@ -151,8 +156,8 @@ def find_album_source():
                 if Path(att_key).stem == uuid:
                     return jsonify(
                         {
-                            "source_id": rel,
-                            "source_link": _build_source_link(module, rel),
+                            "source_id": rel_dir,
+                            "source_link": _build_source_link(module, rel_dir),
                         }
                     )
                 break

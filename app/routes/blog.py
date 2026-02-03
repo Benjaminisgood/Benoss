@@ -17,10 +17,15 @@ blog_bp = Blueprint("blog", __name__)
 def list_blog():
     prefix = blog_prefix()
     items = []
-    for key in list_objects(prefix, suffix=".md"):
+    for key in list_objects(prefix, suffix="index.md"):
         rel = key[len(prefix) + 1 :]
-        title = os.path.splitext(os.path.basename(rel))[0]
-        items.append({"key": rel, "title": title})
+        if rel == "index.md":
+            continue
+        rel_dir = os.path.dirname(rel)
+        if not rel_dir:
+            continue
+        title = os.path.basename(rel_dir)
+        items.append({"key": rel_dir, "title": title})
 
     items.sort(key=lambda item: item["key"])
     return jsonify({"items": items})
@@ -37,10 +42,13 @@ def get_blog_item():
         rel_key = ensure_relative_key(rel_key)
     except ValueError:
         return jsonify({"error": "invalid key"}), 400
+    if rel_key.lower().endswith(".md"):
+        return jsonify({"error": "invalid key"}), 400
 
-    key = resolve_module_key("blog", rel_key)
+    md_rel_key = os.path.join(rel_key, "index.md")
+    key = resolve_module_key("blog", md_rel_key)
     content = get_object_text(key)
-    title = extract_title(content, os.path.splitext(os.path.basename(rel_key))[0])
+    title = extract_title(content, os.path.basename(rel_key))
 
     attachments = []
     seen_refs = set()
@@ -49,7 +57,7 @@ def get_blog_item():
             if ref in seen_refs:
                 break
             try:
-                att_key = resolve_attachment_key("blog", rel_key, ref, check_exists=True)
+                att_key = resolve_attachment_key("blog", md_rel_key, ref, check_exists=True)
             except ValueError:
                 continue
             media_type = media_type_for_path(att_key)

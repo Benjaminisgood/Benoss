@@ -11,11 +11,13 @@ A redesigned backend for three modules: blog, note, and everyday. Content lives 
 ```
 {OSS_PREFIX}/
   blog/
-    .../*.md
-    .../uuid.ext
+    YYYY-MM-DD-name/
+      index.md
+      uuid.ext
   note/
-    .../*.md
-    .../uuid.ext
+    YYYY-MM-DD-name/
+      index.md
+      uuid.ext
   everyday/
     YYYY/
       MM/

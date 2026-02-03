@@ -1,5 +1,7 @@
 import os
 import re
+from datetime import datetime
+import posixpath
 from pathlib import Path
 
 from flask import Blueprint, current_app, jsonify, request
@@ -44,6 +46,15 @@ def _clean_upload_name(filename: str) -> str:
     return name
 
 
+def _normalize_post_slug(value: str) -> str:
+    name = _clean_upload_name(value)
+    if not name:
+        return ""
+    if name.lower().endswith(".md"):
+        name = name[: -len(".md")]
+    return name.strip()
+
+
 def _split_md_target(target: str) -> tuple[str, str, bool]:
     target = target.strip()
     if not target:
@@ -83,7 +94,7 @@ def _rewrite_attachment_refs(content: str, mapping: dict) -> str:
     return updated
 
 
-def _collect_attachment_keys(module: str, rel_key: str, content: str) -> list[str]:
+def _collect_attachment_keys(module: str, base_rel_key: str, content: str) -> list[str]:
     keys = []
     seen_refs = set()
     seen_keys = set()
@@ -92,7 +103,7 @@ def _collect_attachment_keys(module: str, rel_key: str, content: str) -> list[st
             if ref in seen_refs:
                 break
             try:
-                att_key = resolve_attachment_key(module, rel_key, ref, check_exists=True)
+                att_key = resolve_attachment_key(module, base_rel_key, ref, check_exists=True)
             except ValueError:
                 continue
             if att_key not in seen_keys:
@@ -143,18 +154,19 @@ def upload_post():
 
     raw_key = request.form.get("key", "").strip()
     if raw_key:
-        try:
-            rel_key = ensure_relative_key(raw_key.replace("\\", "/"))
-        except ValueError:
-            return jsonify({"error": "invalid key"}), 400
+        slug = _normalize_post_slug(raw_key.replace("\\", "/"))
     else:
-        filename = _clean_upload_name(md_file.filename or "")
-        if not filename:
-            return jsonify({"error": "missing filename"}), 400
-        rel_key = filename
+        slug = _normalize_post_slug(md_file.filename or "")
+    if not slug:
+        return jsonify({"error": "missing post name"}), 400
 
-    if not rel_key.lower().endswith(".md"):
-        return jsonify({"error": "markdown key must end with .md"}), 400
+    date_prefix = datetime.now().strftime("%Y-%m-%d")
+    rel_key = f"{date_prefix}-{slug}"
+    try:
+        rel_key = ensure_relative_key(rel_key)
+    except ValueError:
+        return jsonify({"error": "invalid key"}), 400
+    md_rel_key = posixpath.join(rel_key, "index.md")
 
     try:
         content = md_file.read().decode("utf-8")
@@ -195,12 +207,7 @@ def upload_post():
     ref_map = {}
     for ref, file_name in ref_to_file.items():
         new_name = file_name_map[file_name]
-        if "/" in ref:
-            prefix = ref.rsplit("/", 1)[0]
-            new_ref = f"{prefix}/{new_name}"
-        else:
-            new_ref = new_name
-        ref_map[ref] = new_ref
+        ref_map[ref] = new_name
 
     updated_content = _rewrite_attachment_refs(content, ref_map)
 
@@ -208,7 +215,7 @@ def upload_post():
     for ref, file_name in ref_to_file.items():
         new_ref = ref_map[ref]
         try:
-            oss_key = attachment_key_for_ref(module, rel_key, new_ref)
+            oss_key = attachment_key_for_ref(module, md_rel_key, new_ref)
         except ValueError:
             return jsonify({"error": "invalid attachment path"}), 400
         existing = upload_targets.get(oss_key)
@@ -246,7 +253,7 @@ def upload_post():
         current_app.logger.exception("Failed to upload attachments")
         return jsonify({"error": "attachment upload failed"}), 500
 
-    md_key = resolve_module_key(module, rel_key)
+    md_key = resolve_module_key(module, md_rel_key)
     try:
         put_object_text(md_key, updated_content, content_type="text/markdown; charset=utf-8")
     except Exception:
@@ -283,10 +290,11 @@ def delete_post():
         rel_key = ensure_relative_key(rel_key)
     except ValueError:
         return jsonify({"error": "invalid key"}), 400
-    if not rel_key.lower().endswith(".md"):
-        return jsonify({"error": "invalid markdown key"}), 400
+    if rel_key.lower().endswith(".md"):
+        return jsonify({"error": "invalid key"}), 400
 
-    md_key = resolve_module_key(module, rel_key)
+    md_rel_key = posixpath.join(rel_key, "index.md")
+    md_key = resolve_module_key(module, md_rel_key)
     if not object_exists(md_key):
         return jsonify({"error": "not found"}), 404
     try:
@@ -295,7 +303,7 @@ def delete_post():
         current_app.logger.exception("Failed to read markdown %s", md_key)
         return jsonify({"error": "failed to read markdown"}), 500
 
-    attachment_keys = _collect_attachment_keys(module, rel_key, content)
+    attachment_keys = _collect_attachment_keys(module, md_rel_key, content)
     failed = []
     deleted_count = 0
     for key in attachment_keys:
