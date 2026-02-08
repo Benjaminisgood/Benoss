@@ -2,171 +2,80 @@
 {% block content %}
 <section class="hero hero--page">
   <div>
-    <p class="hero-kicker">Control room</p>
-    <h1>Manage your account and tools.</h1>
-    <p class="hero-sub">Update your profile, review accounts, and handle site settings.</p>
+    <p class="hero-kicker">Control Room</p>
+    <h1>账号与协作</h1>
+    <p class="hero-sub">编辑个人简介，查看其他用户，处理 push 协作请求。</p>
   </div>
 </section>
 
 <section class="control-room{% if current_user.role != 'admin' %} control-room--single{% endif %}">
-  <aside class="panel control-panel">
-    <div class="control-section">
+  <aside class="control-panel">
+    <section class="panel">
       <div class="panel-head">
-        <h2>Status</h2>
-        <p class="muted">Latest admin action.</p>
+        <h2>状态</h2>
+        <p class="muted">最近一次操作结果。</p>
       </div>
-      <div class="status-pill" id="admin-status">Ready</div>
-    </div>
-    <div class="control-section">
+      <div class="status-pill" id="admin-status">就绪</div>
+      <div class="control-actions">
+        <a class="pill-btn ghost" href="{{ url_for('site.logout') }}">退出登录</a>
+      </div>
+    </section>
+
+    <section class="panel">
       <div class="panel-head">
-        <h2>Accounts</h2>
-        <p class="muted">Signed in as {{ current_user.username }} ({{ current_user.role }}).</p>
+        <h2>账号</h2>
+        <p class="muted">当前登录：{{ current_user.username }} ({{ current_user.role }})</p>
       </div>
       <div class="form-stack">
         <label class="field">
-          <span>Your description</span>
-          <textarea class="textarea" id="account-description" rows="4" placeholder="Share a short bio..."></textarea>
+          <span>个人简介</span>
+          <textarea class="textarea" id="account-description" rows="4" placeholder="写点关于你正在学什么..."></textarea>
         </label>
-        <button class="pill-btn" id="account-save">Save description</button>
+        <button class="pill-btn" id="account-save">保存简介</button>
       </div>
-    </div>
-    <div class="control-section">
       <div class="panel-head">
-        <h3>Other accounts</h3>
-        <p class="muted">Browse public descriptions.</p>
+        <h3>其他用户</h3>
+        <p class="muted">浏览公开简介。</p>
       </div>
       <div class="stack account-stack" id="account-list"></div>
-    </div>
-    <div class="control-actions">
-      <a class="pill-btn ghost" href="{{ url_for('site.logout') }}">Log out</a>
-    </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>协作</h2>
+        <p class="muted">等待你同意的 push，以及你发出的 push 请求。</p>
+      </div>
+      <div class="panel-head">
+        <h3>收件箱</h3>
+        <p class="muted">别人 push 到你项目的请求。</p>
+      </div>
+      <div class="stack" id="collab-inbox"></div>
+      <div class="panel-head">
+        <h3>发件箱</h3>
+        <p class="muted">你发出的请求。</p>
+      </div>
+      <div class="stack" id="collab-outbox"></div>
+    </section>
   </aside>
 
   {% if current_user.role == 'admin' %}
   <div class="control-room__main">
     <section class="panel">
       <div class="panel-head">
-        <h2>Quick links</h2>
-        <p class="muted">Homepage shortcuts.</p>
-      </div>
-      <div class="stack" id="quick-links-admin"></div>
-      <div class="form-grid">
-        <label class="field">
-          <span>Title</span>
-          <input class="input" type="text" id="quick-title" />
-        </label>
-        <label class="field">
-          <span>URL</span>
-          <input class="input" type="url" id="quick-url" />
-        </label>
-        <label class="field">
-          <span>Sort</span>
-          <input class="input" type="number" id="quick-sort" value="0" />
-        </label>
-        <button class="pill-btn" id="quick-add">Add link</button>
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Friend links</h2>
-        <p class="muted">External friends and collaborators.</p>
-      </div>
-      <div class="stack" id="friend-links-admin"></div>
-      <div class="form-grid">
-        <label class="field">
-          <span>Title</span>
-          <input class="input" type="text" id="friend-title" />
-        </label>
-        <label class="field">
-          <span>URL</span>
-          <input class="input" type="url" id="friend-url" />
-        </label>
-        <label class="field">
-          <span>Avatar URL</span>
-          <input class="input" type="url" id="friend-avatar" />
-        </label>
-        <label class="field">
-          <span>Description</span>
-          <input class="input" type="text" id="friend-desc" />
-        </label>
-        <label class="field">
-          <span>Sort</span>
-          <input class="input" type="number" id="friend-sort" value="0" />
-        </label>
-        <button class="pill-btn" id="friend-add">Add friend</button>
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Users</h2>
-        <p class="muted">Admin and editor accounts.</p>
+        <h2>用户管理</h2>
+        <p class="muted">创建账号、停用/启用、重置密码。只有自动注册的 admin 可操作。</p>
       </div>
       <div class="stack" id="user-list"></div>
       <div class="form-grid">
         <label class="field">
-          <span>Username</span>
+          <span>用户名</span>
           <input class="input" type="text" id="user-username" />
         </label>
         <label class="field">
-          <span>Password</span>
+          <span>密码</span>
           <input class="input" type="password" id="user-password" />
         </label>
-        <label class="field">
-          <span>Role</span>
-          <select class="input" id="user-role">
-            <option value="user">user</option>
-            <option value="admin">admin</option>
-          </select>
-        </label>
-        <button class="pill-btn" id="user-add">Create user</button>
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Blog posts</h2>
-        <p class="muted">Uploads are stored as YYYY-MM-DD-name/index.md with UUID attachments.</p>
-      </div>
-      <div class="stack" id="blog-admin-list"></div>
-      <div class="form-grid">
-        <label class="field">
-          <span>Markdown</span>
-          <input class="input" type="file" id="blog-md" accept=".md,text/markdown" />
-        </label>
-        <label class="field">
-          <span>Attachments</span>
-          <input class="input" type="file" id="blog-attachments" multiple />
-        </label>
-        <label class="field">
-          <span>Name (optional)</span>
-          <input class="input" type="text" id="blog-path" placeholder="post-name" />
-        </label>
-        <button class="pill-btn" id="blog-upload">Upload blog</button>
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Note posts</h2>
-        <p class="muted">Uploads are stored as YYYY-MM-DD-name/index.md with UUID attachments.</p>
-      </div>
-      <div class="stack" id="note-admin-list"></div>
-      <div class="form-grid">
-        <label class="field">
-          <span>Markdown</span>
-          <input class="input" type="file" id="note-md" accept=".md,text/markdown" />
-        </label>
-        <label class="field">
-          <span>Attachments</span>
-          <input class="input" type="file" id="note-attachments" multiple />
-        </label>
-        <label class="field">
-          <span>Name (optional)</span>
-          <input class="input" type="text" id="note-path" placeholder="post-name" />
-        </label>
-        <button class="pill-btn" id="note-upload">Upload note</button>
+        <button class="pill-btn" id="user-add">创建用户</button>
       </div>
     </section>
   </div>

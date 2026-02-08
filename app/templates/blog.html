@@ -2,27 +2,28 @@
 {% block content %}
 <section class="hero hero--page">
   <div>
-    <p class="hero-kicker">Blog archive</p>
-    <h1>Long-form posts and ideas.</h1>
-    <p class="hero-sub">Markdown sourced directly from OSS, rendered in-place with Obsidian embeds.</p>
+    <p class="hero-kicker">Blog</p>
+    <h1>像 Git 一样 git / clone / share。</h1>
+    <p class="hero-sub">一个项目就是一个“仓库”。上传任何文件，公开项目对所有人可见。</p>
   </div>
   <div class="hero-actions">
-    <button class="pill-btn ghost" data-refresh-list>Refresh list</button>
+    <button class="pill-btn ghost" data-refresh-list>刷新列表</button>
+    <button class="pill-btn" data-project-new>新建项目</button>
   </div>
 </section>
 
 <section class="content-split">
   <aside class="panel panel--list">
     <div class="panel-head">
-      <h2>Posts</h2>
-      <input class="input" type="search" placeholder="Search title" id="blog-search" />
+      <h2>Projects</h2>
+      <input class="input" type="search" placeholder="搜索项目 / 用户" id="blog-search" />
     </div>
     <div class="list-stack" id="blog-list">
-      <div class="card placeholder">Loading blog posts...</div>
+      <div class="card placeholder">Loading projects...</div>
     </div>
   </aside>
 
   {% set window_prefix = 'blog' %}
-  {% include "blog_window.html" %}
+  {% include "project_window.html" %}
 </section>
 {% endblock %}

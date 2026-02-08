@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -10,7 +10,7 @@
   {% block extra_styles %}{% endblock %}
 </head>
 <body data-page="{{ page if page else '' }}">
-  <a class="skip-link" href="#content">Skip to content</a>
+  <a class="skip-link" href="#content">跳到正文</a>
   <div class="background-shell" aria-hidden="true">
     <span class="bg-orb bg-orb--one"></span>
     <span class="bg-orb bg-orb--two"></span>
@@ -35,10 +35,11 @@
 
       <div class="nav-panel" id="nav-panel">
         <div class="nav-links">
-          <a class="nav-link{% if page == 'home' %} is-active{% endif %}" href="{{ url_for('site.home') }}">Home</a>
+          <a class="nav-link{% if page == 'home' %} is-active{% endif %}" href="{{ url_for('site.home') }}">首页</a>
           <a class="nav-link{% if page == 'blog' %} is-active{% endif %}" href="{{ url_for('site.blog') }}">Blog</a>
+          <a class="nav-link{% if page == 'dailyreel' %} is-active{% endif %}" href="{{ url_for('site.dailyreel') }}">Dailyreel</a>
           {% set echoes_active = page == 'echoes' %}
-          <a class="nav-link{% if echoes_active %} is-active{% endif %}" href="{{ url_for('site.everyday') }}">Echoes</a>
+          <a class="nav-link{% if echoes_active %} is-active{% endif %}" href="{{ url_for('site.echoes') }}">Echoes</a>
           <a class="nav-link{% if page == 'note' %} is-active{% endif %}" href="{{ url_for('site.note') }}">Note</a>
         </div>
         <div class="nav-actions">
@@ -57,7 +58,7 @@
   <footer class="global-footer">
     <div class="footer-inner">
       <span class="footer-brand">Benoss</span>
-      <span class="footer-meta">Blog / Echoes / Note</span>
+      <span class="footer-meta">Blog / Dailyreel / Echoes / Note</span>
     </div>
   </footer>
 

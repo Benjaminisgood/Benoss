@@ -40,11 +40,3 @@ class Config:
 
     UPLOAD_TMP_DIR = str(DATA_DIR / "uploads")
     MAX_CONTENT_LENGTH = int(_get_env("MAX_CONTENT_LENGTH", 1024 * 1024 * 1024))
-
-    REEL_RENDERER = _get_env("REEL_RENDERER", "manifest")
-    REEL_DEFAULT_IMAGE_DURATION = float(_get_env("REEL_DEFAULT_IMAGE_DURATION", 2.5))
-
-    EVERYDAY_REINDEX_STATE_FILE = _get_env(
-        "EVERYDAY_REINDEX_STATE_FILE",
-        str(DATA_DIR / "everyday_reindex_state.json"),
-    )

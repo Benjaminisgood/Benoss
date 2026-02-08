@@ -1,0 +1,50 @@
+{% set prefix = window_prefix or 'project' %}
+<article class="panel panel--viewer">
+  <div class="viewer-head">
+    <div class="viewer-head__row">
+      <h2 id="{{ prefix }}-title">选择一个项目</h2>
+      <div class="viewer-actions" id="{{ prefix }}-actions"></div>
+    </div>
+    <div class="viewer-meta" id="{{ prefix }}-meta"></div>
+  </div>
+
+  <div class="project-split">
+    <aside class="project-files">
+      <div class="panel-head">
+        <h3>文件</h3>
+        <p class="muted" id="{{ prefix }}-files-meta"></p>
+      </div>
+      <div class="list-stack" id="{{ prefix }}-files">
+        <div class="card placeholder">选择项目后查看文件列表。</div>
+      </div>
+      <div class="project-uploader" id="{{ prefix }}-uploader" hidden>
+        <label class="field">
+          <span>上传文件</span>
+          <input class="input" type="file" id="{{ prefix }}-upload-input" multiple />
+        </label>
+        <label class="field">
+          <span>上传文件夹</span>
+          <input class="input" type="file" id="{{ prefix }}-upload-folder" webkitdirectory directory multiple />
+        </label>
+        <label class="field">
+          <span>路径前缀 (可选)</span>
+          <input class="input" type="text" id="{{ prefix }}-upload-prefix" placeholder="assets/" />
+        </label>
+        <div class="button-row">
+          <button class="pill-btn" type="button" id="{{ prefix }}-upload-btn">上传</button>
+        </div>
+        <div class="status-pill" id="{{ prefix }}-upload-status">就绪</div>
+      </div>
+    </aside>
+
+    <section class="project-preview">
+      <div class="panel-head">
+        <h3 id="{{ prefix }}-preview-title">预览</h3>
+        <p class="muted" id="{{ prefix }}-preview-meta"></p>
+      </div>
+      <div id="{{ prefix }}-preview">
+        <p class="muted">选择文件进行预览。</p>
+      </div>
+    </section>
+  </div>
+</article>

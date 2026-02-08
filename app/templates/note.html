@@ -2,27 +2,28 @@
 {% block content %}
 <section class="hero hero--page">
   <div>
-    <p class="hero-kicker">Note stack</p>
-    <h1>Short thoughts, captured fast.</h1>
-    <p class="hero-sub">Lightweight markdown pages from OSS, rendered with Obsidian syntax.</p>
+    <p class="hero-kicker">Note</p>
+    <h1>把学习笔记当作项目来管理。</h1>
+    <p class="hero-sub">上传任何文件，项目可私有或公开分享。</p>
   </div>
   <div class="hero-actions">
-    <button class="pill-btn ghost" data-refresh-list>Refresh list</button>
+    <button class="pill-btn ghost" data-refresh-list>刷新列表</button>
+    <button class="pill-btn" data-project-new>新建项目</button>
   </div>
 </section>
 
 <section class="content-split">
   <aside class="panel panel--list">
     <div class="panel-head">
-      <h2>Notes</h2>
-      <input class="input" type="search" placeholder="Search title" id="note-search" />
+      <h2>Projects</h2>
+      <input class="input" type="search" placeholder="搜索项目 / 用户" id="note-search" />
     </div>
     <div class="list-stack" id="note-list">
-      <div class="card placeholder">Loading notes...</div>
+      <div class="card placeholder">Loading projects...</div>
     </div>
   </aside>
 
   {% set window_prefix = 'note' %}
-  {% include "note_window.html" %}
+  {% include "project_window.html" %}
 </section>
 {% endblock %}

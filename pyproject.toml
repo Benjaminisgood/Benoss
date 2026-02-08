@@ -14,7 +14,11 @@ dependencies = [
   "gunicorn>=21.2.0",
   "oss2>=2.18.0",
   "python-dotenv>=1.0.0",
+  "requests>=2.31.0",
 ]
+
+[project.scripts]
+benoss-sync = "app.cli.sync:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

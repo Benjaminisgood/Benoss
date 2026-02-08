@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero hero--page">
+  <div>
+    <p class="hero-kicker">Daily reel</p>
+    <h1>今天的 git 与 clone。</h1>
+    <p class="hero-sub">自动统计 Blog / Note 的发布与克隆，并展示当天所有人的记录。</p>
+  </div>
+  <div class="hero-actions">
+    <button class="pill-btn ghost" data-dailyreel-refresh>刷新</button>
+  </div>
+</section>
+
+<section class="content-split dailyreel-split">
+  <aside class="panel calendar-panel">
+    <div class="calendar-header">
+      <button class="pill-btn ghost" type="button" data-cal-prev>上月</button>
+      <div class="calendar-title" id="dailyreel-month">Loading...</div>
+      <button class="pill-btn ghost" type="button" data-cal-next>下月</button>
+    </div>
+    <div class="calendar-week" aria-hidden="true">
+      <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span>
+    </div>
+    <div class="calendar-grid" id="dailyreel-calendar">
+      <div class="muted">Loading...</div>
+    </div>
+    <div class="button-row">
+      <button class="pill-btn ghost" type="button" data-cal-today>回到今天</button>
+    </div>
+    <p class="muted calendar-hint">高亮表示你在该日有记录。右下角数字为 git 数量（cN 表示 clone）。</p>
+  </aside>
+
+  <div class="dailyreel-main">
+    <section class="section-block">
+      <header class="section-head">
+        <h2>Scoreboard</h2>
+        <p class="muted" id="dailyreel-date">Loading...</p>
+      </header>
+      <div class="panel panel--table">
+        <table class="table" id="dailyreel-scoreboard">
+          <thead>
+            <tr>
+              <th>用户</th>
+              <th>Blog git</th>
+              <th>Note git</th>
+              <th>Clone</th>
+              <th>总计</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td class="muted" colspan="5">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section-block">
+      <header class="section-head">
+        <h2>Day feed</h2>
+        <p class="muted">所选日期的 git 与 clone 记录。</p>
+      </header>
+      <div class="list-stack" id="dailyreel-feed">
+        <div class="card placeholder">Loading activity...</div>
+      </div>
+    </section>
+  </div>
+</section>
+{% endblock %}

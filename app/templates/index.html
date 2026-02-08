@@ -2,23 +2,23 @@
 {% block content %}
 <section class="hero hero--home">
   <div class="hero-content">
-    <p class="hero-kicker">Personal archive, remixed.</p>
-    <h1>Stories, notes, and daily reels in one place.</h1>
-    <p class="hero-sub">Browse markdown posts, dive into notes, and watch each day unfold as a stitched reel.</p>
+    <p class="hero-kicker">一起学习</p>
+    <h1>像 Git 一样的学习项目。</h1>
+    <p class="hero-sub">在 Blog 或 Note 创建项目，上传任何文件，克隆公开项目，并通过同意后的 push 实现协作。</p>
     <div class="hero-actions">
-      <a class="pill-btn" href="{{ url_for('site.blog') }}">Enter Blog</a>
-      <a class="pill-btn" href="{{ url_for('site.dailyreel') }}">Daily Reel</a>
-      <a class="pill-btn" href="{{ url_for('site.note') }}">Enter Note</a>
+      <a class="pill-btn" href="{{ url_for('site.blog') }}">进入 Blog</a>
+      <a class="pill-btn" href="{{ url_for('site.dailyreel') }}">Dailyreel</a>
+      <a class="pill-btn" href="{{ url_for('site.note') }}">进入 Note</a>
     </div>
   </div>
   <div class="hero-card">
     <div class="hero-card-header">
       <span class="dot"></span>
-      <span>Today</span>
+      <span>今天</span>
     </div>
     <div class="hero-card-body" id="today-card">
-      <p class="muted">Load the latest daily reel entry.</p>
-      <button class="text-link" data-today-load>Refresh</button>
+      <p class="muted">加载今日 git / clone 统计。</p>
+      <button class="text-link" data-today-load>刷新</button>
     </div>
   </div>
 </section>
@@ -26,20 +26,53 @@
 <section class="section-block">
   <header class="section-head">
     <h2>Quick Links</h2>
-    <p class="muted">Curated shortcuts from your admin panel.</p>
+    <p class="muted">任何人都可以编辑，改动对所有人持久生效。</p>
   </header>
-  <div class="card-grid" id="quick-links">
-    <div class="card placeholder">No quick links yet.</div>
+  <div class="panel panel--table">
+    <table class="table" id="quick-links-table">
+      <thead>
+        <tr>
+          <th>标题</th>
+          <th>URL</th>
+          <th>排序</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="muted" colspan="4">Loading...</td></tr>
+      </tbody>
+    </table>
+    <div class="form-grid" id="quick-links-form">
+      <label class="field">
+        <span>标题</span>
+        <input class="input" type="text" id="quick-title" placeholder="名字" />
+      </label>
+      <label class="field">
+        <span>URL</span>
+        <input class="input" type="url" id="quick-url" placeholder="https://..." />
+      </label>
+      <label class="field">
+        <span>排序</span>
+        <input class="input" type="number" id="quick-sort" value="0" />
+      </label>
+      <button class="pill-btn" type="button" id="quick-add">添加</button>
+    </div>
   </div>
 </section>
 
 <section class="section-block">
   <header class="section-head">
-    <h2>Friends</h2>
-    <p class="muted">People and places worth revisiting.</p>
+    <h2>公共白板</h2>
+    <p class="muted">持续同步，实时响应。每天自动换新白板。</p>
   </header>
-  <div class="card-grid" id="friend-links">
-    <div class="card placeholder">No friend links yet.</div>
+  <div class="whiteboard-shell">
+    <div class="whiteboard-head">
+      <div class="muted" id="whiteboard-date"></div>
+      <div class="button-row">
+        <button class="pill-btn" type="button" data-whiteboard-add>新增卡片</button>
+      </div>
+    </div>
+    <div class="whiteboard" id="whiteboard"></div>
   </div>
 </section>
 

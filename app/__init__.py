@@ -2,7 +2,6 @@ import os
 
 from dotenv import load_dotenv
 from flask import Flask, g, jsonify
-from sqlalchemy import inspect, text
 
 from .config import Config
 from .extensions import db
@@ -20,7 +19,10 @@ def create_app():
 
     db.init_app(app)
     register_blueprints(app)
-    _ensure_user_description_column(app)
+
+    with app.app_context():
+        db.create_all()
+        _seed_admin()
 
     @app.before_request
     def _attach_user():
@@ -48,24 +50,13 @@ def _seed_admin():
     password = os.environ.get("ADMIN_PASSWORD")
     if not username or not password:
         return
+    username = username.strip()
+    if not username:
+        return
     if User.query.filter_by(username=username).first():
         return
-    user = User(username=username, role="admin")
+    user = User(username=username, role="admin", is_active=True)
     user.set_password(password)
     db.session.add(user)
     db.session.commit()
 
-
-def _ensure_user_description_column(app: Flask) -> None:
-    with app.app_context():
-        inspector = inspect(db.engine)
-        if "user" not in inspector.get_table_names():
-            return
-        columns = {col["name"] for col in inspector.get_columns("user")}
-        if "description" in columns:
-            return
-        if db.engine.dialect.name != "sqlite":
-            app.logger.warning("User description column missing; run manual migration.")
-            return
-        with db.engine.begin() as conn:
-            conn.execute(text('ALTER TABLE "user" ADD COLUMN description TEXT'))

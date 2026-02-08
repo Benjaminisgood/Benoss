@@ -25,31 +25,16 @@ def note():
     return render_template("note.html", page="note", title="Note")
 
 
-@site_bp.route("/everyday")
+@site_bp.route("/echoes")
 @login_required()
-def everyday():
+def echoes():
     return render_template("echoes.html", page="echoes", title="Echoes")
 
 
 @site_bp.route("/dailyreel")
 @login_required()
 def dailyreel():
-    user = g.get("user")
-    if user and user.role == "admin":
-        return redirect(url_for("site.dailyreel_manage"))
-    return redirect(url_for("site.dailyreel_view"))
-
-
-@site_bp.route("/dailyreel/view")
-@login_required()
-def dailyreel_view():
-    return render_template("dailyreel_view.html", page="dailyreel-view", title="Daily Reel")
-
-
-@site_bp.route("/dailyreel/manage")
-@login_required(role="admin")
-def dailyreel_manage():
-    return render_template("dailyreel_manage.html", page="dailyreel-manage", title="Daily Reel Studio")
+    return render_template("dailyreel.html", page="dailyreel", title="Dailyreel")
 
 
 @site_bp.route("/control-room")
@@ -93,3 +78,4 @@ def login():
 def logout():
     logout_user()
     return redirect(url_for("site.login"))
+

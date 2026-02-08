@@ -10,14 +10,12 @@
       if (resp.status === 401) {
         const next = encodeURIComponent(window.location.pathname + window.location.search);
         window.location.href = `/login?next=${next}`;
-        throw new Error('Login required');
+        throw new Error('需要登录');
       }
       let message = `Request failed: ${resp.status}`;
       try {
         const data = await resp.json();
-        if (data && data.error) {
-          message = data.error;
-        }
+        if (data && data.error) message = data.error;
       } catch (err) {
         // ignore
       }
@@ -26,11 +24,28 @@
     return resp.json();
   };
 
+  const formatDate = (date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const formatBytes = (bytes) => {
+    const value = Number(bytes || 0);
+    if (!Number.isFinite(value) || value <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const exp = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024)));
+    const num = value / 1024 ** exp;
+    return `${num.toFixed(num >= 10 || exp === 0 ? 0 : 1)} ${units[exp]}`;
+  };
+
   const MEDIA_EXTS = {
     image: new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg']),
     video: new Set(['.mp4', '.mov', '.webm', '.mkv', '.avi']),
     audio: new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg']),
     pdf: new Set(['.pdf']),
+    text: new Set(['.md', '.markdown', '.txt', '.json', '.yaml', '.yml', '.toml', '.ini', '.csv', '.tsv', '.log']),
   };
 
   const normalizeUrl = (value) => {
@@ -68,23 +83,15 @@
     if (MEDIA_EXTS.video.has(ext)) return 'video';
     if (MEDIA_EXTS.audio.has(ext)) return 'audio';
     if (MEDIA_EXTS.pdf.has(ext)) return 'pdf';
+    if (MEDIA_EXTS.text.has(ext)) return 'text';
     return '';
-  };
-
-  const resolveMediaType = (item, fallback = 'file') => {
-    if (!item) return fallback;
-    const urlType = detectMediaType(
-      normalizeUrl(item.url || item.src || item.oss_key || item.ref || '')
-    );
-    if (urlType) return urlType;
-    return item.media_type || item.type || fallback;
   };
 
   const createPdfCover = (src, opts = {}) => {
     const safeSrc = normalizeUrl(src);
     if (!safeSrc) return null;
     const previewUrl = normalizeUrl(opts.preview);
-    const title = opts.title || opts.alt || 'PDF document';
+    const title = opts.title || opts.alt || 'PDF';
     const asLink = opts.asLink !== false;
     const wrapper = asLink ? document.createElement('a') : document.createElement('div');
     if (asLink) {
@@ -116,23 +123,10 @@
     badge.textContent = 'PDF';
     wrapper.appendChild(badge);
 
-    if (title) {
-      const text = document.createElement('span');
-      text.className = 'pdf-title';
-      text.textContent = title;
-      wrapper.appendChild(text);
-    }
-
-    if (opts.showOpen !== false) {
-      const open = document.createElement('span');
-      open.className = 'pdf-open';
-      open.textContent = 'Open';
-      wrapper.appendChild(open);
-    }
-
-    if (opts.className) {
-      wrapper.className = `${wrapper.className} ${opts.className}`.trim();
-    }
+    const text = document.createElement('span');
+    text.className = 'pdf-title';
+    text.textContent = title;
+    wrapper.appendChild(text);
 
     return wrapper;
   };
@@ -141,7 +135,6 @@
     const safeSrc = normalizeUrl(src);
     if (!safeSrc) return null;
     const resolvedType = type && type !== 'file' ? type : detectMediaType(safeSrc);
-    if (!resolvedType) return null;
     const title = opts.title || '';
     const alt = opts.alt || '';
     const className = opts.className || '';
@@ -174,7 +167,7 @@
         title,
         alt,
         preview: opts.preview,
-        showOpen: true,
+        asLink: true,
       });
     }
 
@@ -189,20 +182,12 @@
     window.marked.setOptions({ breaks: true, mangle: false, headerIds: false });
     const renderer = new window.marked.Renderer();
     renderer.image = (href, title, text) => {
-      let url = href;
-      let resolvedTitle = title || '';
-      let resolvedText = text || '';
-      if (href && typeof href === 'object') {
-        url = href.href || href.url || '';
-        resolvedTitle = href.title || resolvedTitle;
-        resolvedText = href.text || href.alt || resolvedText;
-      }
-      const safeUrl = normalizeUrl(url);
+      const safeUrl = normalizeUrl(href);
       if (!safeUrl) return '';
       const mediaType = detectMediaType(safeUrl) || 'image';
       const node = createMediaNode(mediaType, safeUrl, {
-        title: resolvedTitle || '',
-        alt: resolvedText || '',
+        title: title || '',
+        alt: text || '',
         className: 'markdown-media',
       });
       return node ? node.outerHTML : '';
@@ -231,640 +216,98 @@
     renderMath(container);
   };
 
-  const formatDate = (date) => {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  };
-
-  const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-  const parseWikiRef = (value) => {
-    if (!value) return { path: '', label: '' };
-    let raw = value.trim();
-    let label = '';
-    const pipeIndex = raw.indexOf('|');
-    if (pipeIndex !== -1) {
-      label = raw.slice(pipeIndex + 1).trim();
-      raw = raw.slice(0, pipeIndex).trim();
-    }
-    const hashIndex = raw.indexOf('#');
-    if (hashIndex !== -1) {
-      raw = raw.slice(0, hashIndex).trim();
-    }
-    const queryIndex = raw.indexOf('?');
-    if (queryIndex !== -1) {
-      raw = raw.slice(0, queryIndex).trim();
-    }
-    return { path: raw, label };
-  };
-
-  const normalizeRelativePath = (path) => {
-    if (!path) return '';
-    const parts = path.split('/').filter((part) => part && part !== '.');
-    const out = [];
-    for (const part of parts) {
-      if (part === '..') return '';
-      out.push(part);
-    }
-    return out.join('/');
-  };
-
-  const resolveMarkdownKey = (path, baseKey) => {
-    if (!path) return '';
-    let normalized = path.replace(/\\/g, '/').trim();
-    if (!normalized) return '';
-    const baseDir = baseKey
-      ? baseKey.toLowerCase().endsWith('.md')
-        ? baseKey.split('/').slice(0, -1).join('/')
-        : baseKey
-      : '';
-    if (normalized.startsWith('/')) {
-      normalized = normalized.replace(/^\/+/, '');
-    } else if (normalized.startsWith('./')) {
-      normalized = baseDir ? `${baseDir}/${normalized.slice(2)}` : normalized.slice(2);
-    }
-    normalized = normalizeRelativePath(normalized);
-    const lower = normalized.toLowerCase();
-    if (lower.endsWith('/index.md')) {
-      normalized = normalized.slice(0, -'/index.md'.length);
-    } else if (lower.endsWith('.md')) {
-      normalized = normalized.slice(0, -3);
-    }
-    return normalized;
-  };
-
-  const applyMarkdownDocLinks = (content, options = {}) => {
-    const moduleName = options.moduleName || '';
-    if (!moduleName) return content;
-    const baseKey = options.baseKey || '';
-    return content.replace(/\[\[([^\]]+)\]\]/g, (match, inner, offset, source) => {
-      if (offset > 0 && source[offset - 1] === '!') return match;
-      const parsed = parseWikiRef(inner);
-      const path = parsed.path || '';
-      if (!path) return match;
-      const lower = path.toLowerCase();
-      if (lower.startsWith('http://') || lower.startsWith('https://') || lower.startsWith('data:')) {
-        return match;
-      }
-      if (!lower.endsWith('.md')) return match;
-      const key = resolveMarkdownKey(path, baseKey);
-      if (!key) return match;
-      const label = parsed.label || path;
-      const href = `/${moduleName}?key=${encodeURIComponent(key)}`;
-      return `[${label}](${href})`;
-    });
-  };
-
-  const applyAttachmentRefs = (content, attachments, options = {}) => {
-    if (!attachments || !attachments.length) {
-      return applyMarkdownDocLinks(content, options);
-    }
-    let result = content;
-    attachments.forEach((att) => {
-      if (!att.ref || !att.url) {
+  const normalizeProjectPath = (value) => {
+    if (!value) return '';
+    let raw = String(value).replace(/\\\\/g, '/').trim();
+    if (raw.startsWith('/')) raw = raw.slice(1);
+    raw = raw.split('?')[0].split('#')[0];
+    const pipe = raw.indexOf('|');
+    if (pipe !== -1) raw = raw.slice(0, pipe).trim();
+    if (!raw) return '';
+    const parts = [];
+    raw.split('/').forEach((seg) => {
+      if (!seg || seg === '.') return;
+      if (seg === '..') {
+        parts.pop();
         return;
       }
-      const escaped = escapeRegExp(att.ref);
-      const wikiSuffix = `(?=[#?|\\]])[^\\]]*`;
-      result = result.replace(
-        new RegExp(`!\\[\\[${escaped}${wikiSuffix}\\]\\]`, 'g'),
-        `![](${att.url})`
-      );
-      result = result.replace(
-        new RegExp(`\\[\\[${escaped}${wikiSuffix}\\]\\]`, 'g'),
-        `[${att.ref}](${att.url})`
-      );
-      result = result.replace(
-        new RegExp(`(!\\[${escaped}\\]\\()([^\\s)]+)([^)]*\\))`, 'g'),
-        `$1${att.url}$3`
-      );
-      result = result.replace(
-        new RegExp(`(\\[${escaped}\\]\\()([^\\s)]+)([^)]*\\))`, 'g'),
-        `$1${att.url}$3`
-      );
-      result = result.replace(new RegExp(`\\(${escaped}\\)`, 'g'), `(${att.url})`);
+      parts.push(seg);
     });
-    return applyMarkdownDocLinks(result, options);
+    return parts.join('/');
   };
 
-  const renderAttachmentStrip = (container, attachments, options = {}) => {
-    if (!container) return;
-    const allowDelete = Boolean(options.allowDelete && typeof options.onDelete === 'function');
-    container.innerHTML = '';
-    if (!Array.isArray(attachments) || attachments.length === 0) {
-      return;
-    }
-    attachments.forEach((att) => {
-      const card = document.createElement('div');
-      card.className = 'attachment-card';
-      const label = document.createElement('div');
-      label.className = 'album-meta';
-      const resolvedType = resolveMediaType(att, 'file');
-      label.textContent = resolvedType || 'file';
+  const resolveProjectRel = (baseDir, target) => {
+    const normalized = normalizeProjectPath(target);
+    if (!normalized) return '';
+    if (String(target || '').trim().startsWith('/')) return normalized;
+    const base = normalizeProjectPath(baseDir || '');
+    if (!base) return normalized;
+    return normalizeProjectPath(`${base}/${normalized}`);
+  };
 
-      const mediaNode = createMediaNode(resolvedType, att.url, {
-        alt: getMediaLabel(att) || resolvedType,
-        title: getMediaLabel(att) || '',
-        preview: att.preview_url || '',
-      });
+  const rewriteProjectMarkdown = (text, filesByPath, baseDir) => {
+    if (!text) return '';
+    const map = filesByPath || new Map();
 
-      if (mediaNode) {
-        card.appendChild(mediaNode);
+    const rewriteTarget = (rawTarget) => {
+      let target = String(rawTarget || '').trim();
+      if (!target) return null;
+
+      let wrapped = false;
+      if (target.startsWith('<') && target.includes('>')) {
+        wrapped = true;
+        target = target.slice(1, target.indexOf('>'));
       } else {
-        const link = document.createElement('a');
-        link.href = att.url;
-        link.textContent = getMediaLabel(att) || 'file';
-        link.className = 'text-link';
-        link.target = '_blank';
-        link.rel = 'noopener';
-        card.appendChild(link);
-      }
-      card.appendChild(label);
-      if (allowDelete) {
-        const actions = document.createElement('div');
-        actions.className = 'attachment-actions';
-        const delBtn = document.createElement('button');
-        delBtn.type = 'button';
-        delBtn.className = 'attachment-delete';
-        delBtn.textContent = 'Delete';
-        if (!att || !att.uuid) {
-          delBtn.disabled = true;
-          delBtn.title = 'Missing attachment id';
-        }
-        delBtn.addEventListener('click', async () => {
-          if (!att || !att.uuid) return;
-          const labelText = getMediaLabel(att) || 'this file';
-          if (!window.confirm(`Delete ${labelText}?`)) return;
-          delBtn.disabled = true;
-          delBtn.classList.add('is-busy');
-          delBtn.textContent = 'Deleting...';
-          try {
-            await options.onDelete(att);
-          } catch (err) {
-            window.alert(err.message || 'Failed to delete attachment');
-          } finally {
-            delBtn.disabled = false;
-            delBtn.classList.remove('is-busy');
-            delBtn.textContent = 'Delete';
-          }
-        });
-        actions.appendChild(delBtn);
-        card.appendChild(actions);
-      }
-      container.appendChild(card);
-    });
-  };
-
-  const renderMarkdownWindow = async (moduleName, key, prefix, scope = document) => {
-    const titleEl = qs(`#${prefix}-title`, scope);
-    const metaEl = qs(`#${prefix}-meta`, scope);
-    const contentEl = qs(`#${prefix}-content`, scope);
-    const attachEl = qs(`#${prefix}-attachments`, scope);
-    if (contentEl) {
-      contentEl.innerHTML = '<p class="muted">Loading...</p>';
-    }
-    const data = await apiFetch(`/api/${moduleName}/item?key=${encodeURIComponent(key)}`);
-    const content = applyAttachmentRefs(data.content || '', data.attachments || [], {
-      moduleName,
-      baseKey: data.key || key,
-    });
-    renderMarkdown(content, contentEl);
-    if (titleEl) titleEl.textContent = data.title || key;
-    if (metaEl) metaEl.textContent = data.key || key;
-    renderAttachmentStrip(attachEl, data.attachments);
-    return data;
-  };
-
-  const normalizeMediaType = (item) => {
-    return resolveMediaType(item, '');
-  };
-
-  const getMediaUrl = (item) => {
-    if (!item) return '';
-    return normalizeUrl(item.url || item.src || '');
-  };
-
-  const getMediaLabel = (item) => {
-    if (!item) return '';
-    if (item.caption) return item.caption;
-    if (item.ref) return item.ref;
-    if (item.oss_key) return item.oss_key.split('/').pop();
-    return item.uuid || '';
-  };
-
-  const buildReelData = (entry) => {
-    const safeEntry = entry || {};
-    const attachments = Array.isArray(safeEntry.attachments) ? safeEntry.attachments : [];
-    const reel = safeEntry.reel || {};
-    const text = (reel.text != null ? reel.text : safeEntry.text) || '';
-    let media = Array.isArray(reel.media) ? reel.media : [];
-    let audio = reel.audio || null;
-
-    if (!media.length) {
-      media = attachments.filter((att) => {
-        const mediaType = normalizeMediaType(att);
-        return (mediaType === 'image' || mediaType === 'video') && getMediaUrl(att);
-      });
-    } else {
-      media = media.filter((item) => {
-        const mediaType = normalizeMediaType(item);
-        return (mediaType === 'image' || mediaType === 'video') && getMediaUrl(item);
-      });
-    }
-
-    if (!audio) {
-      audio =
-        attachments.find((att) => normalizeMediaType(att) === 'audio' && getMediaUrl(att)) ||
-        null;
-    } else if (!getMediaUrl(audio)) {
-      audio = null;
-    }
-
-    const documents = attachments.filter((att) => {
-      const mediaType = normalizeMediaType(att);
-      return mediaType === 'pdf' && getMediaUrl(att);
-    });
-
-    const audioTracks = attachments.filter((att) => {
-      const mediaType = normalizeMediaType(att);
-      return mediaType === 'audio' && getMediaUrl(att);
-    });
-
-    const otherFiles = attachments.filter((att) => {
-      const mediaType = normalizeMediaType(att);
-      return (
-        mediaType &&
-        !['image', 'video', 'audio', 'pdf'].includes(mediaType) &&
-        getMediaUrl(att)
-      );
-    });
-
-    return { text, media, audio, documents, audioTracks, otherFiles };
-  };
-
-  const renderReelWindow = (entry, container) => {
-    if (!container) return null;
-    const reelData = buildReelData(entry);
-    const reelMode = container.dataset.reelMode || 'viewer';
-    const hasExtras =
-      (reelData.documents && reelData.documents.length) ||
-      (reelData.audioTracks && reelData.audioTracks.length) ||
-      (reelData.otherFiles && reelData.otherFiles.length);
-    container.innerHTML = '';
-
-    if (!reelData.media.length && !reelData.text && !reelData.audio && !hasExtras) {
-      container.innerHTML = '<div class="card placeholder">No reel moments yet.</div>';
-      return reelData;
-    }
-
-    const shell = document.createElement('div');
-    shell.className = 'reel-window';
-
-    const stage = document.createElement('div');
-    stage.className = 'reel-stage';
-
-    const media = document.createElement('div');
-    media.className = 'reel-media';
-
-    const track = document.createElement('div');
-    track.className = 'reel-track';
-    media.appendChild(track);
-
-    const slides = reelData.media.length ? reelData.media : [{ media_type: 'empty' }];
-    const isMusicOn = Boolean(reelData.audio && getMediaUrl(reelData.audio));
-
-    const emptyMessage = hasExtras
-      ? 'No photos or videos yet. Attachments below.'
-      : 'No photos or videos yet.';
-
-    slides.forEach((item) => {
-      const slide = document.createElement('div');
-      slide.className = 'reel-slide';
-      const mediaType = normalizeMediaType(item);
-      const url = getMediaUrl(item);
-
-      if (!url || mediaType === 'empty') {
-        const placeholder = document.createElement('div');
-        placeholder.className = 'reel-placeholder';
-        placeholder.textContent = emptyMessage;
-        slide.appendChild(placeholder);
-      } else if (mediaType === 'image') {
-        const img = document.createElement('img');
-        img.src = url;
-        img.alt = getMediaLabel(item) || 'image';
-        img.loading = 'lazy';
-        img.decoding = 'async';
-        slide.appendChild(img);
-      } else if (mediaType === 'video') {
-        const video = document.createElement('video');
-        video.src = url;
-        video.controls = true;
-        video.playsInline = true;
-        video.muted = isMusicOn;
-        video.preload = 'metadata';
-        slide.appendChild(video);
-      } else {
-        const fallback = document.createElement('div');
-        fallback.className = 'reel-placeholder';
-        fallback.textContent = getMediaLabel(item) || 'Unsupported media';
-        slide.appendChild(fallback);
+        target = target.split(/\s+/)[0];
       }
 
-      const captionText = item && item.caption != null ? String(item.caption).trim() : '';
-      if (captionText) {
-        const caption = document.createElement('div');
-        caption.className = 'reel-slide-caption';
-        caption.textContent = captionText;
-        slide.appendChild(caption);
+      const lower = target.toLowerCase();
+      if (
+        lower.startsWith('http://') ||
+        lower.startsWith('https://') ||
+        lower.startsWith('data:') ||
+        lower.startsWith('mailto:')
+      ) {
+        return null;
       }
 
-      track.appendChild(slide);
+      const resolved = resolveProjectRel(baseDir, target);
+      if (!resolved) return null;
+      const url = map.get(resolved);
+      if (!url) return null;
+      return wrapped ? `<${url}>` : url;
+    };
+
+    const MD_LINK_RE = /(!?\[[^\]]*\]\()([^)]+)(\))/g;
+    let updated = String(text);
+    updated = updated.replace(MD_LINK_RE, (match, pre, target, post) => {
+      const rewritten = rewriteTarget(target);
+      if (!rewritten) return match;
+      const trimmed = String(target || '').trim();
+      const first = trimmed.startsWith('<')
+        ? trimmed.slice(0, trimmed.indexOf('>') + 1)
+        : trimmed.split(/\s+/)[0];
+      const tail = trimmed.slice(first.length);
+      return `${pre}${rewritten}${tail}${post}`;
     });
 
-    const copy = document.createElement('div');
-    copy.className = 'reel-copy';
-
-    const meta = document.createElement('div');
-    meta.className = 'reel-meta';
-    const formatCount = (count, label) => `${count} ${count === 1 ? label : `${label}s`}`;
-    const mediaCount = reelData.media.length;
-    const docCount = reelData.documents.length;
-    const audioCount = reelData.audioTracks.length;
-    const fileCount = reelData.otherFiles.length;
-    const metaParts = [];
-    if (mediaCount) {
-      metaParts.push(formatCount(mediaCount, 'moment'));
-    } else {
-      metaParts.push('No media yet');
-    }
-    if (docCount) metaParts.push(formatCount(docCount, 'pdf'));
-    if (audioCount) metaParts.push(formatCount(audioCount, 'track'));
-    if (fileCount) metaParts.push(formatCount(fileCount, 'file'));
-    meta.textContent = metaParts.join(' - ');
-    copy.appendChild(meta);
-
-    const textWrap = document.createElement('div');
-    textWrap.className = 'reel-text is-collapsed';
-    const textBody = document.createElement('div');
-    textBody.className = 'reel-text-body markdown-body';
-    if (container.id) {
-      textBody.id = `${container.id}-text`;
-    }
-    if (reelData.text) {
-      renderMarkdown(reelData.text, textBody);
-    } else {
-      textBody.innerHTML = '<p class="muted">No text yet.</p>';
-      textWrap.classList.remove('is-collapsed');
-    }
-    const textToggle = document.createElement('button');
-    textToggle.type = 'button';
-    textToggle.className = 'reel-text-toggle is-hidden';
-    textToggle.textContent = 'More';
-    textToggle.setAttribute('aria-expanded', 'false');
-    if (textBody.id) {
-      textToggle.setAttribute('aria-controls', textBody.id);
-    }
-    textWrap.appendChild(textBody);
-    textWrap.appendChild(textToggle);
-    copy.appendChild(textWrap);
-
-    let audioEl = null;
-    if (reelData.audio && getMediaUrl(reelData.audio)) {
-      const audioWrap = document.createElement('div');
-      audioWrap.className = 'reel-audio';
-      const audioInfo = document.createElement('div');
-      audioInfo.className = 'reel-audio-info';
-      const audioLabel = document.createElement('span');
-      audioLabel.className = 'reel-audio-label';
-      audioLabel.textContent = 'Background music';
-      const audioTitle = document.createElement('span');
-      audioTitle.className = 'reel-audio-title';
-      audioTitle.textContent = getMediaLabel(reelData.audio) || 'Audio track';
-      audioInfo.appendChild(audioLabel);
-      audioInfo.appendChild(audioTitle);
-
-      const audioBtn = document.createElement('button');
-      audioBtn.type = 'button';
-      audioBtn.className = 'reel-audio-btn is-paused';
-      audioBtn.textContent = 'Play';
-
-      audioEl = document.createElement('audio');
-      audioEl.src = getMediaUrl(reelData.audio);
-      audioEl.loop = true;
-      audioEl.preload = 'metadata';
-      audioEl.volume = 0.6;
-
-      const updateAudioState = () => {
-        const playing = !audioEl.paused;
-        audioBtn.textContent = playing ? 'Pause' : 'Play';
-        audioBtn.classList.toggle('is-playing', playing);
-        audioBtn.classList.toggle('is-paused', !playing);
-      };
-
-      audioBtn.addEventListener('click', async () => {
-        if (audioEl.paused) {
-          try {
-            await audioEl.play();
-          } catch (err) {
-            // ignore autoplay block
-          }
-        } else {
-          audioEl.pause();
-        }
-        updateAudioState();
-      });
-
-      audioEl.addEventListener('play', updateAudioState);
-      audioEl.addEventListener('pause', updateAudioState);
-
-      audioWrap.appendChild(audioInfo);
-      audioWrap.appendChild(audioBtn);
-      audioWrap.appendChild(audioEl);
-      copy.appendChild(audioWrap);
-    }
-
-    const shouldShowAudioList =
-      reelData.audioTracks.length > 1 || (!reelData.media.length && reelData.audioTracks.length);
-    const shouldShowAttachments =
-      reelMode !== 'studio' &&
-      (reelData.documents.length || reelData.otherFiles.length || shouldShowAudioList);
-
-    if (shouldShowAttachments) {
-      const attachmentsWrap = document.createElement('div');
-      attachmentsWrap.className = 'reel-attachments';
-      const attachmentsTitle = document.createElement('div');
-      attachmentsTitle.className = 'reel-attachments-title';
-      attachmentsTitle.textContent = 'Attachments';
-      attachmentsWrap.appendChild(attachmentsTitle);
-
-      const attachmentsGrid = document.createElement('div');
-      attachmentsGrid.className = 'reel-grid';
-      attachmentsWrap.appendChild(attachmentsGrid);
-
-      const appendAttachmentItem = (item, label) => {
-        const card = document.createElement('div');
-        card.className = 'reel-item';
-        const tag = document.createElement('span');
-        tag.className = 'tag';
-        tag.textContent = label;
-        card.appendChild(tag);
-
-        const mediaType = normalizeMediaType(item) || 'file';
-        const mediaLabel = getMediaLabel(item) || label;
-        const mediaNode = createMediaNode(mediaType, getMediaUrl(item), {
-          alt: mediaLabel,
-          title: mediaLabel,
-          preview: item.preview_url || '',
-          className: 'reel-item-media',
-        });
-
-        if (mediaNode) {
-          card.appendChild(mediaNode);
-        } else {
-          const link = document.createElement('a');
-          link.href = getMediaUrl(item);
-          link.textContent = mediaLabel || 'Open file';
-          link.className = 'text-link';
-          link.target = '_blank';
-          link.rel = 'noopener';
-          card.appendChild(link);
-        }
-
-        const title = document.createElement('div');
-        title.className = 'reel-item-title';
-        title.textContent = mediaLabel;
-        card.appendChild(title);
-        attachmentsGrid.appendChild(card);
-      };
-
-      reelData.documents.forEach((item) => appendAttachmentItem(item, 'PDF'));
-      if (shouldShowAudioList) {
-        reelData.audioTracks.forEach((item) => appendAttachmentItem(item, 'Audio'));
-      }
-      reelData.otherFiles.forEach((item) => appendAttachmentItem(item, 'File'));
-
-      copy.appendChild(attachmentsWrap);
-    }
-
-    stage.appendChild(media);
-    stage.appendChild(copy);
-    shell.appendChild(stage);
-
-    const slideCount = slides.length;
-    if (slideCount > 1) {
-      const counter = document.createElement('div');
-      counter.className = 'reel-counter';
-      counter.textContent = `1 / ${slideCount}`;
-      media.appendChild(counter);
-
-      const prevBtn = document.createElement('button');
-      prevBtn.type = 'button';
-      prevBtn.className = 'reel-nav reel-nav--prev';
-      prevBtn.textContent = 'Prev';
-      const nextBtn = document.createElement('button');
-      nextBtn.type = 'button';
-      nextBtn.className = 'reel-nav reel-nav--next';
-      nextBtn.textContent = 'Next';
-      media.appendChild(prevBtn);
-      media.appendChild(nextBtn);
-
-      const dots = document.createElement('div');
-      dots.className = 'reel-dots';
-      const dotItems = [];
-      for (let i = 0; i < slideCount; i += 1) {
-        const dot = document.createElement('button');
-        dot.type = 'button';
-        dot.className = 'reel-dot';
-        dot.setAttribute('aria-label', `Go to slide ${i + 1}`);
-        if (i === 0) {
-          dot.classList.add('is-active');
-        }
-        dots.appendChild(dot);
-        dotItems.push(dot);
-        dot.addEventListener('click', () => {
-          track.scrollTo({ left: i * track.clientWidth, behavior: 'smooth' });
-        });
-      }
-      media.appendChild(dots);
-
-      const pauseInactiveVideos = (activeIndex) => {
-        qsa('video', track).forEach((video, index) => {
-          if (index !== activeIndex) {
-            video.pause();
-          }
-        });
-      };
-
-      let activeIndex = 0;
-      let scrollFrame = null;
-      const updateActive = (nextIndex) => {
-        const clamped = Math.max(0, Math.min(slideCount - 1, nextIndex));
-        activeIndex = clamped;
-        dotItems.forEach((dot, index) => dot.classList.toggle('is-active', index === clamped));
-        counter.textContent = `${clamped + 1} / ${slideCount}`;
-        pauseInactiveVideos(clamped);
-      };
-
-      prevBtn.addEventListener('click', () => {
-        track.scrollTo({ left: (activeIndex - 1) * track.clientWidth, behavior: 'smooth' });
-      });
-
-      nextBtn.addEventListener('click', () => {
-        track.scrollTo({ left: (activeIndex + 1) * track.clientWidth, behavior: 'smooth' });
-      });
-
-      track.addEventListener('scroll', () => {
-        if (scrollFrame) return;
-        scrollFrame = window.requestAnimationFrame(() => {
-          const width = track.clientWidth || 1;
-          const nextIndex = Math.round(track.scrollLeft / width);
-          updateActive(nextIndex);
-          scrollFrame = null;
-        });
-      });
-    }
-
-    if (audioEl) {
-      media.addEventListener(
-        'pointerdown',
-        () => {
-          if (audioEl.paused) {
-            audioEl.play().catch(() => {});
-          }
-        },
-        { once: true }
-      );
-    }
-
-    container.appendChild(shell);
-
-    if (reelData.text) {
-      window.requestAnimationFrame(() => {
-        let canExpand = textBody.scrollHeight > textBody.clientHeight + 6;
-        if (textBody.clientHeight === 0) {
-          canExpand = reelData.text.length > 200;
-        }
-        if (!canExpand) {
-          textWrap.classList.remove('is-collapsed');
-          textToggle.classList.add('is-hidden');
-          return;
-        }
-        textToggle.classList.remove('is-hidden');
-        const updateLabel = () => {
-          const isCollapsed = textWrap.classList.contains('is-collapsed');
-          textToggle.textContent = isCollapsed ? 'More' : 'Less';
-          textToggle.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
-        };
-        updateLabel();
-        textToggle.addEventListener('click', () => {
-          textWrap.classList.toggle('is-collapsed');
-          updateLabel();
-        });
-      });
-    }
-    return reelData;
+    updated = updated.replace(/!\[\[([^\]]+)\]\]/g, (match, inner) => {
+      const rewritten = rewriteTarget(inner);
+      if (!rewritten) return match;
+      const resolved = resolveProjectRel(baseDir, inner);
+      const url = map.get(resolved) || '';
+      if (!url) return match;
+      return `![](${url})`;
+    });
+    updated = updated.replace(/\[\[([^\]]+)\]\]/g, (match, inner) => {
+      const rewritten = rewriteTarget(inner);
+      if (!rewritten) return match;
+      const resolved = resolveProjectRel(baseDir, inner);
+      const url = map.get(resolved) || '';
+      if (!url) return match;
+      return `[${inner}](${url})`;
+    });
+    return updated;
   };
 
   const initNav = () => {
@@ -872,96 +315,321 @@
     const panel = qs('#nav-panel');
     if (!toggle || !panel) return;
     toggle.addEventListener('click', () => {
-      const isOpen = panel.classList.toggle('is-open');
-      toggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      const expanded = toggle.getAttribute('aria-expanded') === 'true';
+      toggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+      panel.classList.toggle('is-open', !expanded);
     });
   };
 
-  const initHome = () => {
-    const quickWrap = qs('#quick-links');
-    const friendWrap = qs('#friend-links');
-    const todayBtn = qs('[data-today-load]');
-    const todayCard = qs('#today-card');
+  const renderProjectWindow = async (projectId, prefix, scope = document, opts = {}) => {
+    const titleEl = qs(`#${prefix}-title`, scope);
+    const metaEl = qs(`#${prefix}-meta`, scope);
+    const actionsEl = qs(`#${prefix}-actions`, scope);
+    const filesEl = qs(`#${prefix}-files`, scope);
+    const filesMetaEl = qs(`#${prefix}-files-meta`, scope);
+    const uploaderEl = qs(`#${prefix}-uploader`, scope);
+    const uploadInput = qs(`#${prefix}-upload-input`, scope);
+    const uploadFolder = qs(`#${prefix}-upload-folder`, scope);
+    const uploadPrefixInput = qs(`#${prefix}-upload-prefix`, scope);
+    const uploadBtn = qs(`#${prefix}-upload-btn`, scope);
+    const uploadStatus = qs(`#${prefix}-upload-status`, scope);
+    const previewTitle = qs(`#${prefix}-preview-title`, scope);
+    const previewMeta = qs(`#${prefix}-preview-meta`, scope);
+    const previewEl = qs(`#${prefix}-preview`, scope);
 
-    const loadLinks = async () => {
-      try {
-        const data = await apiFetch('/api/site/links');
-        if (quickWrap) {
-          quickWrap.innerHTML = '';
-          if (!data.quick.length) {
-            quickWrap.innerHTML = '<div class="card placeholder">No quick links yet.</div>';
-          } else {
-            data.quick.forEach((link) => {
-              const card = document.createElement('a');
-              card.className = 'card';
-              card.href = link.url;
-              card.target = '_blank';
-              card.rel = 'noopener';
-              card.innerHTML = `<h3>${link.title}</h3><p class="muted">${link.url}</p>`;
-              quickWrap.appendChild(card);
-            });
-          }
-        }
-        if (friendWrap) {
-          friendWrap.innerHTML = '';
-          if (!data.friends.length) {
-            friendWrap.innerHTML = '<div class="card placeholder">No friend links yet.</div>';
-          } else {
-            data.friends.forEach((link) => {
-              const card = document.createElement('div');
-              card.className = 'card';
-              const avatar = link.avatar_url ? `<img src="${link.avatar_url}" alt="${link.title}" />` : '';
-              card.innerHTML = `${avatar}<h3>${link.title}</h3><p class="muted">${link.description || link.url}</p><a class="text-link" href="${link.url}" target="_blank" rel="noopener">Visit</a>`;
-              friendWrap.appendChild(card);
-            });
-          }
-        }
-      } catch (err) {
-        // ignore for now
-      }
+    const setUploadStatus = (msg) => {
+      if (uploadStatus) uploadStatus.textContent = msg || '';
     };
 
-    const loadToday = async () => {
-      if (!todayCard) return;
-      const date = formatDate(new Date());
-      try {
-        const data = await apiFetch(`/api/everyday/day?date=${date}`);
-        const entry = data.entry || {};
-        const text = entry.text || 'No text yet.';
-        const count = (entry.attachments || []).length;
-        todayCard.innerHTML = `
-          <h3>${date}</h3>
-          <p class="muted">${text.slice(0, 120)}</p>
-          <p class="muted">${count} attachments</p>
-        `;
-      } catch (err) {
-        todayCard.innerHTML = '<p class="muted">Unable to load today.</p>';
-      }
-    };
+    if (filesEl) filesEl.innerHTML = '<div class="card placeholder">Loading...</div>';
+    if (previewEl) previewEl.innerHTML = '<p class="muted">Loading...</p>';
 
-    if (todayBtn) {
-      todayBtn.addEventListener('click', loadToday);
+    const data = await apiFetch(`/api/projects/${projectId}`);
+    const project = data.project || {};
+    const files = Array.isArray(data.files) ? data.files : [];
+    const canEdit = Boolean(project.can_edit);
+
+    if (titleEl) titleEl.textContent = project.title || `Project #${projectId}`;
+    if (metaEl) {
+      const owner = (project.owner && project.owner.username) || '';
+      const vis = project.visibility || 'private';
+      metaEl.textContent = [owner ? `@${owner}` : '', vis].filter(Boolean).join('  ·  ');
     }
 
-    loadLinks();
-    loadToday();
+    const fileUrlByPath = new Map();
+    files.forEach((f) => {
+      if (f && f.path && f.url) {
+        fileUrlByPath.set(normalizeProjectPath(f.path), f.url);
+      }
+    });
+
+    const showPreview = async (file) => {
+      if (!file || !previewEl) return;
+      const path = file.path || '';
+      if (previewTitle) previewTitle.textContent = path || '预览';
+      if (previewMeta) {
+        previewMeta.textContent = `${file.media_type || 'file'}  ·  ${formatBytes(file.size_bytes || 0)}`;
+      }
+      previewEl.innerHTML = '';
+
+      if (file.media_type === 'text') {
+        previewEl.innerHTML = '<div class="card placeholder">Loading text...</div>';
+        try {
+          const data = await apiFetch(
+            `/api/projects/${projectId}/file/text?path=${encodeURIComponent(file.path || '')}`
+          );
+          const text = data.text || '';
+          previewEl.innerHTML = '';
+          const baseDir = normalizeProjectPath(path).split('/').slice(0, -1).join('/');
+          const rewritten = rewriteProjectMarkdown(text, fileUrlByPath, baseDir);
+          if (String(path).toLowerCase().endsWith('.md') || String(path).toLowerCase().endsWith('.markdown')) {
+            const wrap = document.createElement('div');
+            wrap.className = 'markdown-body';
+            previewEl.appendChild(wrap);
+            renderMarkdown(rewritten, wrap);
+          } else {
+            const pre = document.createElement('pre');
+            pre.className = 'code-block';
+            pre.textContent = rewritten;
+            previewEl.appendChild(pre);
+          }
+        } catch (err) {
+          previewEl.innerHTML = `<div class="card placeholder">${err.message}</div>`;
+        }
+        return;
+      }
+
+      const node = createMediaNode(file.media_type || 'file', file.url || '', {
+        alt: path,
+        title: path,
+        preview: file.preview_url || '',
+        className: 'markdown-media',
+      });
+      if (node) {
+        previewEl.appendChild(node);
+      } else {
+        const link = document.createElement('a');
+        link.href = file.url || '#';
+        link.textContent = '下载';
+        link.className = 'text-link';
+        link.target = '_blank';
+        link.rel = 'noopener';
+        previewEl.appendChild(link);
+      }
+
+      const dl = document.createElement('a');
+      dl.href = file.url || '#';
+      dl.textContent = '新标签页打开';
+      dl.className = 'text-link';
+      dl.target = '_blank';
+      dl.rel = 'noopener';
+      previewEl.appendChild(dl);
+    };
+
+    if (actionsEl) {
+      actionsEl.innerHTML = '';
+
+      const addBtn = (label, onClick, cls = 'pill-btn ghost') => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = cls;
+        b.textContent = label;
+        b.addEventListener('click', onClick);
+        actionsEl.appendChild(b);
+      };
+
+      addBtn('Clone', async () => {
+        const title = window.prompt('克隆后的项目名(可选):', `${project.title || 'Project'} (clone)`);
+        const payload = title ? { title } : {};
+        const resp = await apiFetch(`/api/projects/${projectId}/clone`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (resp && resp.project && resp.project.id) {
+          window.location.href = `/${project.module || 'blog'}?project=${resp.project.id}`;
+        }
+      });
+
+      if (canEdit) {
+        addBtn(project.visibility === 'public' ? '设为私有' : '设为公开', async () => {
+          const next = project.visibility === 'public' ? 'private' : 'public';
+          await apiFetch(`/api/projects/${projectId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ visibility: next }),
+          });
+          await renderProjectWindow(projectId, prefix, scope, opts);
+        });
+        addBtn(
+          '删除项目',
+          async () => {
+            if (!window.confirm('删除该项目及其所有文件？')) return;
+            await apiFetch(`/api/projects/${projectId}`, { method: 'DELETE' });
+            window.location.href = window.location.pathname;
+          },
+          'pill-btn ghost danger'
+        );
+      } else {
+        addBtn('Propose push', async () => {
+          const message = window.prompt('留言(可选):', '') || '';
+          const created = await apiFetch(`/api/projects/${projectId}/push-requests`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message }),
+          });
+          const prId = created && created.push_request && created.push_request.id;
+          if (!prId) {
+            window.alert('创建 push request 失败');
+            return;
+          }
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.multiple = true;
+          const isFolder = window.confirm('上传文件夹？(取消=上传文件)');
+          if (isFolder) {
+            input.setAttribute('webkitdirectory', '');
+            input.setAttribute('directory', '');
+          }
+          input.addEventListener(
+            'change',
+            async () => {
+              const selected = Array.from(input.files || []);
+              if (!selected.length) return;
+              const prefixPath = window.prompt('路径前缀(可选):', '') || '';
+              for (const file of selected) {
+                const fd = new FormData();
+                const rel = (file.webkitRelativePath || file.name || '').replace(/\\\\/g, '/');
+                const path = `${prefixPath || ''}${prefixPath && !prefixPath.endsWith('/') ? '/' : ''}${rel}`;
+                fd.append('path', path);
+                fd.append('file', file);
+                await apiFetch(`/api/push-requests/${prId}/files/upload`, { method: 'POST', body: fd });
+              }
+              window.alert('已发送 push 请求，项目拥有者可在 Control Room 中同意。');
+            },
+            { once: true }
+          );
+          input.click();
+        });
+      }
+    }
+
+    if (filesMetaEl) filesMetaEl.textContent = `${files.length} files`;
+
+    if (filesEl) {
+      filesEl.innerHTML = '';
+      if (!files.length) {
+        filesEl.innerHTML = '<div class="card placeholder">No files yet.</div>';
+      } else {
+        files.forEach((file) => {
+          const row = document.createElement('div');
+          row.className = 'stack-item';
+
+          const left = document.createElement('div');
+          const strong = document.createElement('strong');
+          strong.textContent = file.path || 'file';
+          const meta = document.createElement('div');
+          meta.className = 'album-meta';
+          meta.textContent = `${file.media_type || 'file'} · ${formatBytes(file.size_bytes || 0)}`;
+          left.appendChild(strong);
+          left.appendChild(meta);
+          row.appendChild(left);
+
+          const openBtn = document.createElement('button');
+          openBtn.type = 'button';
+          openBtn.className = 'row-btn';
+          openBtn.textContent = '打开';
+          openBtn.addEventListener('click', () => showPreview(file));
+          row.appendChild(openBtn);
+
+          if (canEdit) {
+            const delBtn = document.createElement('button');
+            delBtn.type = 'button';
+            delBtn.className = 'row-btn danger';
+            delBtn.textContent = '删除';
+            delBtn.addEventListener('click', async () => {
+              if (!window.confirm(`删除 ${file.path}？`)) return;
+              await apiFetch(`/api/projects/${projectId}/files`, {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: file.path }),
+              });
+              await renderProjectWindow(projectId, prefix, scope, opts);
+            });
+            row.appendChild(delBtn);
+          }
+
+          filesEl.appendChild(row);
+        });
+      }
+    }
+
+    if (uploaderEl) {
+      uploaderEl.hidden = !canEdit;
+    }
+    if (canEdit && uploadBtn && (uploadInput || uploadFolder)) {
+      uploadBtn.onclick = async () => {
+        const selected = [
+          ...Array.from((uploadInput && uploadInput.files) || []),
+          ...Array.from((uploadFolder && uploadFolder.files) || []),
+        ];
+        if (!selected.length) {
+          setUploadStatus('请选择文件');
+          return;
+        }
+        const prefixValue = (uploadPrefixInput && uploadPrefixInput.value) || '';
+        setUploadStatus('上传中...');
+        try {
+          for (const file of selected) {
+            const fd = new FormData();
+            const rel = (file.webkitRelativePath || file.name || '').replace(/\\\\/g, '/');
+            const base = String(prefixValue || '').trim();
+            const path = `${base || ''}${base && !base.endsWith('/') ? '/' : ''}${rel}`;
+            fd.append('path', path);
+            fd.append('file', file);
+            await apiFetch(`/api/projects/${projectId}/files/upload`, { method: 'POST', body: fd });
+          }
+          setUploadStatus('已上传');
+          if (uploadInput) uploadInput.value = '';
+          if (uploadFolder) uploadFolder.value = '';
+          await renderProjectWindow(projectId, prefix, scope, opts);
+        } catch (err) {
+          setUploadStatus(err.message);
+        }
+      };
+    }
+
+    const preselect = opts && opts.preselectPath ? normalizeProjectPath(opts.preselectPath) : '';
+    if (preselect) {
+      const target = files.find((f) => normalizeProjectPath(f.path) === preselect);
+      if (target) showPreview(target);
+    } else if (files.length) {
+      showPreview(files[0]);
+    } else if (previewEl) {
+      previewEl.innerHTML = '<p class="muted">No files to preview.</p>';
+    }
+
+    return { project, files };
   };
 
-  const initMarkdownPage = (moduleName) => {
+  const initProjectsPage = (moduleName) => {
     const listEl = qs(`#${moduleName}-list`);
     const searchEl = qs(`#${moduleName}-search`);
-    const titleEl = qs(`#${moduleName}-title`);
-    const metaEl = qs(`#${moduleName}-meta`);
-    const contentEl = qs(`#${moduleName}-content`);
-    const attachEl = qs(`#${moduleName}-attachments`);
     const refreshBtn = qs('[data-refresh-list]');
+    const newBtn = qs('[data-project-new]');
 
     let items = [];
+    let selectedId = null;
 
     const renderList = (filter = '') => {
       if (!listEl) return;
       listEl.innerHTML = '';
-      const filtered = items.filter((item) => item.title.toLowerCase().includes(filter.toLowerCase()));
+      const term = (filter || '').toLowerCase();
+      const filtered = items.filter((item) => {
+        const title = String(item.title || '').toLowerCase();
+        const owner = String((item.owner && item.owner.username) || '').toLowerCase();
+        return title.includes(term) || owner.includes(term);
+      });
       if (!filtered.length) {
         listEl.innerHTML = '<div class="card placeholder">No items found.</div>';
         return;
@@ -970,11 +638,15 @@
         const el = document.createElement('button');
         el.type = 'button';
         el.className = 'list-item';
-        el.dataset.key = item.key;
-        el.innerHTML = `<strong>${item.title}</strong><span class="muted">${item.key}</span>`;
-        el.addEventListener('click', () => {
-          loadItem(item.key);
-        });
+        el.dataset.projectId = String(item.id);
+        el.classList.toggle('is-active', selectedId === item.id);
+        const owner = (item.owner && item.owner.username) || '';
+        const vis = item.visibility || 'private';
+        const meta = `${owner ? `@${owner}` : ''}${owner ? '  ·  ' : ''}${vis}${
+          item.file_count != null ? `  ·  ${item.file_count} files` : ''
+        }`;
+        el.innerHTML = `<strong>${item.title || `Project #${item.id}`}</strong><span class="muted">${meta}</span>`;
+        el.addEventListener('click', () => loadItem(item.id));
         listEl.appendChild(el);
       });
     };
@@ -982,516 +654,65 @@
     const loadList = async () => {
       if (!listEl) return;
       listEl.innerHTML = '<div class="card placeholder">Loading...</div>';
-      try {
-        const data = await apiFetch(`/api/${moduleName}`);
-        items = data.items || [];
-        renderList(searchEl ? searchEl.value : '');
-        const params = new URLSearchParams(window.location.search);
-        const preselect = params.get('key');
-        if (preselect) {
-          loadItem(preselect);
-        } else if (items.length) {
-          loadItem(items[0].key);
-        }
-      } catch (err) {
-        listEl.innerHTML = `<div class="card placeholder">${err.message}</div>`;
+      const data = await apiFetch(`/api/projects?module=${encodeURIComponent(moduleName)}`);
+      items = data.items || [];
+      renderList(searchEl ? searchEl.value : '');
+      const params = new URLSearchParams(window.location.search);
+      const preselect = params.get('project');
+      if (preselect) {
+        loadItem(parseInt(preselect, 10));
+      } else if (items.length) {
+        loadItem(items[0].id);
       }
     };
 
-    const loadItem = async (key) => {
-      if (!contentEl) return;
+    const loadItem = async (id) => {
+      if (!id) return;
+      selectedId = id;
       qsa('.list-item', listEl).forEach((el) => {
-        el.classList.toggle('is-active', el.dataset.key === key);
+        el.classList.toggle('is-active', Number(el.dataset.projectId || 0) === Number(id));
       });
       try {
-        await renderMarkdownWindow(moduleName, key, moduleName);
+        await renderProjectWindow(id, moduleName);
         const params = new URLSearchParams(window.location.search);
-        params.set('key', key);
+        params.set('project', String(id));
         history.replaceState(null, '', `${window.location.pathname}?${params}`);
       } catch (err) {
-        contentEl.innerHTML = `<p class="muted">${err.message}</p>`;
+        const filesEl = qs(`#${moduleName}-files`);
+        const previewEl = qs(`#${moduleName}-preview`);
+        if (filesEl) filesEl.innerHTML = `<div class="card placeholder">${err.message}</div>`;
+        if (previewEl) previewEl.innerHTML = `<div class="card placeholder">${err.message}</div>`;
       }
     };
 
     if (searchEl) {
-      searchEl.addEventListener('input', (event) => {
-        renderList(event.target.value);
-      });
+      searchEl.addEventListener('input', (event) => renderList(event.target.value));
     }
-
     if (refreshBtn) {
-      refreshBtn.addEventListener('click', loadList);
+      refreshBtn.addEventListener('click', () => loadList().catch((err) => (listEl.innerHTML = err.message)));
     }
-
-    loadList();
-  };
-
-  const initEverydayManage = () => {
-    const dateInput = qs('#everyday-date');
-    const textInput = qs('#everyday-text');
-    const captionInput = qs('#everyday-caption');
-    const fileInput = qs('#everyday-file');
-    const statusEl = qs('#everyday-status');
-    const dayTitle = qs('#everyday-title');
-    const dayMeta = qs('#everyday-meta');
-    const attachEl = qs('#everyday-attachments');
-    const reelWindow = qs('#everyday-reel-window');
-    const monthList = qs('#everyday-month-list');
-    const monthLabel = qs('#everyday-month-label');
-    const calendarLabel = qs('#calendar-label');
-    const calendarGrid = qs('#calendar-grid');
-    const prevBtn = qs('[data-calendar-prev]');
-    const nextBtn = qs('[data-calendar-next]');
-    const todayBtn = qs('[data-calendar-today]');
-    const saveTextBtn = qs('[data-save-text]');
-    const uploadBtn = qs('[data-upload-file]');
-    const refreshBtn = qs('[data-refresh-day]');
-
-    const state = {
-      current: new Date(),
-      days: {},
-      selected: null,
-    };
-
-    state.current.setDate(1);
-
-    const monthKey = () => {
-      const year = state.current.getFullYear();
-      const month = String(state.current.getMonth() + 1).padStart(2, '0');
-      return `${year}-${month}`;
-    };
-
-    const setStatus = (msg) => {
-      if (statusEl) statusEl.textContent = msg;
-    };
-
-    const updateSelected = (dateStr) => {
-      if (dateInput) dateInput.value = dateStr;
-      state.selected = dateStr;
-    };
-
-    const deleteAttachment = async (attachment) => {
-      if (!attachment || !attachment.uuid) {
-        throw new Error('Missing attachment id');
-      }
-      const dateStr = dateInput ? dateInput.value : '';
-      if (!dateStr) {
-        throw new Error('Missing date');
-      }
-      setStatus('Deleting attachment...');
-      try {
-        const data = await apiFetch('/api/everyday/attachment', {
-          method: 'DELETE',
+    if (newBtn) {
+      newBtn.addEventListener('click', async () => {
+        const title = window.prompt('项目名:');
+        if (!title) return;
+        const isPublic = window.confirm('设为公开？');
+        const resp = await apiFetch('/api/projects', {
+          method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ date: dateStr, uuid: attachment.uuid }),
+          body: JSON.stringify({ module: moduleName, title, visibility: isPublic ? 'public' : 'private' }),
         });
-        renderDay(dateStr, data.entry || {});
-        loadMonth();
-        setStatus('Attachment deleted');
-        return data;
-      } catch (err) {
-        setStatus(err.message);
-        throw err;
-      }
-    };
-
-    const renderDay = (dateStr, entry) => {
-      updateSelected(dateStr);
-      if (dayTitle) dayTitle.textContent = dateStr;
-      const reelData = renderReelWindow(entry, reelWindow);
-      if (dayMeta) {
-        dayMeta.textContent = '';
-      }
-      if (textInput) textInput.value = entry.text || '';
-      renderAttachmentStrip(attachEl, entry.attachments || [], {
-        allowDelete: true,
-        onDelete: deleteAttachment,
-      });
-    };
-
-    const renderMonthList = (days) => {
-      if (!monthList) return;
-      const keys = Object.keys(days).sort();
-      monthList.innerHTML = '';
-      if (!keys.length) {
-        monthList.innerHTML = '<div class="card placeholder">No entries yet.</div>';
-        return;
-      }
-      keys.forEach((key) => {
-        const entry = days[key] || {};
-        const card = document.createElement('button');
-        card.type = 'button';
-        card.className = 'list-item';
-        const snippet = (entry.text || '').slice(0, 60) || 'No text';
-        const count = (entry.attachments || []).length;
-        card.innerHTML = `<strong>${key}</strong><span class="muted">${snippet}</span><span class="muted">${count} attachments</span>`;
-        card.addEventListener('click', () => loadDay(key));
-        monthList.appendChild(card);
-      });
-    };
-
-    const loadDay = async (dateStr) => {
-      if (!dateStr) return;
-      updateSelected(dateStr);
-      setStatus('Loading day...');
-      try {
-        const data = await apiFetch(`/api/everyday/day?date=${dateStr}`);
-        renderDay(dateStr, data.entry || {});
-        setStatus('Loaded');
-        const params = new URLSearchParams(window.location.search);
-        params.set('date', dateStr);
-        history.replaceState(null, '', `${window.location.pathname}?${params}`);
-      } catch (err) {
-        setStatus(err.message);
-      }
-      renderCalendar();
-    };
-
-    const renderCalendar = () => {
-      if (!calendarGrid) return;
-      calendarGrid.innerHTML = '';
-      const year = state.current.getFullYear();
-      const month = state.current.getMonth();
-      const first = new Date(year, month, 1);
-      const startDay = first.getDay();
-      const daysInMonth = new Date(year, month + 1, 0).getDate();
-
-      for (let i = 0; i < startDay; i += 1) {
-        const cell = document.createElement('div');
-        cell.className = 'calendar-day is-muted';
-        cell.textContent = '';
-        calendarGrid.appendChild(cell);
-      }
-
-      for (let day = 1; day <= daysInMonth; day += 1) {
-        const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-        const cell = document.createElement('button');
-        cell.type = 'button';
-        cell.className = 'calendar-day';
-        cell.textContent = String(day);
-        cell.dataset.date = dateStr;
-        if (state.days[dateStr]) {
-          cell.classList.add('has-entry');
-        }
-        if (state.selected === dateStr) {
-          cell.classList.add('is-active');
-        }
-        const today = formatDate(new Date());
-        if (today === dateStr) {
-          cell.classList.add('is-today');
-        }
-        cell.addEventListener('click', () => loadDay(dateStr));
-        calendarGrid.appendChild(cell);
-      }
-    };
-
-    const loadMonth = async () => {
-      const labelText = monthKey();
-      if (calendarLabel) calendarLabel.textContent = labelText;
-      if (monthLabel) monthLabel.textContent = labelText;
-      if (monthList) monthList.innerHTML = '<div class="card placeholder">Loading entries...</div>';
-      try {
-        const data = await apiFetch(`/api/everyday/month?month=${labelText}`);
-        state.days = data.days || {};
-      } catch (err) {
-        state.days = {};
-        if (monthList) {
-          monthList.innerHTML = `<div class="card placeholder">${err.message}</div>`;
-        }
-        renderCalendar();
-        return;
-      }
-      renderCalendar();
-      renderMonthList(state.days);
-    };
-
-    if (prevBtn) {
-      prevBtn.addEventListener('click', () => {
-        state.current.setMonth(state.current.getMonth() - 1);
-        loadMonth();
+        const proj = resp && resp.project;
+        await loadList();
+        if (proj && proj.id) loadItem(proj.id);
       });
     }
 
-    if (nextBtn) {
-      nextBtn.addEventListener('click', () => {
-        state.current.setMonth(state.current.getMonth() + 1);
-        loadMonth();
-      });
-    }
-
-    if (todayBtn) {
-      todayBtn.addEventListener('click', () => {
-        const today = new Date();
-        state.current = new Date(today.getFullYear(), today.getMonth(), 1);
-        loadMonth();
-        loadDay(formatDate(today));
-      });
-    }
-
-    const params = new URLSearchParams(window.location.search);
-    const initialDate = params.get('date');
-    if (initialDate) {
-      const init = new Date(initialDate);
-      if (!Number.isNaN(init.getTime())) {
-        state.current = new Date(init.getFullYear(), init.getMonth(), 1);
-        loadMonth();
-        loadDay(formatDate(init));
-      } else {
-        loadMonth();
-        loadDay(formatDate(new Date()));
-      }
-    } else {
-      loadMonth();
-      loadDay(formatDate(new Date()));
-    }
-
-    if (saveTextBtn) {
-      saveTextBtn.addEventListener('click', async () => {
-        const dateStr = dateInput ? dateInput.value : '';
-        if (!dateStr) return;
-        setStatus('Saving text...');
-        try {
-          const data = await apiFetch('/api/everyday/text', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ date: dateStr, text: textInput ? textInput.value : '' }),
-          });
-          renderDay(dateStr, data.entry || {});
-          setStatus('Saved');
-          loadMonth();
-        } catch (err) {
-          setStatus(err.message);
-        }
-      });
-    }
-
-    const uploadViaServer = async (dateStr, file, caption) => {
-      const form = new FormData();
-      form.append('date', dateStr);
-      form.append('caption', caption || '');
-      form.append('file', file);
-      const data = await apiFetch('/api/everyday/upload', { method: 'POST', body: form });
-      return data;
-    };
-
-    if (uploadBtn) {
-      uploadBtn.addEventListener('click', async () => {
-        const dateStr = dateInput ? dateInput.value : '';
-        if (!dateStr) return;
-        if (!fileInput || !fileInput.files.length) {
-          setStatus('Select a file');
-          return;
-        }
-        const file = fileInput.files[0];
-        let data = null;
-        const caption = captionInput ? captionInput.value : '';
-        let presign = null;
-        try {
-          setStatus('Preparing direct upload...');
-          presign = await apiFetch('/api/everyday/upload/presign', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              date: dateStr,
-              filename: file.name,
-              content_type: file.type || 'application/octet-stream',
-            }),
-          });
-          setStatus('Uploading direct...');
-          const uploadResp = await fetch(presign.upload_url, {
-            method: 'PUT',
-            headers: presign.headers || {},
-            body: file,
-          });
-          if (!uploadResp.ok) {
-            throw new Error('Direct upload failed');
-          }
-        } catch (err) {
-          setStatus('Direct upload failed, fallback to server...');
-          try {
-            data = await uploadViaServer(dateStr, file, caption);
-          } catch (fallbackErr) {
-            setStatus(fallbackErr.message);
-            return;
-          }
-        }
-        if (!data && presign) {
-          setStatus('Finalizing...');
-          try {
-            data = await apiFetch('/api/everyday/upload/commit', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                date: dateStr,
-                uuid: presign.uuid,
-                oss_key: presign.oss_key,
-                caption,
-                media_type: presign.media_type,
-              }),
-            });
-          } catch (err) {
-            setStatus(err.message);
-            return;
-          }
-        }
-        renderDay(dateStr, data.entry || {});
-        setStatus('Uploaded');
-        if (captionInput) captionInput.value = '';
-        if (fileInput) fileInput.value = '';
-        loadMonth();
-      });
-    }
-
-    if (refreshBtn) {
-      refreshBtn.addEventListener('click', () => {
-        if (dateInput) loadDay(dateInput.value);
-      });
-    }
+    loadList().catch((err) => {
+      if (listEl) listEl.innerHTML = `<div class="card placeholder">${err.message}</div>`;
+    });
   };
 
-  const initEverydayView = () => {
-    const label = qs('#calendar-label');
-    const grid = qs('#calendar-grid');
-    const prevBtn = qs('[data-calendar-prev]');
-    const nextBtn = qs('[data-calendar-next]');
-    const todayBtn = qs('[data-calendar-today]');
-    const viewerDate = qs('#viewer-date');
-    const viewerMeta = qs('#viewer-meta');
-    const reelWindow = qs('#viewer-reel-window');
-
-    const state = {
-      current: new Date(),
-      days: {},
-      selected: null,
-    };
-
-    state.current.setDate(1);
-
-    const monthKey = () => {
-      const year = state.current.getFullYear();
-      const month = String(state.current.getMonth() + 1).padStart(2, '0');
-      return `${year}-${month}`;
-    };
-
-    const setSelected = (dateStr) => {
-      state.selected = dateStr;
-    };
-
-    const renderViewer = (dateStr, entry) => {
-      if (viewerDate) viewerDate.textContent = dateStr || 'Select a day';
-      const reelData = renderReelWindow(entry, reelWindow);
-      if (viewerMeta) {
-        viewerMeta.textContent = '';
-      }
-    };
-
-    const loadDay = async (dateStr) => {
-      if (!dateStr) return;
-      setSelected(dateStr);
-      if (reelWindow) reelWindow.innerHTML = '<div class="card placeholder">Loading reel...</div>';
-      try {
-        const data = await apiFetch(`/api/everyday/day?date=${dateStr}`);
-        renderViewer(dateStr, data.entry || {});
-        const params = new URLSearchParams(window.location.search);
-        params.set('date', dateStr);
-        history.replaceState(null, '', `${window.location.pathname}?${params}`);
-      } catch (err) {
-        if (reelWindow) reelWindow.innerHTML = `<div class="card placeholder">${err.message}</div>`;
-        if (viewerMeta) viewerMeta.textContent = '';
-      }
-      renderCalendar();
-    };
-
-    const renderCalendar = () => {
-      if (!grid) return;
-      grid.innerHTML = '';
-      const year = state.current.getFullYear();
-      const month = state.current.getMonth();
-      const first = new Date(year, month, 1);
-      const startDay = first.getDay();
-      const daysInMonth = new Date(year, month + 1, 0).getDate();
-
-      for (let i = 0; i < startDay; i += 1) {
-        const cell = document.createElement('div');
-        cell.className = 'calendar-day is-muted';
-        cell.textContent = '';
-        grid.appendChild(cell);
-      }
-
-      for (let day = 1; day <= daysInMonth; day += 1) {
-        const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-        const cell = document.createElement('button');
-        cell.type = 'button';
-        cell.className = 'calendar-day';
-        cell.textContent = String(day);
-        cell.dataset.date = dateStr;
-        if (state.days[dateStr]) {
-          cell.classList.add('has-entry');
-        }
-        if (state.selected === dateStr) {
-          cell.classList.add('is-active');
-        }
-        const today = formatDate(new Date());
-        if (today === dateStr) {
-          cell.classList.add('is-today');
-        }
-        cell.addEventListener('click', () => loadDay(dateStr));
-        grid.appendChild(cell);
-      }
-    };
-
-    const loadMonth = async () => {
-      const labelText = monthKey();
-      if (label) label.textContent = labelText;
-      state.days = {};
-      try {
-        const data = await apiFetch(`/api/everyday/month?month=${labelText}`);
-        state.days = data.days || {};
-      } catch (err) {
-        state.days = {};
-      }
-      renderCalendar();
-    };
-
-    if (prevBtn) {
-      prevBtn.addEventListener('click', () => {
-        state.current.setMonth(state.current.getMonth() - 1);
-        loadMonth();
-      });
-    }
-
-    if (nextBtn) {
-      nextBtn.addEventListener('click', () => {
-        state.current.setMonth(state.current.getMonth() + 1);
-        loadMonth();
-      });
-    }
-
-    if (todayBtn) {
-      todayBtn.addEventListener('click', () => {
-        const today = new Date();
-        state.current = new Date(today.getFullYear(), today.getMonth(), 1);
-        loadMonth();
-        loadDay(formatDate(today));
-      });
-    }
-
-    const params = new URLSearchParams(window.location.search);
-    const initialDate = params.get('date');
-    if (initialDate) {
-      const init = new Date(initialDate);
-      if (!Number.isNaN(init.getTime())) {
-        state.current = new Date(init.getFullYear(), init.getMonth(), 1);
-        loadMonth();
-        loadDay(formatDate(init));
-        return;
-      }
-    }
-    loadMonth();
-    loadDay(formatDate(new Date()));
-  };
-
-  const initAlbum = () => {
+  const initEchoes = () => {
     const moduleSelect = qs('#album-module');
     const typeSelect = qs('#album-type');
     const loadBtn = qs('[data-album-load]');
@@ -1501,9 +722,7 @@
     const sentinel = qs('[data-album-sentinel]');
     const modal = qs('#resource-modal');
     const modalContent = qs('#resource-modal-content');
-    const blogTemplate = qs('#modal-blog-template');
-    const noteTemplate = qs('#modal-note-template');
-    const dailyreelTemplate = qs('#modal-dailyreel-template');
+    const projectTemplate = qs('#modal-project-template');
     if (!grid) return;
 
     const supportsObserver = 'IntersectionObserver' in window;
@@ -1514,23 +733,14 @@
     let hasMore = true;
 
     const setStatus = (text) => {
-      if (status) {
-        status.textContent = text || '';
-      }
+      if (status) status.textContent = text || '';
     };
 
     const updateFooter = () => {
-      if (loading) {
-        setStatus('Loading...');
-      } else if (!hasMore) {
-        setStatus('No more attachments.');
-      } else {
-        setStatus('Scroll to load more.');
-      }
-
-      if (moreBtn) {
-        moreBtn.hidden = supportsObserver || loading || !hasMore;
-      }
+      if (loading) setStatus('Loading...');
+      else if (!hasMore) setStatus('No more files.');
+      else setStatus('Scroll to load more.');
+      if (moreBtn) moreBtn.hidden = supportsObserver || loading || !hasMore;
     };
 
     const resetGrid = () => {
@@ -1549,9 +759,7 @@
       item.style.gridRowEnd = `span ${span}`;
     };
 
-    const resizeAllGridItems = () => {
-      qsa('.album-item', grid).forEach((item) => resizeGridItem(item));
-    };
+    const resizeAllGridItems = () => qsa('.album-item', grid).forEach((item) => resizeGridItem(item));
 
     const showModalMessage = (message) => {
       if (!modalContent) return;
@@ -1562,40 +770,13 @@
       if (!modal) return;
       modal.hidden = true;
       document.body.classList.remove('modal-open');
-      if (modalContent) {
-        modalContent.innerHTML = '';
-      }
-    };
-
-    const resolveSourceId = async (item) => {
-      if (item.source_id) {
-        return item.source_id;
-      }
-      if (!item.uuid || (item.source_module !== 'blog' && item.source_module !== 'note')) {
-        return null;
-      }
-      const data = await apiFetch(
-        `/api/album/source?module=${item.source_module}&uuid=${encodeURIComponent(item.uuid)}`
-      );
-      if (data.source_id) {
-        item.source_id = data.source_id;
-      }
-      return data.source_id || null;
+      if (modalContent) modalContent.innerHTML = '';
     };
 
     const openModal = async (item) => {
       if (!modal || !modalContent) return;
-      let template = null;
-      let prefix = '';
-      if (item.source_module === 'blog') {
-        template = blogTemplate;
-        prefix = 'modal-blog';
-      } else if (item.source_module === 'note') {
-        template = noteTemplate;
-        prefix = 'modal-note';
-      } else if (item.source_module === 'everyday') {
-        template = dailyreelTemplate;
-      }
+      const template = projectTemplate;
+      const prefix = 'modal-project';
       if (!template) {
         showModalMessage('No preview available.');
         modal.hidden = false;
@@ -1606,36 +787,13 @@
       modalContent.appendChild(template.content.cloneNode(true));
       modal.hidden = false;
       document.body.classList.add('modal-open');
-
       try {
-        if (item.source_module === 'blog' || item.source_module === 'note') {
-          const sourceId = await resolveSourceId(item);
-          if (!sourceId) {
-            showModalMessage('Source entry not found.');
-            return;
-          }
-          await renderMarkdownWindow(item.source_module, sourceId, prefix, modalContent);
+        const projectId = item && item.project && item.project.id;
+        if (!projectId) {
+          showModalMessage('Missing project id.');
           return;
         }
-        if (item.source_module === 'everyday') {
-          const dateStr = item.source_id;
-          if (!dateStr) {
-            showModalMessage('Missing daily reel date.');
-            return;
-          }
-          const titleEl = qs('#modal-dailyreel-title', modalContent);
-          if (titleEl) {
-            titleEl.textContent = dateStr;
-          }
-          const reelEl = qs('#modal-dailyreel-window', modalContent);
-          if (reelEl) {
-            reelEl.innerHTML = '<div class="card placeholder">Loading reel...</div>';
-          }
-          const data = await apiFetch(`/api/everyday/day?date=${dateStr}`);
-          if (reelEl) {
-            renderReelWindow(data.entry || {}, reelEl);
-          }
-        }
+        await renderProjectWindow(projectId, prefix, modalContent, { preselectPath: item.path || '' });
       } catch (err) {
         showModalMessage(err.message);
       }
@@ -1645,43 +803,29 @@
       const wrapper = document.createElement('button');
       wrapper.type = 'button';
       wrapper.className = 'album-item';
+
       const card = document.createElement('article');
       card.className = 'album-card';
       const preview = document.createElement('div');
       preview.className = 'album-preview';
-      const displayName = item.oss_key ? item.oss_key.split('/').pop() : item.uuid;
+
+      const displayName = item.path || '';
       const imagePreviewUrl = item.preview_url || '';
       const imageUrl = item.url || '';
       const videoPreviewUrl = item.preview_url || '';
-      const resolvedType = resolveMediaType(item, item.media_type || 'file');
-      const typeLabel = resolvedType || item.media_type || 'file';
-      const moduleLabel = item.source_module || 'attachment';
-      const labelParts = [`Open ${typeLabel} from ${moduleLabel}`];
-      if (displayName) {
-        labelParts.push(displayName);
-      }
-      wrapper.setAttribute('aria-label', labelParts.join(': '));
+      const resolvedType = item.media_type || detectMediaType(item.url) || 'file';
 
       if (resolvedType === 'image') {
         const img = document.createElement('img');
-        img.alt = displayName || item.uuid;
+        img.alt = displayName || 'image';
         img.decoding = 'async';
         img.src = imagePreviewUrl || imageUrl;
-        if (imagePreviewUrl && imageUrl && imagePreviewUrl !== imageUrl) {
-          img.addEventListener(
-            'error',
-            () => {
-              img.src = imageUrl;
-            },
-            { once: true }
-          );
-        }
         img.addEventListener('load', () => resizeGridItem(wrapper), { once: true });
         preview.appendChild(img);
       } else if (resolvedType === 'video') {
         if (videoPreviewUrl) {
           const img = document.createElement('img');
-          img.alt = displayName || item.uuid;
+          img.alt = displayName || 'video';
           img.decoding = 'async';
           img.src = videoPreviewUrl;
           img.addEventListener('load', () => resizeGridItem(wrapper), { once: true });
@@ -1689,34 +833,26 @@
         } else {
           const fallback = document.createElement('div');
           fallback.className = 'album-fallback';
-          fallback.textContent = 'Video preview unavailable';
+          fallback.textContent = 'Video';
           preview.appendChild(fallback);
         }
       } else if (resolvedType === 'audio') {
         const fallback = document.createElement('div');
         fallback.className = 'album-fallback album-fallback--audio';
-        fallback.textContent = displayName || 'Audio file';
+        fallback.textContent = displayName || 'Audio';
         preview.appendChild(fallback);
       } else if (resolvedType === 'pdf') {
         const cover = createPdfCover(imageUrl, {
-          title: displayName || item.uuid || 'PDF document',
+          title: displayName || 'PDF',
           preview: imagePreviewUrl,
           asLink: false,
-          showOpen: false,
         });
-        if (cover) {
-          preview.appendChild(cover);
-        } else {
-          const fallback = document.createElement('div');
-          fallback.className = 'album-fallback album-fallback--pdf';
-          fallback.textContent = displayName || 'PDF document';
-          preview.appendChild(fallback);
-        }
+        if (cover) preview.appendChild(cover);
       } else {
         const fallback = document.createElement('div');
         fallback.className = 'album-fallback album-fallback--file';
         const label = document.createElement('span');
-        label.textContent = displayName || item.uuid;
+        label.textContent = displayName || 'File';
         fallback.appendChild(label);
         preview.appendChild(fallback);
       }
@@ -1725,16 +861,29 @@
       badges.className = 'album-badges';
       const typeBadge = document.createElement('span');
       typeBadge.className = 'album-badge';
-      typeBadge.textContent = typeLabel;
+      typeBadge.textContent = resolvedType;
       badges.appendChild(typeBadge);
-      if (moduleLabel) {
-        const moduleBadge = document.createElement('span');
-        moduleBadge.className = 'album-badge';
-        moduleBadge.textContent = moduleLabel;
-        badges.appendChild(moduleBadge);
-      }
+      const moduleBadge = document.createElement('span');
+      moduleBadge.className = 'album-badge';
+      moduleBadge.textContent = item.project?.module || 'project';
+      badges.appendChild(moduleBadge);
       preview.appendChild(badges);
+
       card.appendChild(preview);
+
+      const body = document.createElement('div');
+      body.className = 'album-body';
+      const title = document.createElement('strong');
+      title.textContent = displayName || 'file';
+      const meta = document.createElement('div');
+      meta.className = 'album-meta';
+      meta.textContent = [item.project?.title || '', item.project?.owner_username ? `@${item.project.owner_username}` : '']
+        .filter(Boolean)
+        .join('  ·  ');
+      body.appendChild(title);
+      body.appendChild(meta);
+      card.appendChild(body);
+
       wrapper.appendChild(card);
       wrapper.addEventListener('click', () => openModal(item));
       requestAnimationFrame(() => resizeGridItem(wrapper));
@@ -1742,15 +891,10 @@
     };
 
     const appendItems = (items) => {
-      if (!items.length) {
-        return;
-      }
+      if (!items.length) return;
       const empty = qs('.album-empty', grid);
-      if (empty) {
-        empty.remove();
-      }
-      const nodes = items.map((item) => buildCard(item));
-      nodes.forEach((node) => grid.appendChild(node));
+      if (empty) empty.remove();
+      items.map((item) => buildCard(item)).forEach((node) => grid.appendChild(node));
       requestAnimationFrame(() => resizeAllGridItems());
     };
 
@@ -1758,10 +902,8 @@
       grid.innerHTML = `<div class="album-empty">${message}</div>`;
     };
 
-    const loadAlbum = async (reset = false) => {
-      if (loading || (!hasMore && !reset)) {
-        return;
-      }
+    const loadEchoes = async (reset = false) => {
+      if (loading || (!hasMore && !reset)) return;
       if (reset) {
         offset = 0;
         hasMore = true;
@@ -1773,22 +915,20 @@
       const params = new URLSearchParams();
       if (moduleSelect && moduleSelect.value) params.set('module', moduleSelect.value);
       if (typeSelect && typeSelect.value) params.set('media_type', typeSelect.value);
-      params.set('limit', limit);
-      params.set('offset', offset);
+      params.set('limit', String(limit));
+      params.set('offset', String(offset));
 
       try {
-        const data = await apiFetch(`/api/album?${params.toString()}`);
+        const data = await apiFetch(`/api/projects/public/files?${params.toString()}`);
         const items = data.items || [];
         if (!items.length) {
-          if (offset === 0) {
-            showEmpty('No attachments found.');
-          }
+          if (offset === 0) showEmpty('No files found.');
           hasMore = false;
           return;
         }
         appendItems(items);
         offset += limit;
-        hasMore = items.length > 0;
+        hasMore = items.length >= limit;
       } catch (err) {
         showEmpty(err.message);
         hasMore = false;
@@ -1798,31 +938,14 @@
       }
     };
 
-    if (loadBtn) {
-      loadBtn.addEventListener('click', () => loadAlbum(true));
-    }
-
-    if (moduleSelect) {
-      moduleSelect.addEventListener('change', () => loadAlbum(true));
-    }
-
-    if (typeSelect) {
-      typeSelect.addEventListener('change', () => loadAlbum(true));
-    }
-
-    if (moreBtn) {
-      moreBtn.addEventListener('click', () => loadAlbum());
-    }
+    if (loadBtn) loadBtn.addEventListener('click', () => loadEchoes(true));
+    if (moduleSelect) moduleSelect.addEventListener('change', () => loadEchoes(true));
+    if (typeSelect) typeSelect.addEventListener('change', () => loadEchoes(true));
+    if (moreBtn) moreBtn.addEventListener('click', () => loadEchoes());
 
     if (supportsObserver && sentinel) {
       streamObserver = new IntersectionObserver(
-        (entries) => {
-          entries.forEach((entry) => {
-            if (entry.isIntersecting) {
-              loadAlbum();
-            }
-          });
-        },
+        (entries) => entries.forEach((entry) => entry.isIntersecting && loadEchoes()),
         { rootMargin: '300px 0px' }
       );
       streamObserver.observe(sentinel);
@@ -1832,29 +955,582 @@
 
     if (modal) {
       modal.addEventListener('click', (event) => {
-        if (event.target && event.target.matches('[data-modal-close]')) {
-          closeModal();
-        }
+        if (event.target && event.target.matches('[data-modal-close]')) closeModal();
       });
     }
 
     document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') {
-        closeModal();
-      }
+      if (event.key === 'Escape') closeModal();
     });
 
     window.addEventListener('resize', () => resizeAllGridItems());
+    loadEchoes(true);
+  };
 
-    loadAlbum(true);
+  const initDailyreel = () => {
+    const refreshBtn = qs('[data-dailyreel-refresh]');
+    const dateEl = qs('#dailyreel-date');
+    const tableBody = qs('#dailyreel-scoreboard tbody');
+    const feed = qs('#dailyreel-feed');
+
+    const calendarGrid = qs('#dailyreel-calendar');
+    const monthTitle = qs('#dailyreel-month');
+    const prevBtn = qs('[data-cal-prev]');
+    const nextBtn = qs('[data-cal-next]');
+    const todayBtn = qs('[data-cal-today]');
+
+    const tzOffset = () => new Date().getTimezoneOffset();
+    const isValidDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
+    const formatMonth = (date) => {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      return `${year}-${month}`;
+    };
+    const parseDate = (value) => {
+      if (!isValidDate(value)) return null;
+      const [y, m, d] = String(value).split('-').map((n) => parseInt(n, 10));
+      if (!y || !m || !d) return null;
+      const dt = new Date(y, m - 1, d);
+      if (Number.isNaN(dt.getTime())) return null;
+      return dt;
+    };
+    const clampDay = (dt) => new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+
+    let selectedDate = formatDate(new Date());
+    let monthCursor = clampDay(new Date());
+    monthCursor.setDate(1);
+    let monthCounts = new Map();
+
+    const syncUrl = () => {
+      const params = new URLSearchParams(window.location.search);
+      params.set('date', selectedDate);
+      history.replaceState(null, '', `${window.location.pathname}?${params}`);
+    };
+
+    const loadDay = async (date) => {
+      if (!isValidDate(date)) return;
+      selectedDate = date;
+      syncUrl();
+      if (dateEl) dateEl.textContent = date;
+      if (tableBody) tableBody.innerHTML = '<tr><td class="muted" colspan="5">Loading...</td></tr>';
+      if (feed) feed.innerHTML = '<div class="card placeholder">Loading...</div>';
+
+      try {
+        const data = await apiFetch(`/api/dailyreel/today?date=${date}&tz_offset=${tzOffset()}`);
+        const scoreboard = Array.isArray(data.scoreboard) ? data.scoreboard : [];
+        const events = Array.isArray(data.events) ? data.events : [];
+
+        if (dateEl) dateEl.textContent = data.date || date;
+
+        if (tableBody) {
+          tableBody.innerHTML = '';
+          if (!scoreboard.length) {
+            tableBody.innerHTML = '<tr><td class="muted" colspan="5">今天还没有记录。</td></tr>';
+          } else {
+            scoreboard.forEach((row) => {
+              const tr = document.createElement('tr');
+              const total = (row.git_blog || 0) + (row.git_note || 0) + (row.clone || 0);
+              tr.innerHTML = `
+                <td>${row.username || ''}</td>
+                <td>${row.git_blog || 0}</td>
+                <td>${row.git_note || 0}</td>
+                <td>${row.clone || 0}</td>
+                <td><strong>${total}</strong></td>
+              `;
+              tableBody.appendChild(tr);
+            });
+          }
+        }
+
+        if (feed) {
+          feed.innerHTML = '';
+          if (!events.length) {
+            feed.innerHTML = '<div class="card placeholder">今天还没有 git / clone 记录。</div>';
+          } else {
+            events.forEach((ev) => {
+              const row = document.createElement('div');
+              row.className = 'stack-item';
+              const left = document.createElement('div');
+              const strong = document.createElement('strong');
+              const type = ev.type || '';
+              const module = ev.module || ev.project?.module || '';
+              const actor = ev.actor?.username || '';
+              const projTitle = ev.project?.title || `Project #${ev.project?.id || ''}`;
+              strong.textContent = `${actor ? `@${actor} ` : ''}${type} ${module}`;
+              const meta = document.createElement('div');
+              meta.className = 'album-meta';
+              const time = ev.created_at
+                ? new Date(ev.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                : '';
+              meta.textContent = [time, projTitle].filter(Boolean).join('  ·  ');
+              left.appendChild(strong);
+              left.appendChild(meta);
+              row.appendChild(left);
+
+              if (ev.project && ev.project.id) {
+                const a = document.createElement('a');
+                a.className = 'text-link';
+                a.href = `/${ev.project.module || module || 'blog'}?project=${ev.project.id}`;
+                a.textContent = '打开';
+                row.appendChild(a);
+              }
+              feed.appendChild(row);
+            });
+          }
+        }
+      } catch (err) {
+        if (tableBody) tableBody.innerHTML = `<tr><td class="muted" colspan="5">${err.message}</td></tr>`;
+        if (feed) feed.innerHTML = `<div class="card placeholder">${err.message}</div>`;
+      }
+    };
+
+    const loadMonth = async () => {
+      if (!calendarGrid) return;
+      const month = formatMonth(monthCursor);
+      if (monthTitle) monthTitle.textContent = month;
+      calendarGrid.innerHTML = '<div class="muted">Loading...</div>';
+      monthCounts = new Map();
+      try {
+        const data = await apiFetch(`/api/dailyreel/month?month=${month}&tz_offset=${tzOffset()}`);
+        const days = Array.isArray(data.days) ? data.days : [];
+        days.forEach((row) => {
+          if (row && row.date) monthCounts.set(row.date, row);
+        });
+        if (monthTitle) monthTitle.textContent = data.month || month;
+      } catch (err) {
+        calendarGrid.innerHTML = `<div class="muted">${err.message}</div>`;
+        return;
+      }
+      renderCalendar();
+    };
+
+    const renderCalendar = () => {
+      if (!calendarGrid) return;
+      calendarGrid.innerHTML = '';
+
+      const today = formatDate(new Date());
+      const year = monthCursor.getFullYear();
+      const monthIdx = monthCursor.getMonth();
+      const first = new Date(year, monthIdx, 1);
+      const last = new Date(year, monthIdx + 1, 0);
+      const daysInMonth = last.getDate();
+
+      // Monday-start calendar.
+      const startDow = (first.getDay() + 6) % 7; // 0..6 (Mon..Sun)
+      const totalCells = Math.ceil((startDow + daysInMonth) / 7) * 7;
+
+      const addCell = (label, dateStr, muted) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'calendar-day';
+        btn.textContent = String(label);
+        if (muted) btn.classList.add('is-muted');
+        if (dateStr === selectedDate) btn.classList.add('is-active');
+        if (dateStr === today) btn.classList.add('is-today');
+
+        const info = dateStr ? monthCounts.get(dateStr) : null;
+        const gitTotal = info ? Number(info.git_blog || 0) + Number(info.git_note || 0) : 0;
+        const cloneTotal = info ? Number(info.clone || 0) : 0;
+        const total = gitTotal + cloneTotal;
+        if (total > 0) btn.classList.add('has-entry');
+
+        if (total > 0) {
+          const count = document.createElement('span');
+          count.className = 'calendar-day__count';
+          count.textContent = gitTotal > 0 ? String(gitTotal) : `c${cloneTotal}`;
+          if (info) {
+            count.title = `git: ${gitTotal} (blog ${Number(info.git_blog || 0)}, note ${Number(info.git_note || 0)}) · clone: ${cloneTotal}`;
+          }
+          btn.appendChild(count);
+        }
+
+        if (!muted && dateStr) {
+          btn.addEventListener('click', () => {
+            loadDay(dateStr);
+            renderCalendar();
+          });
+        } else {
+          btn.disabled = true;
+        }
+        calendarGrid.appendChild(btn);
+      };
+
+      const padPrev = startDow;
+      const prevLast = new Date(year, monthIdx, 0).getDate();
+      for (let i = padPrev; i > 0; i -= 1) {
+        addCell(prevLast - i + 1, '', true);
+      }
+
+      for (let d = 1; d <= daysInMonth; d += 1) {
+        const dt = new Date(year, monthIdx, d);
+        const dateStr = formatDate(dt);
+        addCell(d, dateStr, false);
+      }
+
+      const remaining = totalCells - (padPrev + daysInMonth);
+      for (let i = 1; i <= remaining; i += 1) {
+        addCell(i, '', true);
+      }
+    };
+
+    const applyInitialDate = () => {
+      const params = new URLSearchParams(window.location.search);
+      const urlDate = params.get('date');
+      if (isValidDate(urlDate)) {
+        selectedDate = urlDate;
+        const dt = parseDate(urlDate);
+        if (dt) {
+          monthCursor = clampDay(dt);
+          monthCursor.setDate(1);
+        }
+      }
+    };
+
+    if (refreshBtn) refreshBtn.addEventListener('click', () => loadDay(selectedDate));
+    if (prevBtn) {
+      prevBtn.addEventListener('click', () => {
+        monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth() - 1, 1);
+        loadMonth();
+      });
+    }
+    if (nextBtn) {
+      nextBtn.addEventListener('click', () => {
+        monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth() + 1, 1);
+        loadMonth();
+      });
+    }
+    if (todayBtn) {
+      todayBtn.addEventListener('click', () => {
+        const dt = new Date();
+        selectedDate = formatDate(dt);
+        monthCursor = clampDay(dt);
+        monthCursor.setDate(1);
+        loadMonth();
+        loadDay(selectedDate);
+      });
+    }
+
+    applyInitialDate();
+    loadMonth();
+    loadDay(selectedDate);
+  };
+
+  const initHome = () => {
+    const tbody = qs('#quick-links-table tbody');
+    const addBtn = qs('#quick-add');
+    const titleInput = qs('#quick-title');
+    const urlInput = qs('#quick-url');
+    const sortInput = qs('#quick-sort');
+    const todayBtn = qs('[data-today-load]');
+    const todayCard = qs('#today-card');
+
+    const whiteboardEl = qs('#whiteboard');
+    const whiteboardDateEl = qs('#whiteboard-date');
+    const whiteboardAddBtn = qs('[data-whiteboard-add]');
+
+    const loadQuickLinks = async () => {
+      if (!tbody) return;
+      tbody.innerHTML = '<tr><td class="muted" colspan="4">Loading...</td></tr>';
+      try {
+        const data = await apiFetch('/api/links/quick');
+        const items = Array.isArray(data.items) ? data.items : [];
+        tbody.innerHTML = '';
+        if (!items.length) {
+          tbody.innerHTML = '<tr><td class="muted" colspan="4">暂无链接。</td></tr>';
+          return;
+        }
+        items.forEach((item) => {
+          const tr = document.createElement('tr');
+
+          const tdTitle = document.createElement('td');
+          const a = document.createElement('a');
+          a.href = item.url || '#';
+          a.target = '_blank';
+          a.rel = 'noopener';
+          a.className = 'text-link';
+          a.textContent = item.title || 'Link';
+          tdTitle.appendChild(a);
+
+          const tdUrl = document.createElement('td');
+          tdUrl.textContent = item.url || '';
+
+          const tdSort = document.createElement('td');
+          tdSort.textContent = String(item.sort_order ?? 0);
+
+          const tdActions = document.createElement('td');
+          tdActions.className = 'actions';
+          const editBtn = document.createElement('button');
+          editBtn.type = 'button';
+          editBtn.className = 'row-btn';
+          editBtn.textContent = '编辑';
+          editBtn.addEventListener('click', async () => {
+            const nextTitle = window.prompt('标题:', item.title || '');
+            if (!nextTitle) return;
+            const nextUrl = window.prompt('URL:', item.url || '');
+            if (!nextUrl) return;
+            const nextSortRaw = window.prompt('排序:', String(item.sort_order ?? 0));
+            const nextSort = parseInt(nextSortRaw || '0', 10) || 0;
+            await apiFetch(`/api/links/quick/${item.id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ title: nextTitle, url: nextUrl, sort_order: nextSort }),
+            });
+            loadQuickLinks();
+          });
+          const delBtn = document.createElement('button');
+          delBtn.type = 'button';
+          delBtn.className = 'row-btn danger';
+          delBtn.textContent = '删除';
+          delBtn.addEventListener('click', async () => {
+            if (!window.confirm(`删除 "${item.title}"？`)) return;
+            await apiFetch(`/api/links/quick/${item.id}`, { method: 'DELETE' });
+            loadQuickLinks();
+          });
+          tdActions.appendChild(editBtn);
+          tdActions.appendChild(delBtn);
+
+          tr.appendChild(tdTitle);
+          tr.appendChild(tdUrl);
+          tr.appendChild(tdSort);
+          tr.appendChild(tdActions);
+          tbody.appendChild(tr);
+        });
+      } catch (err) {
+        tbody.innerHTML = `<tr><td class="muted" colspan="4">${err.message}</td></tr>`;
+      }
+    };
+
+    const bindQuickAdd = () => {
+      if (!addBtn) return;
+      addBtn.addEventListener('click', async () => {
+        const title = (titleInput && titleInput.value) || '';
+        const url = (urlInput && urlInput.value) || '';
+        const sort = parseInt((sortInput && sortInput.value) || '0', 10) || 0;
+        if (!title.trim() || !url.trim()) {
+          window.alert('请填写标题和 URL');
+          return;
+        }
+        await apiFetch('/api/links/quick', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: title.trim(), url: url.trim(), sort_order: sort }),
+        });
+        if (titleInput) titleInput.value = '';
+        if (urlInput) urlInput.value = '';
+        if (sortInput) sortInput.value = '0';
+        loadQuickLinks();
+      });
+    };
+
+    const loadToday = async () => {
+      if (!todayCard) return;
+      const date = formatDate(new Date());
+      todayCard.innerHTML = '<p class="muted">Loading...</p>';
+      try {
+        const tzOffset = new Date().getTimezoneOffset();
+        const data = await apiFetch(`/api/dailyreel/today?date=${date}&tz_offset=${tzOffset}`);
+        const scoreboard = Array.isArray(data.scoreboard) ? data.scoreboard : [];
+        const totalGit = scoreboard.reduce((sum, r) => sum + (r.git_blog || 0) + (r.git_note || 0), 0);
+        const totalClone = scoreboard.reduce((sum, r) => sum + (r.clone || 0), 0);
+        const top = scoreboard[0];
+        todayCard.innerHTML = `
+          <h3>${date}</h3>
+          <p class="muted">${totalGit} git · ${totalClone} clone</p>
+          <p class="muted">${top ? `第一: ${top.username} (${(top.git_blog || 0) + (top.git_note || 0) + (top.clone || 0)})` : '今天还没有记录。'}</p>
+        `;
+      } catch (err) {
+        todayCard.innerHTML = `<p class="muted">${err.message}</p>`;
+      }
+    };
+
+    const initWhiteboard = () => {
+      if (!whiteboardEl) return;
+      const date = formatDate(new Date());
+      if (whiteboardDateEl) whiteboardDateEl.textContent = date;
+
+      const cardsById = new Map();
+      const stateById = new Map();
+      let lastEventId = 0;
+      let polling = false;
+
+      const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
+
+      const upsertCard = (card) => {
+        if (!card || !card.id) return;
+        const id = Number(card.id);
+        const existing = stateById.get(id) || {};
+        const next = { ...existing, ...card };
+        stateById.set(id, next);
+
+        let el = cardsById.get(id);
+        if (!el) {
+          el = document.createElement('div');
+          el.className = 'whiteboard-card';
+          el.dataset.cardId = String(id);
+
+          const head = document.createElement('div');
+          head.className = 'whiteboard-card__head';
+          const title = document.createElement('strong');
+          title.textContent = `#${id}`;
+          const del = document.createElement('button');
+          del.type = 'button';
+          del.textContent = '删除';
+          del.addEventListener('click', async () => {
+            if (!window.confirm('删除这张卡片？')) return;
+            await apiFetch(`/api/whiteboard/cards/${id}`, { method: 'DELETE' });
+          });
+          head.appendChild(title);
+          head.appendChild(del);
+
+          const body = document.createElement('div');
+          body.className = 'whiteboard-card__body';
+          const ta = document.createElement('textarea');
+          ta.value = next.text || '';
+          ta.addEventListener('input', () => {
+            clearTimeout(el._saveTimer);
+            el._saveTimer = setTimeout(async () => {
+              try {
+                await apiFetch(`/api/whiteboard/cards/${id}`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ text: ta.value }),
+                });
+              } catch (err) {
+                // ignore
+              }
+            }, 300);
+          });
+          body.appendChild(ta);
+
+          el.appendChild(head);
+          el.appendChild(body);
+          whiteboardEl.appendChild(el);
+          cardsById.set(id, el);
+
+          let dragging = false;
+          let startX = 0;
+          let startY = 0;
+          let originX = 0;
+          let originY = 0;
+
+          const onMove = (ev) => {
+            if (!dragging) return;
+            const dx = ev.clientX - startX;
+            const dy = ev.clientY - startY;
+            const x = clamp(originX + dx, 0, whiteboardEl.clientWidth - 80);
+            const y = clamp(originY + dy, 0, whiteboardEl.clientHeight - 60);
+            el.style.transform = `translate(${x}px, ${y}px)`;
+            el._pendingPos = { x, y };
+          };
+
+          const onUp = async () => {
+            if (!dragging) return;
+            dragging = false;
+            document.removeEventListener('pointermove', onMove);
+            document.removeEventListener('pointerup', onUp);
+            if (el._pendingPos) {
+              const pos = el._pendingPos;
+              el._pendingPos = null;
+              try {
+                await apiFetch(`/api/whiteboard/cards/${id}`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ x: pos.x, y: pos.y }),
+                });
+              } catch (err) {
+                // ignore
+              }
+            }
+          };
+
+          head.addEventListener('pointerdown', (ev) => {
+            dragging = true;
+            startX = ev.clientX;
+            startY = ev.clientY;
+            originX = Number(stateById.get(id)?.x || 0);
+            originY = Number(stateById.get(id)?.y || 0);
+            document.addEventListener('pointermove', onMove);
+            document.addEventListener('pointerup', onUp);
+          });
+        }
+
+        const x = Number(next.x || 0);
+        const y = Number(next.y || 0);
+        el.style.transform = `translate(${x}px, ${y}px)`;
+        const ta = qs('textarea', el);
+        if (ta && document.activeElement !== ta) {
+          ta.value = next.text || '';
+        }
+      };
+
+      const removeCard = (id) => {
+        const el = cardsById.get(id);
+        if (el) el.remove();
+        cardsById.delete(id);
+        stateById.delete(id);
+      };
+
+      const loadBoard = async () => {
+        const data = await apiFetch(`/api/whiteboard/board?date=${date}`);
+        lastEventId = Number(data.last_event_id || 0);
+        const cards = Array.isArray(data.cards) ? data.cards : [];
+        cards.forEach((card) => upsertCard(card));
+      };
+
+      const poll = async () => {
+        if (polling) return;
+        polling = true;
+        try {
+          const data = await apiFetch(`/api/whiteboard/events?date=${date}&after_id=${lastEventId}`);
+          const events = Array.isArray(data.events) ? data.events : [];
+          events.forEach((ev) => {
+            lastEventId = Math.max(lastEventId, Number(ev.id || 0));
+            const id = Number(ev.card_id || 0);
+            if (!id) return;
+            if (ev.type === 'create' && ev.payload && ev.payload.card) {
+              upsertCard(ev.payload.card);
+            } else if (ev.type === 'update') {
+              const changes = (ev.payload && ev.payload.changes) || {};
+              upsertCard({ id, ...changes });
+            } else if (ev.type === 'delete') {
+              removeCard(id);
+            }
+          });
+        } catch (err) {
+          // ignore
+        } finally {
+          polling = false;
+        }
+      };
+
+      if (whiteboardAddBtn) {
+        whiteboardAddBtn.addEventListener('click', async () => {
+          const rect = whiteboardEl.getBoundingClientRect();
+          const x = Math.round(Math.random() * Math.max(0, rect.width - 280));
+          const y = Math.round(Math.random() * Math.max(0, rect.height - 200));
+          await apiFetch('/api/whiteboard/cards', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date, x, y, text: '' }),
+          });
+        });
+      }
+
+      loadBoard().then(() => setInterval(poll, 1000));
+    };
+
+    if (todayBtn) todayBtn.addEventListener('click', loadToday);
+    bindQuickAdd();
+    loadQuickLinks();
+    loadToday();
+    initWhiteboard();
   };
 
   initNav();
 
   if (page === 'home') initHome();
-  if (page === 'blog') initMarkdownPage('blog');
-  if (page === 'note') initMarkdownPage('note');
-  if (page === 'dailyreel-manage') initEverydayManage();
-  if (page === 'dailyreel-view') initEverydayView();
-  if (page === 'echoes') initAlbum();
+  if (page === 'blog') initProjectsPage('blog');
+  if (page === 'note') initProjectsPage('note');
+  if (page === 'echoes') initEchoes();
+  if (page === 'dailyreel') initDailyreel();
 })();

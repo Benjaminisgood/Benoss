@@ -3,7 +3,7 @@
   const qs = (sel, scope = document) => scope.querySelector(sel);
 
   const setStatus = (msg) => {
-    if (statusEl) statusEl.textContent = msg;
+    if (statusEl) statusEl.textContent = msg || '';
   };
 
   const apiFetch = async (url, options = {}) => {
@@ -11,7 +11,7 @@
     if (!resp.ok) {
       if (resp.status === 401 || resp.status === 403) {
         window.location.href = '/login';
-        throw new Error('Login required');
+        throw new Error('登录已过期');
       }
       let message = `Request failed: ${resp.status}`;
       try {
@@ -25,130 +25,267 @@
     return resp.json();
   };
 
-  const loadQuickLinks = async () => {
-    const container = qs('#quick-links-admin');
-    if (!container) return;
-    const data = await apiFetch('/api/admin/links/quick');
-    container.innerHTML = '';
-    data.items.forEach((item) => {
-      const row = document.createElement('div');
-      row.className = 'stack-item';
-      row.innerHTML = `<div><strong>${item.title}</strong><div class="album-meta">${item.url}</div></div>`;
-      const del = document.createElement('button');
-      del.textContent = 'Remove';
-      del.addEventListener('click', async () => {
-        try {
-          await apiFetch(`/api/admin/links/quick/${item.id}`, { method: 'DELETE' });
-          loadQuickLinks();
-        } catch (err) {
-          setStatus(err.message);
-        }
-      });
-      row.appendChild(del);
-      container.appendChild(row);
-    });
+  const loadAccounts = async () => {
+    const descriptionEl = qs('#account-description');
+    const listEl = qs('#account-list');
+    if (!descriptionEl && !listEl) return null;
+    const data = await apiFetch('/api/account');
+    if (descriptionEl) {
+      descriptionEl.value = data.current_user?.description || '';
+    }
+    if (listEl) {
+      listEl.innerHTML = '';
+      const items = data.accounts || [];
+      if (!items.length) {
+        listEl.innerHTML = '<div class="card placeholder">暂无其他用户。</div>';
+      } else {
+        items.forEach((account) => {
+          const row = document.createElement('div');
+          row.className = 'stack-item';
+          const wrapper = document.createElement('div');
+          const title = document.createElement('strong');
+          title.textContent = account.username || '';
+          const meta = document.createElement('div');
+          meta.className = 'album-meta';
+          meta.textContent = account.description || '';
+          wrapper.appendChild(title);
+          wrapper.appendChild(meta);
+          row.appendChild(wrapper);
+          listEl.appendChild(row);
+        });
+      }
+    }
+    return data.current_user || null;
   };
 
-  const bindQuickAdd = () => {
-    const button = qs('#quick-add');
-    if (!button) return;
+  const bindAccountSave = () => {
+    const button = qs('#account-save');
+    const descriptionEl = qs('#account-description');
+    if (!button || !descriptionEl) return;
     button.addEventListener('click', async () => {
-      const title = qs('#quick-title')?.value || '';
-      const url = qs('#quick-url')?.value || '';
-      const sort = parseInt(qs('#quick-sort')?.value || '0', 10);
-      if (!title || !url) {
-        setStatus('Missing fields');
-        return;
-      }
+      setStatus('保存中...');
       try {
-        await apiFetch('/api/admin/links/quick', {
-          method: 'POST',
+        await apiFetch('/api/account/description', {
+          method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title, url, sort_order: sort, is_active: true }),
+          body: JSON.stringify({ description: descriptionEl.value || '' }),
         });
-        qs('#quick-title').value = '';
-        qs('#quick-url').value = '';
-        qs('#quick-sort').value = '0';
-        loadQuickLinks();
+        setStatus('已保存');
       } catch (err) {
         setStatus(err.message);
       }
     });
   };
 
-  const loadFriendLinks = async () => {
-    const container = qs('#friend-links-admin');
-    if (!container) return;
-    const data = await apiFetch('/api/admin/links/friend');
-    container.innerHTML = '';
-    data.items.forEach((item) => {
-      const row = document.createElement('div');
-      row.className = 'stack-item';
-      row.innerHTML = `<div><strong>${item.title}</strong><div class="album-meta">${item.url}</div></div>`;
-      const del = document.createElement('button');
-      del.textContent = 'Remove';
-      del.addEventListener('click', async () => {
-        try {
-          await apiFetch(`/api/admin/links/friend/${item.id}`, { method: 'DELETE' });
-          loadFriendLinks();
-        } catch (err) {
-          setStatus(err.message);
-        }
-      });
-      row.appendChild(del);
-      container.appendChild(row);
-    });
-  };
+  const loadCollab = async () => {
+    const inboxEl = qs('#collab-inbox');
+    const outboxEl = qs('#collab-outbox');
+    if (!inboxEl && !outboxEl) return;
 
-  const bindFriendAdd = () => {
-    const button = qs('#friend-add');
-    if (!button) return;
-    button.addEventListener('click', async () => {
-      const title = qs('#friend-title')?.value || '';
-      const url = qs('#friend-url')?.value || '';
-      const avatar = qs('#friend-avatar')?.value || '';
-      const desc = qs('#friend-desc')?.value || '';
-      const sort = parseInt(qs('#friend-sort')?.value || '0', 10);
-      if (!title || !url) {
-        setStatus('Missing fields');
-        return;
-      }
+    const renderEmpty = (el, msg) => {
+      if (!el) return;
+      el.innerHTML = `<div class="card placeholder">${msg}</div>`;
+    };
+
+    if (inboxEl) {
+      renderEmpty(inboxEl, '加载中...');
       try {
-        await apiFetch('/api/admin/links/friend', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            title,
-            url,
-            avatar_url: avatar || null,
-            description: desc || null,
-            sort_order: sort,
-            is_active: true,
-          }),
-        });
-        qs('#friend-title').value = '';
-        qs('#friend-url').value = '';
-        qs('#friend-avatar').value = '';
-        qs('#friend-desc').value = '';
-        qs('#friend-sort').value = '0';
-        loadFriendLinks();
+        const data = await apiFetch('/api/collab/inbox');
+        const items = data.items || [];
+        inboxEl.innerHTML = '';
+        if (!items.length) {
+          renderEmpty(inboxEl, '暂无待处理请求。');
+        } else {
+          items.forEach((item) => {
+            const row = document.createElement('div');
+            row.className = 'stack-item';
+
+            const left = document.createElement('div');
+            const title = document.createElement('strong');
+            title.textContent = `${item.project?.title || 'Project'} (${item.project?.module || ''})`;
+            const meta = document.createElement('div');
+            meta.className = 'album-meta';
+            meta.textContent = `来自 @${item.proposer?.username || 'user'} · ${item.file_count || 0} files`;
+            left.appendChild(title);
+            left.appendChild(meta);
+            if (item.message) {
+              const msg = document.createElement('div');
+              msg.className = 'album-meta';
+              msg.textContent = item.message;
+              left.appendChild(msg);
+            }
+
+            const actions = document.createElement('div');
+            const approve = document.createElement('button');
+            approve.textContent = '同意';
+            approve.addEventListener('click', async () => {
+              try {
+                setStatus('同意中...');
+                await apiFetch(`/api/push-requests/${item.id}/approve`, { method: 'POST' });
+                setStatus('已同意');
+                loadCollab();
+              } catch (err) {
+                setStatus(err.message);
+              }
+            });
+            const reject = document.createElement('button');
+            reject.textContent = '拒绝';
+            reject.className = 'danger';
+            reject.addEventListener('click', async () => {
+              if (!window.confirm('确定拒绝该请求？')) return;
+              try {
+                setStatus('拒绝中...');
+                await apiFetch(`/api/push-requests/${item.id}/reject`, { method: 'POST' });
+                setStatus('已拒绝');
+                loadCollab();
+              } catch (err) {
+                setStatus(err.message);
+              }
+            });
+            actions.appendChild(approve);
+            actions.appendChild(reject);
+
+            row.appendChild(left);
+            row.appendChild(actions);
+            inboxEl.appendChild(row);
+          });
+        }
       } catch (err) {
-        setStatus(err.message);
+        renderEmpty(inboxEl, err.message);
       }
-    });
+    }
+
+    if (outboxEl) {
+      renderEmpty(outboxEl, '加载中...');
+      try {
+        const data = await apiFetch('/api/collab/outbox');
+        const items = data.items || [];
+        outboxEl.innerHTML = '';
+        if (!items.length) {
+          renderEmpty(outboxEl, '暂无发出的请求。');
+        } else {
+          items.forEach((item) => {
+            const row = document.createElement('div');
+            row.className = 'stack-item';
+
+            const left = document.createElement('div');
+            const title = document.createElement('strong');
+            title.textContent = `${item.project?.title || 'Project'} (${item.project?.module || ''})`;
+            const meta = document.createElement('div');
+            meta.className = 'album-meta';
+            meta.textContent = `发往 @${item.project?.owner_username || 'owner'} · ${item.status}`;
+            left.appendChild(title);
+            left.appendChild(meta);
+            if (item.message) {
+              const msg = document.createElement('div');
+              msg.className = 'album-meta';
+              msg.textContent = item.message;
+              left.appendChild(msg);
+            }
+
+            row.appendChild(left);
+
+            if (item.status === 'pending') {
+              const cancel = document.createElement('button');
+              cancel.textContent = '撤销';
+              cancel.addEventListener('click', async () => {
+                if (!window.confirm('确定撤销该请求？')) return;
+                try {
+                  setStatus('撤销中...');
+                  await apiFetch(`/api/push-requests/${item.id}/cancel`, { method: 'POST' });
+                  setStatus('已撤销');
+                  loadCollab();
+                } catch (err) {
+                  setStatus(err.message);
+                }
+              });
+              row.appendChild(cancel);
+            }
+
+            outboxEl.appendChild(row);
+          });
+        }
+      } catch (err) {
+        renderEmpty(outboxEl, err.message);
+      }
+    }
   };
 
   const loadUsers = async () => {
     const container = qs('#user-list');
     if (!container) return;
-    const data = await apiFetch('/api/admin/users');
-    container.innerHTML = '';
-    data.items.forEach((item) => {
-      const row = document.createElement('div');
-      row.className = 'stack-item';
-      row.innerHTML = `<div><strong>${item.username}</strong><div class="album-meta">${item.role}</div></div>`;
-      container.appendChild(row);
-    });
+    container.innerHTML = '<div class="card placeholder">加载中...</div>';
+    try {
+      const data = await apiFetch('/api/admin/users');
+      const items = data.items || [];
+      container.innerHTML = '';
+      if (!items.length) {
+        container.innerHTML = '<div class="card placeholder">暂无用户。</div>';
+        return;
+      }
+      items.forEach((user) => {
+        const row = document.createElement('div');
+        row.className = 'stack-item';
+
+        const left = document.createElement('div');
+        const title = document.createElement('strong');
+        title.textContent = user.username || '';
+        const meta = document.createElement('div');
+        meta.className = 'album-meta';
+        meta.textContent = `${user.role || 'user'} · ${user.is_active ? 'active' : 'inactive'}`;
+        left.appendChild(title);
+        left.appendChild(meta);
+
+        const actions = document.createElement('div');
+
+        const toggleActive = document.createElement('button');
+        toggleActive.textContent = user.is_active ? '停用' : '启用';
+        toggleActive.className = user.is_active ? 'danger' : '';
+        toggleActive.addEventListener('click', async () => {
+          const next = !user.is_active;
+          if (!next && !window.confirm(`确定停用 ${user.username}？`)) return;
+          try {
+            setStatus('更新状态...');
+            await apiFetch(`/api/admin/users/${user.id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ is_active: next }),
+            });
+            setStatus('已更新');
+            loadUsers();
+          } catch (err) {
+            setStatus(err.message);
+          }
+        });
+
+        const resetPwd = document.createElement('button');
+        resetPwd.textContent = '重置密码';
+        resetPwd.addEventListener('click', async () => {
+          const pwd = window.prompt(`为 ${user.username} 设置新密码：`);
+          if (!pwd) return;
+          try {
+            setStatus('重置密码...');
+            await apiFetch(`/api/admin/users/${user.id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ password: pwd }),
+            });
+            setStatus('已重置');
+          } catch (err) {
+            setStatus(err.message);
+          }
+        });
+
+        actions.appendChild(toggleActive);
+        actions.appendChild(resetPwd);
+
+        row.appendChild(left);
+        row.appendChild(actions);
+        container.appendChild(row);
+      });
+    } catch (err) {
+      container.innerHTML = `<div class="card placeholder">${err.message}</div>`;
+    }
   };
 
   const bindUserAdd = () => {
@@ -157,20 +294,20 @@
     button.addEventListener('click', async () => {
       const username = qs('#user-username')?.value || '';
       const password = qs('#user-password')?.value || '';
-      const role = qs('#user-role')?.value || 'user';
       if (!username || !password) {
-        setStatus('Missing fields');
+        setStatus('缺少用户名或密码');
         return;
       }
       try {
+        setStatus('创建中...');
         await apiFetch('/api/admin/users', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, password, role }),
+          body: JSON.stringify({ username, password }),
         });
         qs('#user-username').value = '';
         qs('#user-password').value = '';
-        qs('#user-role').value = 'user';
+        setStatus('已创建');
         loadUsers();
       } catch (err) {
         setStatus(err.message);
@@ -178,161 +315,16 @@
     });
   };
 
-  const loadPostList = async (module) => {
-    const container = qs(`#${module}-admin-list`);
-    if (!container) return;
-    const data = await apiFetch(`/api/${module}`);
-    container.innerHTML = '';
-    if (!data.items || data.items.length === 0) {
-      container.innerHTML = `<div class="card placeholder">No ${module} posts yet.</div>`;
-      return;
-    }
-    data.items.forEach((item) => {
-      const row = document.createElement('div');
-      row.className = 'stack-item';
-      const meta = item.key || '';
-      const title = item.title || item.key;
-      row.innerHTML = `<div><strong>${title}</strong><div class="album-meta">${meta}</div></div>`;
-      const del = document.createElement('button');
-      del.textContent = 'Delete';
-      del.addEventListener('click', async () => {
-        if (!window.confirm(`Delete ${title}?`)) return;
-        try {
-          setStatus(`Deleting ${module}...`);
-          await apiFetch('/api/admin/posts', {
-            method: 'DELETE',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ module, key: item.key }),
-          });
-          setStatus('Deleted');
-          loadPostList(module);
-        } catch (err) {
-          setStatus(err.message);
-        }
-      });
-      row.appendChild(del);
-      container.appendChild(row);
-    });
-  };
-
-  const bindPostUpload = (module) => {
-    const button = qs(`#${module}-upload`);
-    const mdInput = qs(`#${module}-md`);
-    const attachmentsInput = qs(`#${module}-attachments`);
-    const pathInput = qs(`#${module}-path`);
-    if (!button) return;
-    button.addEventListener('click', async () => {
-      const mdFile = mdInput?.files?.[0] || null;
-      if (!mdFile) {
-        setStatus('Missing markdown file');
-        return;
-      }
-      const formData = new FormData();
-      formData.append('module', module);
-      const customKey = pathInput?.value?.trim() || '';
-      if (customKey) formData.append('key', customKey);
-      formData.append('markdown', mdFile);
-      const attachments = attachmentsInput?.files ? Array.from(attachmentsInput.files) : [];
-      attachments.forEach((file) => {
-        formData.append('attachments', file);
-      });
-      button.disabled = true;
-      button.classList.add('is-busy');
-      setStatus(`Uploading ${module}...`);
-      try {
-        const data = await apiFetch('/api/admin/posts', { method: 'POST', body: formData });
-        if (data.warnings && data.warnings.length) {
-          setStatus(`Upload complete. ${data.warnings.join(' | ')}`);
-        } else {
-          setStatus('Upload complete');
-        }
-        if (pathInput) pathInput.value = '';
-        if (mdInput) mdInput.value = '';
-        if (attachmentsInput) attachmentsInput.value = '';
-        loadPostList(module);
-      } catch (err) {
-        setStatus(err.message);
-      } finally {
-        button.disabled = false;
-        button.classList.remove('is-busy');
-      }
-    });
-  };
-
-  const loadAccounts = async () => {
-    const descriptionEl = qs('#account-description');
-    const listEl = qs('#account-list');
-    if (!descriptionEl && !listEl) return;
-    const data = await apiFetch('/api/account');
-    if (descriptionEl) {
-      descriptionEl.value = data.current_user?.description || '';
-    }
-    if (listEl) {
-      listEl.innerHTML = '';
-      if (!data.accounts || data.accounts.length === 0) {
-        listEl.innerHTML = '<div class="card placeholder">No other accounts yet.</div>';
-      } else {
-        data.accounts.forEach((account) => {
-          const row = document.createElement('div');
-          row.className = 'stack-item';
-          const description = account.description || 'No description yet.';
-          const wrapper = document.createElement('div');
-          const title = document.createElement('strong');
-          title.textContent = account.username;
-          const meta = document.createElement('div');
-          meta.className = 'album-meta';
-          meta.textContent = description;
-          wrapper.appendChild(title);
-          wrapper.appendChild(meta);
-          row.appendChild(wrapper);
-          listEl.appendChild(row);
-        });
-      }
-    }
-  };
-
-  const bindAccountSave = () => {
-    const button = qs('#account-save');
-    const descriptionEl = qs('#account-description');
-    if (!button || !descriptionEl) return;
-    button.addEventListener('click', async () => {
-      setStatus('Saving description...');
-      try {
-        await apiFetch('/api/account/description', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ description: descriptionEl.value || '' }),
-        });
-        setStatus('Description saved');
-        loadAccounts();
-      } catch (err) {
-        setStatus(err.message);
-      }
-    });
-  };
-
-  const loadAll = async () => {
-    await loadAccounts();
-    await loadQuickLinks();
-    await loadFriendLinks();
-    await loadUsers();
-    await loadPostList('blog');
-    await loadPostList('note');
-  };
-
   const init = async () => {
     try {
-      await loadAll();
+      await loadAccounts();
+      await loadCollab();
+      await loadUsers();
     } catch (err) {
       setStatus(err.message);
     }
-
-    bindQuickAdd();
-    bindFriendAdd();
-    bindUserAdd();
     bindAccountSave();
-    bindPostUpload('blog');
-    bindPostUpload('note');
+    bindUserAdd();
   };
 
   init();

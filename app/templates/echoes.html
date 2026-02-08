@@ -2,39 +2,39 @@
 {% block content %}
 <section class="hero hero--page">
   <div>
-    <p class="hero-kicker">Asset library</p>
-    <h1>Every file, every module.</h1>
-    <p class="hero-sub">Browse images, audio, video, and documents across blog, note, and daily reel.</p>
+    <p class="hero-kicker">Echoes</p>
+    <h1>所有公开项目的文件流。</h1>
+    <p class="hero-sub">这里汇总大家公开分享的一切。点击任意文件可打开对应项目展示窗。</p>
   </div>
   <div class="hero-actions filter-row">
     <div class="filter-shell">
       <label class="filter-group">
-        <span>Module</span>
+        <span>模块</span>
         <select class="filter-select" id="album-module">
           <option value="">All</option>
           <option value="blog">Blog</option>
           <option value="note">Note</option>
-          <option value="everyday">Daily Reel</option>
         </select>
       </label>
       <label class="filter-group">
-        <span>Type</span>
+        <span>类型</span>
         <select class="filter-select" id="album-type">
           <option value="">All</option>
           <option value="image">Image</option>
           <option value="video">Video</option>
           <option value="audio">Audio</option>
           <option value="pdf">PDF</option>
+          <option value="text">Text</option>
           <option value="file">File</option>
         </select>
       </label>
-      <button class="pill-btn" data-album-load>Refresh</button>
+      <button class="pill-btn" data-album-load>刷新</button>
     </div>
   </div>
 </section>
 
 <section class="album-stream" id="album-grid" data-album-stream>
-  <div class="album-empty">Load attachments to view the library.</div>
+  <div class="album-empty">点击刷新以加载文件流。</div>
 </section>
 <div class="album-stream-footer" data-album-sentinel>
   <span class="album-stream-status" data-album-status>Loading...</span>
@@ -49,23 +49,8 @@
   </div>
 </div>
 
-<template id="modal-blog-template">
-  {% set window_prefix = 'modal-blog' %}
-  {% include "blog_window.html" %}
-</template>
-<template id="modal-note-template">
-  {% set window_prefix = 'modal-note' %}
-  {% include "note_window.html" %}
-</template>
-<template id="modal-dailyreel-template">
-  <article class="panel panel--viewer">
-    <div class="viewer-head">
-      <h2 id="modal-dailyreel-title">Daily reel</h2>
-      <div class="viewer-meta" id="modal-dailyreel-meta"></div>
-    </div>
-    {% set reel_window_id = 'modal-dailyreel-window' %}
-    {% set reel_mode = 'viewer' %}
-    {% include "dailyreel_window.html" %}
-  </article>
+<template id="modal-project-template">
+  {% set window_prefix = 'modal-project' %}
+  {% include "project_window.html" %}
 </template>
 {% endblock %}
