@@ -126,12 +126,29 @@ class WhiteboardCard(db.Model, TimestampMixin):
     text = db.Column(db.Text, default="")
     created_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     created_by = db.relationship("User", foreign_keys=[created_by_id])
+    attachments = db.relationship(
+        "WhiteboardAttachment",
+        backref=db.backref("card", lazy=True),
+        lazy=True,
+        cascade="all, delete-orphan",
+    )
+
+
+class WhiteboardAttachment(db.Model, TimestampMixin):
+    id = db.Column(db.Integer, primary_key=True)
+    card_id = db.Column(db.Integer, db.ForeignKey("whiteboard_card.id"), nullable=False, index=True)
+    oss_key = db.Column(db.String(512), nullable=False)
+    filename = db.Column(db.String(255), default="")
+    content_type = db.Column(db.String(255), default="")
+    media_type = db.Column(db.String(16), default="file")  # image | video | audio | pdf | file
+    size_bytes = db.Column(db.Integer, default=0)
+    sha256 = db.Column(db.String(64), default="")
 
 
 class WhiteboardEvent(db.Model, TimestampMixin):
     id = db.Column(db.Integer, primary_key=True)
     board_date = db.Column(db.String(16), nullable=False, index=True)
-    event_type = db.Column(db.String(16), nullable=False)  # create | update | move | delete
+    event_type = db.Column(db.String(16), nullable=False)  # create | update | delete | reset
     card_id = db.Column(db.Integer, nullable=False, index=True)
     actor_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
     actor_user = db.relationship("User", foreign_keys=[actor_user_id])
