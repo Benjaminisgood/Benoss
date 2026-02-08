@@ -29,3 +29,18 @@ def project_object_key(project_uuid: str, object_name: str) -> str:
     object_name = ensure_relative_key(object_name)
     return join(project_prefix(project_uuid), object_name)
 
+
+def whiteboard_prefix() -> str:
+    base = current_app.config.get("OSS_PREFIX", "benoss")
+    return join(base, "whiteboard")
+
+
+def whiteboard_date_prefix(board_date: str) -> str:
+    # board_date is validated elsewhere (YYYY-MM-DD). Keep it as a path segment for bucketing.
+    board_date = ensure_relative_key(board_date)
+    return join(whiteboard_prefix(), board_date)
+
+
+def whiteboard_object_key(board_date: str, object_name: str) -> str:
+    object_name = ensure_relative_key(object_name)
+    return join(whiteboard_date_prefix(board_date), object_name)

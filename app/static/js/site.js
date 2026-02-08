@@ -1225,8 +1225,15 @@
     const todayCard = qs('#today-card');
 
     const whiteboardEl = qs('#whiteboard');
+    const whiteboardWorldEl = qs('#whiteboard-world');
     const whiteboardDateEl = qs('#whiteboard-date');
     const whiteboardAddBtn = qs('[data-whiteboard-add]');
+    const whiteboardMediaBtn = qs('[data-whiteboard-media]');
+    const whiteboardImportBtn = qs('[data-whiteboard-import]');
+    const whiteboardExportBtn = qs('[data-whiteboard-export]');
+    const whiteboardResetBtn = qs('[data-whiteboard-reset]');
+    const whiteboardImportFile = qs('#whiteboard-import-file');
+    const whiteboardMediaFile = qs('#whiteboard-media-file');
 
     const loadQuickLinks = async () => {
       if (!tbody) return;

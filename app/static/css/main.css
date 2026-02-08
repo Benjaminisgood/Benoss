@@ -755,6 +755,8 @@ select.input {
 .whiteboard {
   position: relative;
   min-height: 420px;
+  overflow: hidden;
+  touch-action: none;
   background: repeating-linear-gradient(
       0deg,
       rgba(15, 107, 93, 0.06),
@@ -764,6 +766,17 @@ select.input {
     ),
     radial-gradient(circle at 20% 10%, rgba(241, 124, 87, 0.12), transparent 45%),
     radial-gradient(circle at 85% 85%, rgba(15, 107, 93, 0.12), transparent 50%);
+}
+
+.whiteboard.is-panning {
+  cursor: grabbing;
+}
+
+.whiteboard-world {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+  will-change: transform;
 }
 
 .whiteboard-card {
@@ -802,6 +815,31 @@ select.input {
 
 .whiteboard-card__body {
   padding: 0.7rem;
+}
+
+.whiteboard-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin-bottom: 0.6rem;
+}
+
+.whiteboard-attachments img,
+.whiteboard-attachments video {
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+  border: 1px solid rgba(231, 216, 202, 0.9);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.whiteboard-attachments audio {
+  width: 100%;
+}
+
+.whiteboard-attachment__meta {
+  font-size: 0.78rem;
+  color: rgba(44, 38, 32, 0.7);
 }
 
 .whiteboard-card__body textarea {

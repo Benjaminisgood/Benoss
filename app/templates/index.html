@@ -70,9 +70,17 @@
       <div class="muted" id="whiteboard-date"></div>
       <div class="button-row">
         <button class="pill-btn" type="button" data-whiteboard-add>新增卡片</button>
+        <button class="pill-btn" type="button" data-whiteboard-media>插入媒体</button>
+        <button class="pill-btn" type="button" data-whiteboard-import>导入</button>
+        <button class="pill-btn" type="button" data-whiteboard-export>导出</button>
+        <button class="pill-btn" type="button" data-whiteboard-reset>重置视图</button>
       </div>
     </div>
-    <div class="whiteboard" id="whiteboard"></div>
+    <div class="whiteboard" id="whiteboard">
+      <div class="whiteboard-world" id="whiteboard-world"></div>
+    </div>
+    <input type="file" id="whiteboard-import-file" accept="application/json,.json" hidden />
+    <input type="file" id="whiteboard-media-file" accept="image/*,video/*,audio/*,application/pdf" hidden />
   </div>
 </section>
 
