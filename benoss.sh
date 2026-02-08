@@ -30,7 +30,7 @@ INFO_FILE="${BENOSS_INFO_FILE:-$RUNTIME_DIR/ip.info}"
 # Ports (single source of truth)
 ########################################
 # Main HTTP port exposed by Gunicorn
-APP_PORT="${BENOSS_APP_PORT:-5002}"
+APP_PORT="${BENOSS_APP_PORT:-80}"
 # Bind address (0.0.0.0 for server; change to 127.0.0.1 if you only reverse-proxy locally)
 BIND_HOST="${BENOSS_BIND_HOST:-0.0.0.0}"
 
@@ -339,7 +339,7 @@ Config via env vars:
   BENOSS_BACKUP_BASE=$BACKUP_BASE
 
 Examples:
-  BENOSS_APP_PORT=5002 $(basename "$0") start
+  BENOSS_APP_PORT=80 $(basename "$0") start
   $(basename "$0") init
   BENOSS_BACKUP_ITEMS=".env data uploads" $(basename "$0") update
   $(basename "$0") logs

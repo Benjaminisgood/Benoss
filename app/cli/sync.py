@@ -540,7 +540,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--base-url", default="", help="Benoss site base URL, e.g. http://127.0.0.1:5002")
+    common.add_argument("--base-url", default="", help="Benoss site base URL, e.g. http://127.0.0.1:80")
     common.add_argument("--project", type=int, default=0, help="Project id")
     common.add_argument("--dir", default=".", help="Local folder (repo root)")
     common.add_argument("--username", default="", help="Login username (or BENOSS_USERNAME)")

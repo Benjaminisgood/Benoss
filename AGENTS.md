@@ -120,7 +120,7 @@
 
 ### 7) 开发命令
 本地开发：
-```bash\npython -m venv .venv\nsource .venv/bin/activate\npython -m pip install -e .\npython -m flask --app app init-db\npython -m flask --app app run --debug --port 5002\n```
+```bash\npython -m venv .venv\nsource .venv/bin/activate\npython -m pip install -e .\npython -m flask --app app init-db\npython -m flask --app app run --debug --port 80\n```
 
 快速自检（建议改动后跑）：
 ```bash\npython -m compileall -q app\npython -m flask --app app routes\nnode --check app/static/js/site.js\nnode --check app/static/js/admin.js\n```

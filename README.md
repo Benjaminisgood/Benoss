@@ -31,7 +31,7 @@ python -m flask --app app init-db
 
 4. 启动：
 ```bash
-python -m flask --app app run --host 0.0.0.0 --port 5002 --debug
+python -m flask --app app run --host 0.0.0.0 --port 80 --debug
 ```
 
 ## 核心概念（Git 语义映射）
@@ -116,7 +116,7 @@ python -m flask --app app run --host 0.0.0.0 --port 5002 --debug
 
 ### 初始化（绑定 remote）
 ```bash
-benoss-sync init --base-url http://127.0.0.1:5002 --project 123 --dir ./myrepo
+benoss-sync init --base-url http://127.0.0.1:80 --project 123 --dir ./myrepo
 ```
 它会写入 `./myrepo/.benoss/config.json`（类似 repo 的 remote 配置）。
 
