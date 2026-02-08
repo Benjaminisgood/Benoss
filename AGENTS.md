@@ -1,6 +1,6 @@
 ## Benoss Agent Notes (Repo Instructions)
 
-这个仓库是一个 Flask 应用，目标是做一个“像 Git 一样”的学习项目平台：
+这个仓库是一个 Flask 应用，目标是做一个“好朋友一起成长和学习”的学习项目平台：
 - Blog / Note = Projects（类似 repo）
 - 文件任意类型（图片/音频/视频/文本/代码/文档）
 - clone（复制公开项目到自己的私有项目）
