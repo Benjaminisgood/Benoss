@@ -40,3 +40,6 @@ class Config:
 
     UPLOAD_TMP_DIR = str(DATA_DIR / "uploads")
     MAX_CONTENT_LENGTH = int(_get_env("MAX_CONTENT_LENGTH", 1024 * 1024 * 1024))
+
+    # Debounce whiteboard board.json snapshot writes to OSS (seconds).
+    WHITEBOARD_SNAPSHOT_DEBOUNCE_SECONDS = float(_get_env("WHITEBOARD_SNAPSHOT_DEBOUNCE_SECONDS", 6.0))

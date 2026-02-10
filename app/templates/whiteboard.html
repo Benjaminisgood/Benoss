@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero hero--page">
+  <div>
+    <p class="hero-kicker">Whiteboard</p>
+    <h1>公共白板。</h1>
+    <p class="hero-sub">拖动空白处平移 · 滚轮平移 · Ctrl/触控板捏合缩放 · 卡片头部 “-&gt;” 连接箭头。</p>
+  </div>
+  <div class="hero-actions">
+    <a class="pill-btn ghost" href="{{ url_for('site.home') }}">返回首页</a>
+  </div>
+</section>
+
+<section class="section-block">
+  <div class="whiteboard-shell whiteboard-shell--page">
+    <div class="whiteboard-head">
+      <div class="muted" id="whiteboard-date"></div>
+      <div class="button-row">
+        <button class="pill-btn" type="button" data-whiteboard-add>新增卡片</button>
+        <button class="pill-btn" type="button" data-whiteboard-media>插入媒体</button>
+        <button class="pill-btn" type="button" data-whiteboard-import>导入</button>
+        <button class="pill-btn" type="button" data-whiteboard-export>导出</button>
+        <button class="pill-btn" type="button" data-whiteboard-reset>重置视图</button>
+      </div>
+    </div>
+    <div class="whiteboard-hint muted">拖动空白处平移 · 滚轮平移 · Ctrl/触控板捏合缩放 · 卡片头部 “-&gt;” 连接箭头</div>
+    <div class="whiteboard" id="whiteboard">
+      <div class="whiteboard-world" id="whiteboard-world"></div>
+    </div>
+    <input type="file" id="whiteboard-import-file" accept="application/json,.json" hidden />
+    <input type="file" id="whiteboard-media-file" accept="image/*,video/*,audio/*,application/pdf" hidden />
+  </div>
+</section>
+{% endblock %}
+

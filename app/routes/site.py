@@ -1,3 +1,5 @@
+import re
+
 from flask import Blueprint, g, redirect, render_template, request, session, url_for
 
 from ..models import User
@@ -10,6 +12,10 @@ site_bp = Blueprint("site", __name__)
 @site_bp.route("/")
 @login_required()
 def home():
+    date_str = (request.args.get("date") or "").strip()
+    if date_str and re.match(r"^\\d{4}-\\d{2}-\\d{2}$", date_str):
+        # Backward-compatible: whiteboard used to live on home with ?date=...
+        return redirect(url_for("site.whiteboard", date=date_str))
     return render_template("index.html", page="home", title="Benoss")
 
 
@@ -31,10 +37,16 @@ def echoes():
     return render_template("echoes.html", page="echoes", title="Echoes")
 
 
-@site_bp.route("/dailyreel")
+@site_bp.route("/dailyreal")
 @login_required()
-def dailyreel():
-    return render_template("dailyreel.html", page="dailyreel", title="Dailyreel")
+def dailyreal():
+    return render_template("dailyreal.html", page="dailyreal", title="Dailyreal")
+
+
+@site_bp.route("/whiteboard")
+@login_required()
+def whiteboard():
+    return render_template("whiteboard.html", page="whiteboard", title="Whiteboard")
 
 
 @site_bp.route("/control-room")
@@ -78,4 +90,3 @@ def login():
 def logout():
     logout_user()
     return redirect(url_for("site.login"))
-

@@ -80,10 +80,11 @@ python -m flask --app app run --host 0.0.0.0 --port 80 --debug
 - 相同 `path` 的文件以最后一次写入为准（简化版协作）
 
 ## 页面与功能
-- `/` Home：Quick Links（全员可编辑）+ 公共白板（每天换新、事件轮询同步）
+- `/` Home：Quick Links（全员可编辑）+ 今日统计（Dailyreal 摘要）
+- `/whiteboard`：公共白板（每天换新、事件轮询同步、可插入媒体、导入导出）
 - `/blog` / `/note`：Projects 列表 + repo 窗口（文件列表、预览、上传/删除、clone、propose push）
 - `/echoes`：公开项目文件流（聚合 public projects 的文件）
-- `/dailyreel`：日历 + 指定日期的榜单与 feed
+- `/dailyreal`：日历 + 指定日期的榜单与 feed
 - `/control-room`：账号简介 + 协作收件箱/发件箱 + 用户管理（仅 seeded admin）
 
 ## 存储布局
@@ -112,10 +113,10 @@ Benoss 把“业务状态”和“文件内容”分层存储：
 - 默认通过签名 GET URL 访问（`app/oss.py::public_url`）
 - 如果你有公共域名/CDN，可设置 `ALIYUN_OSS_PUBLIC_BASE_URL` 并启用 `ALIYUN_OSS_ASSUME_PUBLIC=1` 直接拼接 URL
 
-## Dailyreel 的实现（为什么能“看每天”）
-- `GET /api/dailyreel/today?date=YYYY-MM-DD&tz_offset=<minutes>`
+## Dailyreal 的实现（为什么能“看每天”）
+- `GET /api/dailyreal/today?date=YYYY-MM-DD&tz_offset=<minutes>`
   - 返回该日所有用户的 git/clone scoreboard + 该日 feed
-- `GET /api/dailyreel/month?month=YYYY-MM&tz_offset=<minutes>`
+- `GET /api/dailyreal/month?month=YYYY-MM&tz_offset=<minutes>`
   - 返回“当前用户”该月每天的统计，用于日历高亮与数字
 
 注意：`tz_offset` 用浏览器的 `Date().getTimezoneOffset()`（分钟），保证“按本地日历日”统计不串天。
@@ -195,9 +196,9 @@ Home：
 - `GET /api/whiteboard/export`、`POST /api/whiteboard/import`
 - `GET /api/whiteboard/snapshot`（返回 OSS 的 `board.json` 签名 URL）
 
-Dailyreel：
-- `GET /api/dailyreel/today`
-- `GET /api/dailyreel/month`
+Dailyreal：
+- `GET /api/dailyreal/today`
+- `GET /api/dailyreal/month`
 
 ## 环境变量
 必需/常用：

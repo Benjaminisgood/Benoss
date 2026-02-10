@@ -1114,10 +1114,10 @@
 
 	        const openBoard = document.createElement('a');
 	        openBoard.className = 'pill-btn';
-	        openBoard.href = `/?date=${encodeURIComponent(dateLabel)}${focusCardId ? `#whiteboard-card-${focusCardId}` : ''}`;
+	        openBoard.href = `/whiteboard?date=${encodeURIComponent(dateLabel)}${focusCardId ? `#whiteboard-card-${focusCardId}` : ''}`;
 	        openBoard.target = '_blank';
 	        openBoard.rel = 'noopener';
-	        openBoard.textContent = '在主页打开';
+	        openBoard.textContent = '打开白板';
 
 	        const snapshotBtn = document.createElement('button');
 	        snapshotBtn.type = 'button';
@@ -1733,14 +1733,14 @@
     loadEchoes(true);
   };
 
-  const initDailyreel = () => {
-    const refreshBtn = qs('[data-dailyreel-refresh]');
-    const dateEl = qs('#dailyreel-date');
-    const tableBody = qs('#dailyreel-scoreboard tbody');
-    const feed = qs('#dailyreel-feed');
+  const initDailyreal = () => {
+    const refreshBtn = qs('[data-dailyreal-refresh]');
+    const dateEl = qs('#dailyreal-date');
+    const tableBody = qs('#dailyreal-scoreboard tbody');
+    const feed = qs('#dailyreal-feed');
 
-    const calendarGrid = qs('#dailyreel-calendar');
-    const monthTitle = qs('#dailyreel-month');
+    const calendarGrid = qs('#dailyreal-calendar');
+    const monthTitle = qs('#dailyreal-month');
     const prevBtn = qs('[data-cal-prev]');
     const nextBtn = qs('[data-cal-next]');
     const todayBtn = qs('[data-cal-today]');
@@ -1773,82 +1773,93 @@
       history.replaceState(null, '', `${window.location.pathname}?${params}`);
     };
 
-    const loadDay = async (date) => {
-      if (!isValidDate(date)) return;
-      selectedDate = date;
-      syncUrl();
-      if (dateEl) dateEl.textContent = date;
-      if (tableBody) tableBody.innerHTML = '<tr><td class="muted" colspan="5">Loading...</td></tr>';
-      if (feed) feed.innerHTML = '<div class="card placeholder">Loading...</div>';
+	    const loadDay = async (date) => {
+	      if (!isValidDate(date)) return;
+	      selectedDate = date;
+	      syncUrl();
+	      if (dateEl) dateEl.textContent = date;
+	      if (tableBody) tableBody.innerHTML = '<tr><td class="muted" colspan="7">Loading...</td></tr>';
+	      if (feed) feed.innerHTML = '<div class="card placeholder">Loading...</div>';
 
       try {
-        const data = await apiFetch(`/api/dailyreel/today?date=${date}&tz_offset=${tzOffset()}`);
+        const data = await apiFetch(`/api/dailyreal/today?date=${date}&tz_offset=${tzOffset()}`);
         const scoreboard = Array.isArray(data.scoreboard) ? data.scoreboard : [];
         const events = Array.isArray(data.events) ? data.events : [];
 
         if (dateEl) dateEl.textContent = data.date || date;
 
-        if (tableBody) {
-          tableBody.innerHTML = '';
-          if (!scoreboard.length) {
-            tableBody.innerHTML = '<tr><td class="muted" colspan="5">今天还没有记录。</td></tr>';
-          } else {
-            scoreboard.forEach((row) => {
-              const tr = document.createElement('tr');
-              const total = (row.git_blog || 0) + (row.git_note || 0) + (row.clone || 0);
-              tr.innerHTML = `
-                <td>${row.username || ''}</td>
-                <td>${row.git_blog || 0}</td>
-                <td>${row.git_note || 0}</td>
-                <td>${row.clone || 0}</td>
-                <td><strong>${total}</strong></td>
-              `;
-              tableBody.appendChild(tr);
-            });
-          }
-        }
+	        if (tableBody) {
+	          tableBody.innerHTML = '';
+	          if (!scoreboard.length) {
+	            tableBody.innerHTML = '<tr><td class="muted" colspan="7">今天还没有记录。</td></tr>';
+	          } else {
+	            scoreboard.forEach((row) => {
+	              const tr = document.createElement('tr');
+	              const total =
+	                (row.git_blog || 0) + (row.git_note || 0) + (row.push || 0) + (row.clone || 0) + (row.whiteboard || 0);
+	              tr.innerHTML = `
+	                <td>${row.username || ''}</td>
+	                <td>${row.git_blog || 0}</td>
+	                <td>${row.git_note || 0}</td>
+	                <td>${row.push || 0}</td>
+	                <td>${row.clone || 0}</td>
+	                <td>${row.whiteboard || 0}</td>
+	                <td><strong>${total}</strong></td>
+	              `;
+	              tableBody.appendChild(tr);
+	            });
+	          }
+	        }
 
-        if (feed) {
-          feed.innerHTML = '';
-          if (!events.length) {
-            feed.innerHTML = '<div class="card placeholder">今天还没有 git / clone 记录。</div>';
-          } else {
-            events.forEach((ev) => {
-              const row = document.createElement('div');
-              row.className = 'stack-item';
-              const left = document.createElement('div');
-              const strong = document.createElement('strong');
-              const type = ev.type || '';
-              const module = ev.module || ev.project?.module || '';
-              const actor = ev.actor?.username || '';
-              const projTitle = ev.project?.title || `Project #${ev.project?.id || ''}`;
-              strong.textContent = `${actor ? `@${actor} ` : ''}${type} ${module}`;
-              const meta = document.createElement('div');
-              meta.className = 'album-meta';
-              const time = ev.created_at
-                ? new Date(ev.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                : '';
-              meta.textContent = [time, projTitle].filter(Boolean).join('  ·  ');
-              left.appendChild(strong);
-              left.appendChild(meta);
-              row.appendChild(left);
+	        if (feed) {
+	          feed.innerHTML = '';
+	          if (!events.length) {
+	            feed.innerHTML = '<div class="card placeholder">今天还没有记录。</div>';
+	          } else {
+	            events.forEach((ev) => {
+	              const row = document.createElement('div');
+	              row.className = 'stack-item';
+	              const left = document.createElement('div');
+	              const strong = document.createElement('strong');
+	              const type = ev.type || '';
+	              const module = ev.module || ev.project?.module || '';
+	              const actor = ev.actor?.username || '';
+	              const wbDate = ev.whiteboard?.date || '';
+	              const wbCardId = ev.whiteboard?.card_id || '';
+	              const projTitle = ev.project?.title || (wbDate ? `Whiteboard · ${wbDate}${wbCardId ? ` · #${wbCardId}` : ''}` : '');
+	              strong.textContent = `${actor ? `@${actor} ` : ''}${type} ${module}`;
+	              const meta = document.createElement('div');
+	              meta.className = 'album-meta';
+	              const time = ev.created_at
+	                ? new Date(ev.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+	                : '';
+	              meta.textContent = [time, projTitle].filter(Boolean).join('  ·  ');
+	              left.appendChild(strong);
+	              left.appendChild(meta);
+	              row.appendChild(left);
 
-              if (ev.project && ev.project.id) {
-                const a = document.createElement('a');
-                a.className = 'text-link';
-                a.href = `/${ev.project.module || module || 'blog'}?project=${ev.project.id}`;
-                a.textContent = '打开';
+	              if (ev.whiteboard && wbDate) {
+	                const a = document.createElement('a');
+	                a.className = 'text-link';
+	                a.href = `/whiteboard?date=${encodeURIComponent(wbDate)}${wbCardId ? `#whiteboard-card-${wbCardId}` : ''}`;
+	                a.textContent = '打开';
+	                row.appendChild(a);
+	              } else if (ev.project && ev.project.id) {
+	                const a = document.createElement('a');
+	                a.className = 'text-link';
+	                a.href = `/${ev.project.module || module || 'blog'}?project=${ev.project.id}`;
+	                a.textContent = '打开';
                 row.appendChild(a);
               }
               feed.appendChild(row);
             });
           }
         }
-      } catch (err) {
-        if (tableBody) tableBody.innerHTML = `<tr><td class="muted" colspan="5">${err.message}</td></tr>`;
-        if (feed) feed.innerHTML = `<div class="card placeholder">${err.message}</div>`;
-      }
-    };
+	      } catch (err) {
+	        if (tableBody) tableBody.innerHTML = `<tr><td class="muted" colspan="7">${err.message}</td></tr>`;
+	        if (feed) feed.innerHTML = `<div class="card placeholder">${err.message}</div>`;
+	      }
+	    };
 
     const loadMonth = async () => {
       if (!calendarGrid) return;
@@ -1857,7 +1868,7 @@
       calendarGrid.innerHTML = '<div class="muted">Loading...</div>';
       monthCounts = new Map();
       try {
-        const data = await apiFetch(`/api/dailyreel/month?month=${month}&tz_offset=${tzOffset()}`);
+        const data = await apiFetch(`/api/dailyreal/month?month=${month}&tz_offset=${tzOffset()}`);
         const days = Array.isArray(data.days) ? data.days : [];
         days.forEach((row) => {
           if (row && row.date) monthCounts.set(row.date, row);
@@ -1885,30 +1896,34 @@
       const startDow = (first.getDay() + 6) % 7; // 0..6 (Mon..Sun)
       const totalCells = Math.ceil((startDow + daysInMonth) / 7) * 7;
 
-      const addCell = (label, dateStr, muted) => {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'calendar-day';
-        btn.textContent = String(label);
+	      const addCell = (label, dateStr, muted) => {
+	        const btn = document.createElement('button');
+	        btn.type = 'button';
+	        btn.className = 'calendar-day';
+	        btn.textContent = String(label);
         if (muted) btn.classList.add('is-muted');
         if (dateStr === selectedDate) btn.classList.add('is-active');
         if (dateStr === today) btn.classList.add('is-today');
 
-        const info = dateStr ? monthCounts.get(dateStr) : null;
-        const gitTotal = info ? Number(info.git_blog || 0) + Number(info.git_note || 0) : 0;
-        const cloneTotal = info ? Number(info.clone || 0) : 0;
-        const total = gitTotal + cloneTotal;
-        if (total > 0) btn.classList.add('has-entry');
+	        const info = dateStr ? monthCounts.get(dateStr) : null;
+	        const gitTotal = info ? Number(info.git_blog || 0) + Number(info.git_note || 0) : 0;
+	        const pushTotal = info ? Number(info.push || 0) : 0;
+	        const cloneTotal = info ? Number(info.clone || 0) : 0;
+	        const wbTotal = info ? Number(info.whiteboard || 0) : 0;
+	        const total = gitTotal + pushTotal + cloneTotal + wbTotal;
+	        if (total > 0) btn.classList.add('has-entry');
 
-        if (total > 0) {
-          const count = document.createElement('span');
-          count.className = 'calendar-day__count';
-          count.textContent = gitTotal > 0 ? String(gitTotal) : `c${cloneTotal}`;
-          if (info) {
-            count.title = `git: ${gitTotal} (blog ${Number(info.git_blog || 0)}, note ${Number(info.git_note || 0)}) · clone: ${cloneTotal}`;
-          }
-          btn.appendChild(count);
-        }
+	        if (total > 0) {
+	          const count = document.createElement('span');
+	          count.className = 'calendar-day__count';
+	          count.textContent = String(total);
+	          if (info) {
+	            count.title = `git: ${gitTotal} (blog ${Number(info.git_blog || 0)}, note ${Number(
+	              info.git_note || 0
+	            )}) · push: ${pushTotal} · clone: ${cloneTotal} · whiteboard: ${wbTotal}`;
+	          }
+	          btn.appendChild(count);
+	        }
 
         if (!muted && dateStr) {
           btn.addEventListener('click', () => {
@@ -2100,21 +2115,23 @@
       const date = formatDate(new Date());
       todayCard.innerHTML = '<p class="muted">Loading...</p>';
       try {
-        const tzOffset = new Date().getTimezoneOffset();
-        const data = await apiFetch(`/api/dailyreel/today?date=${date}&tz_offset=${tzOffset}`);
-        const scoreboard = Array.isArray(data.scoreboard) ? data.scoreboard : [];
-        const totalGit = scoreboard.reduce((sum, r) => sum + (r.git_blog || 0) + (r.git_note || 0), 0);
-        const totalClone = scoreboard.reduce((sum, r) => sum + (r.clone || 0), 0);
-        const top = scoreboard[0];
-        todayCard.innerHTML = `
-          <h3>${date}</h3>
-          <p class="muted">${totalGit} git · ${totalClone} clone</p>
-          <p class="muted">${top ? `第一: ${top.username} (${(top.git_blog || 0) + (top.git_note || 0) + (top.clone || 0)})` : '今天还没有记录。'}</p>
-        `;
-      } catch (err) {
-        todayCard.innerHTML = `<p class="muted">${err.message}</p>`;
-      }
-    };
+	        const tzOffset = new Date().getTimezoneOffset();
+	        const data = await apiFetch(`/api/dailyreal/today?date=${date}&tz_offset=${tzOffset}`);
+	        const scoreboard = Array.isArray(data.scoreboard) ? data.scoreboard : [];
+	        const totalGit = scoreboard.reduce((sum, r) => sum + (r.git_blog || 0) + (r.git_note || 0), 0);
+	        const totalPush = scoreboard.reduce((sum, r) => sum + (r.push || 0), 0);
+	        const totalClone = scoreboard.reduce((sum, r) => sum + (r.clone || 0), 0);
+	        const totalWb = scoreboard.reduce((sum, r) => sum + (r.whiteboard || 0), 0);
+	        const top = scoreboard[0];
+	        todayCard.innerHTML = `
+	          <h3>${date}</h3>
+	          <p class="muted">${totalGit} git · ${totalPush} push · ${totalClone} clone · ${totalWb} whiteboard</p>
+	          <p class="muted">${top ? `第一: ${top.username} (${(top.git_blog || 0) + (top.git_note || 0) + (top.push || 0) + (top.clone || 0) + (top.whiteboard || 0)})` : '今天还没有记录。'}</p>
+	        `;
+	      } catch (err) {
+	        todayCard.innerHTML = `<p class="muted">${err.message}</p>`;
+	      }
+	    };
 
     const initWhiteboard = () => {
       if (!whiteboardEl || !whiteboardWorldEl) return;
@@ -2931,11 +2948,11 @@
     initWhiteboard();
   };
 
-  initNav();
+	  initNav();
 
-  if (page === 'home') initHome();
-  if (page === 'blog') initProjectsPage('blog');
-  if (page === 'note') initProjectsPage('note');
-  if (page === 'echoes') initEchoes();
-  if (page === 'dailyreel') initDailyreel();
-})();
+	  if (page === 'home' || page === 'whiteboard') initHome();
+	  if (page === 'blog') initProjectsPage('blog');
+	  if (page === 'note') initProjectsPage('note');
+	  if (page === 'echoes') initEchoes();
+	  if (page === 'dailyreal') initDailyreal();
+	})();

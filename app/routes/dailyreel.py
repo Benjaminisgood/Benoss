@@ -2,13 +2,14 @@ import calendar
 from datetime import datetime, timedelta
 
 from flask import Blueprint, g, jsonify, request
+from sqlalchemy import func
 
 from ..extensions import db
-from ..models import Project, ProjectActivity, User
+from ..models import Project, ProjectActivity, User, WhiteboardEvent
 from ..utils.session_auth import login_required
 
 
-dailyreel_bp = Blueprint("dailyreel", __name__)
+dailyreal_bp = Blueprint("dailyreal", __name__)
 
 
 def _validate_date(date_str: str) -> str:
@@ -36,9 +37,9 @@ def _tz_offset_delta(value: str | None) -> timedelta:
     return timedelta(minutes=minutes)
 
 
-@dailyreel_bp.route("/api/dailyreel/today", methods=["GET"])
+@dailyreal_bp.route("/api/dailyreal/today", methods=["GET"])
 @login_required()
-def dailyreel_today():
+def dailyreal_today():
     date_str = (request.args.get("date") or "").strip()
     if not date_str:
         date_str = datetime.utcnow().strftime("%Y-%m-%d")
@@ -59,56 +60,165 @@ def dailyreel_today():
             "username": user.username,
             "git_blog": 0,
             "git_note": 0,
+            "push": 0,
             "clone": 0,
+            "whiteboard": 0,
         }
         for user in users
     }
 
-    # Events (git/clone) for the day.
-    query = (
+    # Scoreboard counts: git/push/clone.
+    for actor_user_id, type_, module, n in (
+        db.session.query(
+            ProjectActivity.actor_user_id,
+            ProjectActivity.type,
+            ProjectActivity.module,
+            func.count(ProjectActivity.id),
+        )
+        .filter(
+            ProjectActivity.created_at >= start,
+            ProjectActivity.created_at < end,
+            ProjectActivity.type.in_(["git", "clone", "push"]),
+        )
+        .group_by(ProjectActivity.actor_user_id, ProjectActivity.type, ProjectActivity.module)
+        .all()
+    ):
+        row = counts.get(actor_user_id)
+        if row is None:
+            continue
+        if type_ == "git":
+            if module == "blog":
+                row["git_blog"] += int(n or 0)
+            elif module == "note":
+                row["git_note"] += int(n or 0)
+        elif type_ == "clone":
+            row["clone"] += int(n or 0)
+        elif type_ == "push":
+            row["push"] += int(n or 0)
+
+    # Scoreboard counts: whiteboard events.
+    # For updates, count distinct card ids to avoid inflating score while typing/dragging.
+    for actor_user_id, distinct_cards in (
+        db.session.query(
+            WhiteboardEvent.actor_user_id,
+            func.count(func.distinct(WhiteboardEvent.card_id)),
+        )
+        .filter(
+            WhiteboardEvent.created_at >= start,
+            WhiteboardEvent.created_at < end,
+            WhiteboardEvent.event_type == "update",
+            WhiteboardEvent.card_id > 0,
+        )
+        .group_by(WhiteboardEvent.actor_user_id)
+        .all()
+    ):
+        row = counts.get(actor_user_id)
+        if row is not None:
+            row["whiteboard"] += int(distinct_cards or 0)
+
+    for actor_user_id, event_type, n in (
+        db.session.query(
+            WhiteboardEvent.actor_user_id,
+            WhiteboardEvent.event_type,
+            func.count(WhiteboardEvent.id),
+        )
+        .filter(
+            WhiteboardEvent.created_at >= start,
+            WhiteboardEvent.created_at < end,
+            WhiteboardEvent.event_type.in_(["create", "delete", "reset", "link_create", "link_delete"]),
+        )
+        .group_by(WhiteboardEvent.actor_user_id, WhiteboardEvent.event_type)
+        .all()
+    ):
+        row = counts.get(actor_user_id)
+        if row is not None:
+            row["whiteboard"] += int(n or 0)
+
+    # Day feed events: project activity + whiteboard activity (most recent first).
+    raw_events: list[tuple[datetime, dict]] = []
+
+    for act, project, actor in (
         db.session.query(ProjectActivity, Project, User)
         .join(Project, ProjectActivity.project_id == Project.id)
         .join(User, ProjectActivity.actor_user_id == User.id)
         .filter(
             ProjectActivity.created_at >= start,
             ProjectActivity.created_at < end,
-            ProjectActivity.type.in_(["git", "clone"]),
+            ProjectActivity.type.in_(["git", "clone", "push"]),
         )
         .order_by(ProjectActivity.created_at.desc(), ProjectActivity.id.desc())
-        .limit(1000)
-    )
-
-    events = []
-    for act, project, actor in query.all():
-        row = counts.get(actor.id)
-        if row is not None:
-            if act.type == "git":
-                if act.module == "blog":
-                    row["git_blog"] += 1
-                elif act.module == "note":
-                    row["git_note"] += 1
-            elif act.type == "clone":
-                row["clone"] += 1
-
-        events.append(
-            {
-                "id": act.id,
-                "type": act.type,
-                "module": act.module,
-                "created_at": act.created_at.isoformat() + "Z" if act.created_at else None,
-                "actor": {"id": actor.id, "username": actor.username},
-                "project": {
-                    "id": project.id,
-                    "title": project.title,
-                    "module": project.module,
-                    "owner_id": project.owner_id,
+        .limit(800)
+        .all()
+    ):
+        if not act.created_at:
+            continue
+        raw_events.append(
+            (
+                act.created_at,
+                {
+                    "id": f"p{act.id}",
+                    "type": act.type,
+                    "module": act.module,
+                    "created_at": act.created_at.isoformat() + "Z" if act.created_at else None,
+                    "actor": {"id": actor.id, "username": actor.username},
+                    "project": {
+                        "id": project.id,
+                        "title": project.title,
+                        "module": project.module,
+                        "owner_id": project.owner_id,
+                    },
                 },
-            }
+            )
         )
+
+    for ev, actor in (
+        db.session.query(WhiteboardEvent, User)
+        .join(User, WhiteboardEvent.actor_user_id == User.id)
+        .filter(
+            WhiteboardEvent.created_at >= start,
+            WhiteboardEvent.created_at < end,
+            WhiteboardEvent.event_type.in_(["create", "update", "delete", "reset", "link_create", "link_delete"]),
+        )
+        .order_by(WhiteboardEvent.created_at.desc(), WhiteboardEvent.id.desc())
+        .limit(800)
+        .all()
+    ):
+        if not ev.created_at:
+            continue
+        raw_events.append(
+            (
+                ev.created_at,
+                {
+                    "id": f"w{ev.id}",
+                    "type": ev.event_type,
+                    "module": "whiteboard",
+                    "created_at": ev.created_at.isoformat() + "Z" if ev.created_at else None,
+                    "actor": {"id": actor.id, "username": actor.username},
+                    "whiteboard": {
+                        "date": ev.board_date,
+                        "card_id": int(ev.card_id) if int(ev.card_id or 0) > 0 else None,
+                    },
+                },
+            )
+        )
+
+    raw_events.sort(key=lambda r: (r[0] or datetime.min), reverse=True)
+    events = [item for _, item in raw_events[:1000]]
 
     # Sort the scoreboard by total effort, then name.
     scoreboard = list(counts.values())
-    scoreboard.sort(key=lambda r: (-(r["git_blog"] + r["git_note"] + r["clone"]), r["username"].lower()))
+    scoreboard.sort(
+        key=lambda r: (
+            -(
+                int(r.get("git_blog") or 0)
+                + int(r.get("git_note") or 0)
+                + int(r.get("push") or 0)
+                + int(r.get("clone") or 0)
+                + int(r.get("whiteboard") or 0)
+            ),
+            r["username"].lower(),
+        )
+    )
 
     return jsonify(
         {
@@ -119,9 +229,9 @@ def dailyreel_today():
     )
 
 
-@dailyreel_bp.route("/api/dailyreel/month", methods=["GET"])
+@dailyreal_bp.route("/api/dailyreal/month", methods=["GET"])
 @login_required()
-def dailyreel_month():
+def dailyreal_month():
     user = g.get("user")
     if user is None:
         return jsonify({"error": "login required"}), 401
@@ -154,7 +264,7 @@ def dailyreel_month():
             ProjectActivity.actor_user_id == user.id,
             ProjectActivity.created_at >= start,
             ProjectActivity.created_at < end,
-            ProjectActivity.type.in_(["git", "clone"]),
+            ProjectActivity.type.in_(["git", "clone", "push"]),
         )
         .order_by(ProjectActivity.created_at.asc(), ProjectActivity.id.asc())
         .all()
@@ -168,27 +278,68 @@ def dailyreel_month():
         date_key = local_dt.strftime("%Y-%m-%d")
         row = by_date.get(date_key)
         if row is None:
-            row = {"git_blog": 0, "git_note": 0, "clone": 0}
+            row = {"git_blog": 0, "git_note": 0, "push": 0, "clone": 0, "whiteboard": 0}
             by_date[date_key] = row
         if act.type == "git":
             if act.module == "blog":
                 row["git_blog"] += 1
             elif act.module == "note":
                 row["git_note"] += 1
+        elif act.type == "push":
+            row["push"] += 1
         elif act.type == "clone":
             row["clone"] += 1
+
+    wb_updates_by_date: dict[str, set[int]] = {}
+    wb_events = (
+        WhiteboardEvent.query.filter(
+            WhiteboardEvent.actor_user_id == user.id,
+            WhiteboardEvent.created_at >= start,
+            WhiteboardEvent.created_at < end,
+        )
+        .order_by(WhiteboardEvent.created_at.asc(), WhiteboardEvent.id.asc())
+        .all()
+    )
+    for ev in wb_events:
+        if not ev.created_at:
+            continue
+        local_dt = ev.created_at - offset
+        date_key = local_dt.strftime("%Y-%m-%d")
+        row = by_date.get(date_key)
+        if row is None:
+            row = {"git_blog": 0, "git_note": 0, "push": 0, "clone": 0, "whiteboard": 0}
+            by_date[date_key] = row
+        if ev.event_type == "update" and int(ev.card_id or 0) > 0:
+            wb_updates_by_date.setdefault(date_key, set()).add(int(ev.card_id))
+        else:
+            row["whiteboard"] += 1
+
+    for date_key, ids in wb_updates_by_date.items():
+        row = by_date.get(date_key)
+        if row is None:
+            row = {"git_blog": 0, "git_note": 0, "push": 0, "clone": 0, "whiteboard": 0}
+            by_date[date_key] = row
+        row["whiteboard"] += len(ids)
 
     days = []
     for day in range(1, num_days + 1):
         date_key = f"{year:04d}-{month:02d}-{day:02d}"
-        row = by_date.get(date_key) or {"git_blog": 0, "git_note": 0, "clone": 0}
-        total = int(row["git_blog"] or 0) + int(row["git_note"] or 0) + int(row["clone"] or 0)
+        row = by_date.get(date_key) or {"git_blog": 0, "git_note": 0, "push": 0, "clone": 0, "whiteboard": 0}
+        total = (
+            int(row["git_blog"] or 0)
+            + int(row["git_note"] or 0)
+            + int(row["push"] or 0)
+            + int(row["clone"] or 0)
+            + int(row["whiteboard"] or 0)
+        )
         days.append(
             {
                 "date": date_key,
                 "git_blog": int(row["git_blog"] or 0),
                 "git_note": int(row["git_note"] or 0),
+                "push": int(row.get("push") or 0),
                 "clone": int(row["clone"] or 0),
+                "whiteboard": int(row.get("whiteboard") or 0),
                 "total": total,
             }
         )

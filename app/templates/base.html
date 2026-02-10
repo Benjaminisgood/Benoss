@@ -35,14 +35,14 @@
       </button>
 
       <div class="nav-panel" id="nav-panel">
-	        <div class="nav-links">
-	          <a class="nav-link{% if page == 'home' %} is-active{% endif %}" href="{{ url_for('site.home') }}">首页</a>
-	          <a class="nav-link{% if page == 'blog' %} is-active{% endif %}" href="{{ url_for('site.blog') }}">Blog</a>
-	          <a class="nav-link{% if page == 'dailyreel' %} is-active{% endif %}" href="{{ url_for('site.dailyreel') }}">Dailyreel</a>
-	          {% set echoes_active = page == 'echoes' %}
-	          <a class="nav-link{% if echoes_active %} is-active{% endif %}" href="{{ url_for('site.echoes') }}">Echoes</a>
-	          <a class="nav-link{% if page == 'note' %} is-active{% endif %}" href="{{ url_for('site.note') }}">Note</a>
-	        </div>
+        <div class="nav-links">
+          <a class="nav-link{% if page == 'home' %} is-active{% endif %}" href="{{ url_for('site.home') }}">首页</a>
+          <a class="nav-link{% if page == 'dailyreal' %} is-active{% endif %}" href="{{ url_for('site.dailyreal') }}">Dailyreal</a>
+          <a class="nav-link{% if page == 'blog' %} is-active{% endif %}" href="{{ url_for('site.blog') }}">Blog</a>
+          {% set echoes_active = page == 'echoes' %}
+          <a class="nav-link{% if echoes_active %} is-active{% endif %}" href="{{ url_for('site.echoes') }}">Echoes</a>
+          <a class="nav-link{% if page == 'note' %} is-active{% endif %}" href="{{ url_for('site.note') }}">Note</a>
+        </div>
         <div class="nav-actions">
           {% if current_user %}
             <a class="nav-action" href="{{ url_for('site.control_room') }}">{{ current_user.username }}</a>
@@ -59,7 +59,7 @@
 	  <footer class="global-footer">
 	    <div class="footer-inner">
 	      <span class="footer-brand">Benoss</span>
-	      <span class="footer-meta">Blog / Dailyreel / Echoes / Note</span>
+	      <span class="footer-meta">Blog / Dailyreal / Echoes / Note</span>
 	    </div>
 	  </footer>
 

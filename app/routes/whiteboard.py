@@ -1,5 +1,6 @@
 import hashlib
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -193,6 +194,46 @@ def _write_board_snapshot(date_str: str) -> None:
         current_app.logger.exception("Failed to write whiteboard snapshot for %s", date_str)
 
 
+_SNAPSHOT_LOCK = threading.Lock()
+_SNAPSHOT_STATE: dict[str, dict] = {}
+
+
+def _schedule_board_snapshot(date_str: str, delay_seconds: float | None = None) -> None:
+    # Avoid high-frequency OSS writes while typing: debounce snapshot writes per date.
+    app = current_app._get_current_object()
+    delay = delay_seconds
+    if delay is None:
+        try:
+            delay = float(app.config.get("WHITEBOARD_SNAPSHOT_DEBOUNCE_SECONDS", 6.0))
+        except Exception:
+            delay = 6.0
+    delay = max(0.0, delay)
+
+    def _worker(token: int) -> None:
+        try:
+            with app.app_context():
+                _write_board_snapshot(date_str)
+        finally:
+            with _SNAPSHOT_LOCK:
+                st = _SNAPSHOT_STATE.get(date_str)
+                if st and int(st.get("token") or 0) == token:
+                    _SNAPSHOT_STATE.pop(date_str, None)
+
+    with _SNAPSHOT_LOCK:
+        st = _SNAPSHOT_STATE.get(date_str) or {}
+        token = int(st.get("token") or 0) + 1
+        old_timer = st.get("timer")
+        if old_timer:
+            try:
+                old_timer.cancel()
+            except Exception:
+                pass
+        timer = threading.Timer(delay, _worker, args=(token,))
+        timer.daemon = True
+        _SNAPSHOT_STATE[date_str] = {"timer": timer, "token": token}
+        timer.start()
+
+
 @whiteboard_bp.route("/api/whiteboard/board", methods=["GET"])
 @login_required()
 def get_board():
@@ -383,7 +424,11 @@ def update_card(card_id: int):
     db.session.flush()
     _emit_event(card.board_date, "update", card.id, user.id, {"changes": changed})
     db.session.commit()
-    _write_board_snapshot(card.board_date)
+    # Text updates can be high-frequency while typing; debounce OSS snapshot writes for that case.
+    if set(changed.keys()) == {"text"}:
+        _schedule_board_snapshot(card.board_date)
+    else:
+        _write_board_snapshot(card.board_date)
     return jsonify({"card": _card_payload(card)})
 
 

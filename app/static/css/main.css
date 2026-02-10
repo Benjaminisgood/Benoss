@@ -416,7 +416,7 @@ img {
   gap: 1.6rem;
 }
 
-.dailyreel-main {
+.dailyreal-main {
   display: flex;
   flex-direction: column;
   gap: 1.6rem;
@@ -750,6 +750,10 @@ select.input {
 
 .whiteboard-shell--modal .whiteboard {
   min-height: 60vh;
+}
+
+.whiteboard-shell--page .whiteboard {
+  min-height: 72vh;
 }
 
 .whiteboard-shell--modal .whiteboard-card__head {
@@ -1719,17 +1723,17 @@ body.modal-open {
     padding: 1.6rem;
   }
 
-  .reel-window {
+  .real-window {
     padding: 0.8rem;
   }
 
-  .reel-nav {
+  .real-nav {
     padding: 0.3rem 0.5rem;
     font-size: 0.65rem;
   }
 
-  .reel-slide img,
-  .reel-slide video {
+  .real-slide img,
+  .real-slide video {
     object-fit: contain;
   }
 

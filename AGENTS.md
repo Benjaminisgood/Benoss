@@ -8,7 +8,7 @@
 - propose push（非 owner 发起 push request，owner 在 Control Room 同意后合入）
 - Echoes（公开项目文件流）
 - Home（全员可编辑 Quick Links + 公共白板）
-- Dailyreel（日历 + 当日榜单与 feed）
+- Dailyreal（日历 + 当日榜单与 feed）
 
 下面是给后续维护/扩展的工程指引（尤其是“git 逻辑”的实现约束）。
 
@@ -17,7 +17,7 @@
 - 路由注册：`app/routes/__init__.py`
 - 核心 API：
   - Projects：`app/routes/projects.py`
-  - Dailyreel：`app/routes/dailyreel.py`
+  - Dailyreal：`app/routes/dailyreal.py`
   - Whiteboard：`app/routes/whiteboard.py`
   - Quick Links：`app/routes/links.py`
   - Account：`app/routes/account.py`
@@ -57,7 +57,7 @@ OSS 前缀布局（`OSS_PREFIX` 默认 `benoss`）：
   - `path` 是 POSIX 相对路径（例如 `assets/img.png`）
   - `oss_key` 是随机对象 key（真实内容在 OSS）
   - `sha256`/`size_bytes`/`content_type` 用于增量判断与预览
-- `ProjectActivity`：记录 git/clone/push/push_request/approve 等活动（Dailyreel 统计使用）
+- `ProjectActivity`：记录 git/clone/push/push_request/approve 等活动（Dailyreal 统计使用）
 - `PushRequest` + `PushRequestFile`：协作提交（类似 PR 的最小实现）
 - `QuickLink`：Home 的 Quick Links（全员可改）
 - `WhiteboardCard` + `WhiteboardEvent`：公共白板（事件轮询）

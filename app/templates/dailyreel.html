@@ -2,53 +2,55 @@
 {% block content %}
 <section class="hero hero--page">
   <div>
-    <p class="hero-kicker">Daily reel</p>
-    <h1>今天的 git 与 clone。</h1>
-    <p class="hero-sub">自动统计 Blog / Note 的发布与克隆，并展示当天所有人的记录。</p>
+    <p class="hero-kicker">Daily real</p>
+    <h1>今天的 git / push / clone / whiteboard。</h1>
+    <p class="hero-sub">自动统计 Blog / Note 的发布、push、clone，以及公共白板编辑，并展示当天所有人的记录。</p>
   </div>
   <div class="hero-actions">
-    <button class="pill-btn ghost" data-dailyreel-refresh>刷新</button>
+    <button class="pill-btn ghost" data-dailyreal-refresh>刷新</button>
   </div>
 </section>
 
-<section class="content-split dailyreel-split">
+<section class="content-split dailyreal-split">
   <aside class="panel calendar-panel">
     <div class="calendar-header">
       <button class="pill-btn ghost" type="button" data-cal-prev>上月</button>
-      <div class="calendar-title" id="dailyreel-month">Loading...</div>
+      <div class="calendar-title" id="dailyreal-month">Loading...</div>
       <button class="pill-btn ghost" type="button" data-cal-next>下月</button>
     </div>
     <div class="calendar-week" aria-hidden="true">
       <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span>
     </div>
-    <div class="calendar-grid" id="dailyreel-calendar">
+    <div class="calendar-grid" id="dailyreal-calendar">
       <div class="muted">Loading...</div>
     </div>
     <div class="button-row">
       <button class="pill-btn ghost" type="button" data-cal-today>回到今天</button>
     </div>
-    <p class="muted calendar-hint">高亮表示你在该日有记录。右下角数字为 git 数量（cN 表示 clone）。</p>
+    <p class="muted calendar-hint">高亮表示你在该日有记录。右下角数字为当日总活动量（git/push/clone/whiteboard）。</p>
   </aside>
 
-  <div class="dailyreel-main">
+  <div class="dailyreal-main">
     <section class="section-block">
       <header class="section-head">
         <h2>Scoreboard</h2>
-        <p class="muted" id="dailyreel-date">Loading...</p>
+        <p class="muted" id="dailyreal-date">Loading...</p>
       </header>
       <div class="panel panel--table">
-        <table class="table" id="dailyreel-scoreboard">
+        <table class="table" id="dailyreal-scoreboard">
           <thead>
             <tr>
               <th>用户</th>
               <th>Blog git</th>
               <th>Note git</th>
+              <th>Push</th>
               <th>Clone</th>
+              <th>Whiteboard</th>
               <th>总计</th>
             </tr>
           </thead>
           <tbody>
-            <tr><td class="muted" colspan="5">Loading...</td></tr>
+            <tr><td class="muted" colspan="7">Loading...</td></tr>
           </tbody>
         </table>
       </div>
@@ -57,9 +59,9 @@
     <section class="section-block">
       <header class="section-head">
         <h2>Day feed</h2>
-        <p class="muted">所选日期的 git 与 clone 记录。</p>
+        <p class="muted">所选日期的 git / push / clone / whiteboard 记录。</p>
       </header>
-      <div class="list-stack" id="dailyreel-feed">
+      <div class="list-stack" id="dailyreal-feed">
         <div class="card placeholder">Loading activity...</div>
       </div>
     </section>
