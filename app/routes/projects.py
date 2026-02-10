@@ -10,7 +10,7 @@ from sqlalchemy.orm import joinedload
 from werkzeug.utils import secure_filename
 
 from ..extensions import db
-from ..models import Project, ProjectActivity, ProjectFile, PushRequest, PushRequestFile, User
+from ..models import Project, ProjectActivity, ProjectFile, PushRequest, PushRequestFile, User, WhiteboardAttachment, WhiteboardCard
 from ..oss import copy_object, delete_object, get_object_bytes, public_url, put_object_from_file
 from ..utils.ids import new_uuid
 from ..utils.oss_paths import project_object_key
@@ -149,6 +149,34 @@ def _file_payload(file: ProjectFile) -> dict:
         "preview_url": public_url(file.oss_key, expires=3600, params=params) if params else "",
         "created_at": file.created_at.isoformat() + "Z" if file.created_at else None,
         "updated_at": file.updated_at.isoformat() + "Z" if file.updated_at else None,
+    }
+
+
+def _whiteboard_attachment_payload(att: WhiteboardAttachment, card: WhiteboardCard) -> dict:
+    media_type = att.media_type or _media_type_for(att.filename or "", att.content_type or "")
+    params = _preview_params(media_type)
+    filename = (att.filename or "").strip() or "file"
+    text = (card.text or "") if card else ""
+    if len(text) > 500:
+        text = text[:500]
+    return {
+        "id": att.id,
+        "source": "whiteboard",
+        "path": filename,
+        "filename": filename,
+        "media_type": media_type,
+        "content_type": att.content_type or "",
+        "size_bytes": int(att.size_bytes or 0),
+        "sha256": att.sha256 or "",
+        "url": public_url(att.oss_key, expires=3600),
+        "preview_url": public_url(att.oss_key, expires=3600, params=params) if params else "",
+        "created_at": att.created_at.isoformat() + "Z" if att.created_at else None,
+        "updated_at": att.updated_at.isoformat() + "Z" if att.updated_at else None,
+        "whiteboard": {
+            "date": card.board_date if card else "",
+            "card_id": card.id if card else None,
+            "text": text,
+        },
     }
 
 
@@ -557,34 +585,58 @@ def list_public_files():
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
 
-    if module and module not in {"blog", "note"}:
+    if module and module not in {"blog", "note", "whiteboard"}:
         return jsonify({"error": "invalid module"}), 400
     if media_type and media_type not in {"image", "video", "audio", "pdf", "text", "file"}:
         return jsonify({"error": "invalid media_type"}), 400
 
-    query = (
-        db.session.query(ProjectFile, Project, User)
-        .join(Project, ProjectFile.project_id == Project.id)
-        .join(User, Project.owner_id == User.id)
-        .filter(Project.visibility == "public", Project.is_archived.is_(False))
-    )
-    if module:
-        query = query.filter(Project.module == module)
-    if media_type:
-        query = query.filter(ProjectFile.media_type == media_type)
+    include_projects = module in {"", "blog", "note"}
+    include_whiteboard = module in {"", "whiteboard"}
+    fetch_n = offset + limit
 
-    query = query.order_by(ProjectFile.updated_at.desc(), ProjectFile.id.desc()).offset(offset).limit(limit)
-    items = []
-    for file, project, owner in query.all():
-        fp = _file_payload(file)
-        fp["project"] = {
-            "id": project.id,
-            "module": project.module,
-            "title": project.title,
-            "owner_username": owner.username,
-        }
-        items.append(fp)
-    return jsonify({"items": items})
+    rows: list[tuple[datetime, int, dict]] = []
+
+    if include_projects:
+        proj_query = (
+            db.session.query(ProjectFile, Project, User)
+            .join(Project, ProjectFile.project_id == Project.id)
+            .join(User, Project.owner_id == User.id)
+            .filter(Project.visibility == "public", Project.is_archived.is_(False))
+        )
+        if module in {"blog", "note"}:
+            proj_query = proj_query.filter(Project.module == module)
+        if media_type:
+            proj_query = proj_query.filter(ProjectFile.media_type == media_type)
+        proj_query = proj_query.order_by(ProjectFile.updated_at.desc(), ProjectFile.id.desc()).limit(fetch_n)
+        for file, project, owner in proj_query.all():
+            fp = _file_payload(file)
+            fp["source"] = "project"
+            fp["project"] = {
+                "id": project.id,
+                "module": project.module,
+                "title": project.title,
+                "owner_username": owner.username,
+            }
+            sort_dt = file.updated_at or file.created_at or datetime.min
+            rows.append((sort_dt, int(file.id or 0), fp))
+
+    if include_whiteboard:
+        wb_query = (
+            db.session.query(WhiteboardAttachment, WhiteboardCard)
+            .join(WhiteboardCard, WhiteboardAttachment.card_id == WhiteboardCard.id)
+            .order_by(WhiteboardAttachment.updated_at.desc(), WhiteboardAttachment.id.desc())
+        )
+        if media_type:
+            wb_query = wb_query.filter(WhiteboardAttachment.media_type == media_type)
+        wb_query = wb_query.limit(fetch_n)
+        for att, card in wb_query.all():
+            payload = _whiteboard_attachment_payload(att, card)
+            sort_dt = att.updated_at or att.created_at or datetime.min
+            rows.append((sort_dt, int(att.id or 0), payload))
+
+    rows.sort(key=lambda r: (r[0], r[1]), reverse=True)
+    page = rows[offset : offset + limit]
+    return jsonify({"items": [payload for _, __, payload in page]})
 
 
 @projects_bp.route("/api/projects/<int:project_id>/push-requests", methods=["POST"])

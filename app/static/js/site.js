@@ -773,20 +773,16 @@
       if (modalContent) modalContent.innerHTML = '';
     };
 
-    const openModal = async (item) => {
+    const openProjectModal = async (item) => {
       if (!modal || !modalContent) return;
       const template = projectTemplate;
       const prefix = 'modal-project';
       if (!template) {
         showModalMessage('No preview available.');
-        modal.hidden = false;
-        document.body.classList.add('modal-open');
         return;
       }
       modalContent.innerHTML = '';
       modalContent.appendChild(template.content.cloneNode(true));
-      modal.hidden = false;
-      document.body.classList.add('modal-open');
       try {
         const projectId = item && item.project && item.project.id;
         if (!projectId) {
@@ -799,6 +795,116 @@
       }
     };
 
+    const openWhiteboardModal = async (item) => {
+      if (!modalContent) return;
+      modalContent.innerHTML = '<div class="card placeholder">Loading...</div>';
+      try {
+        const wb = (item && item.whiteboard) || {};
+        const cardId = Number(wb.card_id || 0);
+        if (!cardId) {
+          showModalMessage('Missing whiteboard card id.');
+          return;
+        }
+        const data = await apiFetch(`/api/whiteboard/cards/${cardId}`);
+        const card = data && data.card;
+        if (!card || !card.id) {
+          showModalMessage('Missing whiteboard card.');
+          return;
+        }
+
+        const panel = document.createElement('div');
+        panel.className = 'panel';
+        const head = document.createElement('div');
+        head.className = 'panel-head';
+
+        const title = document.createElement('h2');
+        const dateLabel = card.date || wb.date || '';
+        title.textContent = `Whiteboard · ${dateLabel} · #${card.id}`;
+
+        const meta = document.createElement('p');
+        meta.className = 'muted';
+        const excerpt = String(wb.text || '').trim();
+        meta.textContent = excerpt ? excerpt : '公共白板媒体卡片预览。';
+
+        const actions = document.createElement('div');
+        actions.className = 'button-row';
+        const openBoard = document.createElement('a');
+        openBoard.className = 'pill-btn';
+        openBoard.href = `/?date=${encodeURIComponent(dateLabel)}#whiteboard-card-${card.id}`;
+        openBoard.target = '_blank';
+        openBoard.rel = 'noopener';
+        openBoard.textContent = '打开白板';
+        actions.appendChild(openBoard);
+
+        head.appendChild(title);
+        head.appendChild(meta);
+        head.appendChild(actions);
+        panel.appendChild(head);
+
+        const attsWrap = document.createElement('div');
+        attsWrap.className = 'whiteboard-attachments';
+        const atts = Array.isArray(card.attachments) ? card.attachments : [];
+        if (!atts.length) {
+          attsWrap.innerHTML = '<div class="muted">No attachments.</div>';
+        } else {
+          atts.forEach((att) => {
+            const media = createMediaNode(att.media_type, att.url || '', {
+              title: att.filename || '',
+              alt: att.filename || '',
+              preview: att.preview_url || '',
+            });
+            if (media) {
+              if (att.url && att.media_type === 'image') {
+                const a = document.createElement('a');
+                a.href = att.url;
+                a.target = '_blank';
+                a.rel = 'noopener';
+                a.appendChild(media);
+                attsWrap.appendChild(a);
+              } else {
+                attsWrap.appendChild(media);
+              }
+            } else if (att.url) {
+              const a = document.createElement('a');
+              a.href = att.url;
+              a.target = '_blank';
+              a.rel = 'noopener';
+              a.className = 'text-link';
+              a.textContent = att.filename || 'file';
+              attsWrap.appendChild(a);
+            }
+
+            const metaRow = document.createElement('div');
+            metaRow.className = 'whiteboard-attachment__meta';
+            metaRow.textContent = `${att.filename || 'file'} · ${att.media_type || 'file'} · ${formatBytes(att.size_bytes || 0)}`;
+            attsWrap.appendChild(metaRow);
+          });
+        }
+        panel.appendChild(attsWrap);
+
+        if (card.text) {
+          const textBox = document.createElement('div');
+          textBox.className = 'whiteboard-modal__text';
+          textBox.textContent = card.text;
+          panel.appendChild(textBox);
+        }
+
+        modalContent.innerHTML = '';
+        modalContent.appendChild(panel);
+      } catch (err) {
+        showModalMessage(err.message);
+      }
+    };
+
+    const openModal = async (item) => {
+      if (!modal || !modalContent) return;
+      modal.hidden = false;
+      document.body.classList.add('modal-open');
+      const source = (item && item.source) || ((item && item.whiteboard) ? 'whiteboard' : 'project');
+      if (source === 'whiteboard') return openWhiteboardModal(item);
+      return openProjectModal(item);
+    };
+
     const buildCard = (item) => {
       const wrapper = document.createElement('button');
       wrapper.type = 'button';
@@ -809,7 +915,8 @@
       const preview = document.createElement('div');
       preview.className = 'album-preview';
 
-      const displayName = item.path || '';
+      const source = item.source || (item.whiteboard ? 'whiteboard' : 'project');
+      const displayName = item.path || item.filename || '';
       const imagePreviewUrl = item.preview_url || '';
       const imageUrl = item.url || '';
       const videoPreviewUrl = item.preview_url || '';
@@ -865,7 +972,7 @@
       badges.appendChild(typeBadge);
       const moduleBadge = document.createElement('span');
       moduleBadge.className = 'album-badge';
-      moduleBadge.textContent = item.project?.module || 'project';
+      moduleBadge.textContent = source === 'whiteboard' ? 'whiteboard' : item.project?.module || 'project';
       badges.appendChild(moduleBadge);
       preview.appendChild(badges);
 
@@ -877,9 +984,14 @@
       title.textContent = displayName || 'file';
       const meta = document.createElement('div');
       meta.className = 'album-meta';
-      meta.textContent = [item.project?.title || '', item.project?.owner_username ? `@${item.project.owner_username}` : '']
-        .filter(Boolean)
-        .join('  ·  ');
+      if (source === 'whiteboard') {
+        const wb = item.whiteboard || {};
+        meta.textContent = ['Whiteboard', wb.date || '', wb.card_id ? `#${wb.card_id}` : ''].filter(Boolean).join('  ·  ');
+      } else {
+        meta.textContent = [item.project?.title || '', item.project?.owner_username ? `@${item.project.owner_username}` : '']
+          .filter(Boolean)
+          .join('  ·  ');
+      }
       body.appendChild(title);
       body.appendChild(meta);
       card.appendChild(body);
@@ -1351,22 +1463,401 @@
     };
 
     const initWhiteboard = () => {
-      if (!whiteboardEl) return;
-      const date = formatDate(new Date());
+      if (!whiteboardEl || !whiteboardWorldEl) return;
+
+      const isValidDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
+      const params = new URLSearchParams(window.location.search);
+      let date = formatDate(new Date());
+      const urlDate = params.get('date');
+      if (isValidDate(urlDate)) date = urlDate;
       if (whiteboardDateEl) whiteboardDateEl.textContent = date;
 
       const cardsById = new Map();
       const stateById = new Map();
+      const linksById = new Map();
+      let linkingFromId = 0;
       let lastEventId = 0;
       let polling = false;
 
       const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
+
+      const camera = { x: 0, y: 0, scale: 1 };
+      let linksCanvas = null;
+      let linksCtx = null;
+      let drawPending = false;
+
+      const getAccent = () => {
+        const value = window.getComputedStyle(document.documentElement).getPropertyValue('--accent');
+        return (value && value.trim()) || '#0f6b5d';
+      };
+
+      const ensureLinksCanvas = () => {
+        if (linksCanvas) return;
+        linksCanvas = document.createElement('canvas');
+        linksCanvas.className = 'whiteboard-links';
+        whiteboardEl.insertBefore(linksCanvas, whiteboardWorldEl);
+        linksCtx = linksCanvas.getContext('2d');
+      };
+
+      const resizeLinksCanvas = () => {
+        ensureLinksCanvas();
+        if (!linksCanvas || !linksCtx) return;
+        const dpr = window.devicePixelRatio || 1;
+        const w = Math.max(1, whiteboardEl.clientWidth || 1);
+        const h = Math.max(1, whiteboardEl.clientHeight || 1);
+        const pw = Math.floor(w * dpr);
+        const ph = Math.floor(h * dpr);
+        if (linksCanvas.width !== pw || linksCanvas.height !== ph) {
+          linksCanvas.width = pw;
+          linksCanvas.height = ph;
+          linksCanvas.style.width = `${w}px`;
+          linksCanvas.style.height = `${h}px`;
+        }
+        linksCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      };
+
+      const pointOnRectEdge = (cx, cy, hw, hh, dx, dy) => {
+        const absDx = Math.abs(dx);
+        const absDy = Math.abs(dy);
+        if (hw <= 0 || hh <= 0 || (absDx === 0 && absDy === 0)) return { x: cx, y: cy };
+        const scale = 1 / Math.max(absDx / hw, absDy / hh);
+        return { x: cx + dx * scale, y: cy + dy * scale };
+      };
+
+      const drawArrow = (ctx, fromRect, toRect, accent) => {
+        const fromCx = fromRect.x + fromRect.w / 2;
+        const fromCy = fromRect.y + fromRect.h / 2;
+        const toCx = toRect.x + toRect.w / 2;
+        const toCy = toRect.y + toRect.h / 2;
+        const dx = toCx - fromCx;
+        const dy = toCy - fromCy;
+        const dist = Math.hypot(dx, dy);
+        if (!Number.isFinite(dist) || dist < 5) return;
+
+        const start = pointOnRectEdge(fromCx, fromCy, fromRect.w / 2, fromRect.h / 2, dx, dy);
+        const end = pointOnRectEdge(toCx, toCy, toRect.w / 2, toRect.h / 2, -dx, -dy);
+
+        ctx.save();
+        ctx.globalAlpha = 0.6;
+        ctx.strokeStyle = accent;
+        ctx.fillStyle = accent;
+        ctx.lineWidth = 2;
+        ctx.lineCap = 'round';
+
+        ctx.beginPath();
+        ctx.moveTo(start.x, start.y);
+        ctx.lineTo(end.x, end.y);
+        ctx.stroke();
+
+        const ux = (end.x - start.x) / dist;
+        const uy = (end.y - start.y) / dist;
+        const arrowLen = 11;
+        const arrowW = 7;
+        const bx = end.x - ux * arrowLen;
+        const by = end.y - uy * arrowLen;
+        const px = -uy;
+        const py = ux;
+
+        ctx.beginPath();
+        ctx.moveTo(end.x, end.y);
+        ctx.lineTo(bx + px * arrowW, by + py * arrowW);
+        ctx.lineTo(bx - px * arrowW, by - py * arrowW);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      };
+
+      const drawLinks = () => {
+        ensureLinksCanvas();
+        if (!linksCanvas || !linksCtx) return;
+        resizeLinksCanvas();
+        const boardRect = whiteboardEl.getBoundingClientRect();
+        linksCtx.clearRect(0, 0, whiteboardEl.clientWidth || 1, whiteboardEl.clientHeight || 1);
+        const accent = getAccent();
+
+        Array.from(linksById.values()).forEach((link) => {
+          const fromId = Number(link.from_id || 0);
+          const toId = Number(link.to_id || 0);
+          if (!fromId || !toId) return;
+          const fromEl = cardsById.get(fromId);
+          const toEl = cardsById.get(toId);
+          if (!fromEl || !toEl) return;
+          const fr = fromEl.getBoundingClientRect();
+          const tr = toEl.getBoundingClientRect();
+
+          const fromRect = { x: fr.left - boardRect.left, y: fr.top - boardRect.top, w: fr.width, h: fr.height };
+          const toRect = { x: tr.left - boardRect.left, y: tr.top - boardRect.top, w: tr.width, h: tr.height };
+          drawArrow(linksCtx, fromRect, toRect, accent);
+        });
+      };
+
+      const scheduleDraw = () => {
+        if (drawPending) return;
+        drawPending = true;
+        window.requestAnimationFrame(() => {
+          drawPending = false;
+          drawLinks();
+        });
+      };
+
+      const autosizeTextarea = (ta) => {
+        if (!ta || ta.hidden) return;
+        // Let the textarea shrink when text is deleted.
+        ta.style.height = 'auto';
+        const max = 420;
+        const next = Math.min(max, ta.scrollHeight || 0);
+        ta.style.height = `${Math.max(44, next)}px`;
+        ta.style.overflowY = ta.scrollHeight > max ? 'auto' : 'hidden';
+        scheduleDraw();
+      };
+
+      const scheduleAutosize = (ta) => {
+        window.requestAnimationFrame(() => autosizeTextarea(ta));
+      };
+
+      const applyCamera = () => {
+        whiteboardWorldEl.style.transform = `translate(${camera.x}px, ${camera.y}px) scale(${camera.scale})`;
+        scheduleDraw();
+      };
+
+      const viewCenterWorld = () => {
+        const rect = whiteboardEl.getBoundingClientRect();
+        const sx = rect.width / 2;
+        const sy = rect.height / 2;
+        return { x: (sx - camera.x) / camera.scale, y: (sy - camera.y) / camera.scale };
+      };
+
+      const centerOnWorld = (wx, wy, scale = camera.scale) => {
+        const rect = whiteboardEl.getBoundingClientRect();
+        camera.scale = scale;
+        camera.x = rect.width / 2 - wx * camera.scale;
+        camera.y = rect.height / 2 - wy * camera.scale;
+        applyCamera();
+      };
+
+      const focusFromHash = () => {
+        const hash = String(window.location.hash || '').trim();
+        const m = hash.match(/^#whiteboard-card-(\d+)$/);
+        if (!m) return false;
+        const id = Number(m[1]);
+        const st = stateById.get(id);
+        if (!st) return false;
+        const x = Number(st.x || 0);
+        const y = Number(st.y || 0);
+        centerOnWorld(x + 130, y + 110, camera.scale);
+        const el = cardsById.get(id);
+        if (el) {
+          el.classList.add('is-highlight');
+          setTimeout(() => el.classList.remove('is-highlight'), 1200);
+        }
+        return true;
+      };
+
+      const resetView = () => {
+        if (!stateById.size) {
+          camera.x = 0;
+          camera.y = 0;
+          camera.scale = 1;
+          applyCamera();
+          return;
+        }
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        stateById.forEach((c) => {
+          const x = Number(c.x || 0);
+          const y = Number(c.y || 0);
+          minX = Math.min(minX, x);
+          minY = Math.min(minY, y);
+          maxX = Math.max(maxX, x + 260);
+          maxY = Math.max(maxY, y + 220);
+        });
+        const cx = (minX + maxX) / 2;
+        const cy = (minY + maxY) / 2;
+        centerOnWorld(cx, cy, 1);
+      };
+
+      let panning = false;
+      let panStartX = 0;
+      let panStartY = 0;
+      let panOriginX = 0;
+      let panOriginY = 0;
+
+      const endPan = () => {
+        if (!panning) return;
+        panning = false;
+        whiteboardEl.classList.remove('is-panning');
+      };
+
+      whiteboardEl.addEventListener('pointerdown', (ev) => {
+        if (!ev.isPrimary) return;
+        if (ev.button != null && ev.button !== 0) return;
+        if (ev.target && ev.target.closest && ev.target.closest('.whiteboard-card')) return;
+        panning = true;
+        panStartX = ev.clientX;
+        panStartY = ev.clientY;
+        panOriginX = camera.x;
+        panOriginY = camera.y;
+        whiteboardEl.classList.add('is-panning');
+        try {
+          whiteboardEl.setPointerCapture(ev.pointerId);
+        } catch (err) {
+          // ignore
+        }
+      });
+
+      whiteboardEl.addEventListener('pointermove', (ev) => {
+        if (!panning) return;
+        const dx = ev.clientX - panStartX;
+        const dy = ev.clientY - panStartY;
+        camera.x = panOriginX + dx;
+        camera.y = panOriginY + dy;
+        applyCamera();
+      });
+
+      whiteboardEl.addEventListener('pointerup', endPan);
+      whiteboardEl.addEventListener('pointercancel', endPan);
+
+      whiteboardEl.addEventListener(
+        'wheel',
+        (ev) => {
+          // Trackpad: pan; pinch: ctrlKey zoom.
+          const overCard = ev.target && ev.target.closest && ev.target.closest('.whiteboard-card');
+          const rect = whiteboardEl.getBoundingClientRect();
+          const sx = ev.clientX - rect.left;
+          const sy = ev.clientY - rect.top;
+          if (ev.ctrlKey || ev.metaKey) {
+            ev.preventDefault();
+            const zoomIntensity = 0.0018;
+            const nextScale = clamp(camera.scale * (1 - ev.deltaY * zoomIntensity), 0.2, 3);
+            const wx = (sx - camera.x) / camera.scale;
+            const wy = (sy - camera.y) / camera.scale;
+            camera.scale = nextScale;
+            camera.x = sx - wx * camera.scale;
+            camera.y = sy - wy * camera.scale;
+            applyCamera();
+          } else {
+            if (overCard) return;
+            ev.preventDefault();
+            camera.x -= ev.deltaX;
+            camera.y -= ev.deltaY;
+            applyCamera();
+          }
+        },
+        { passive: false }
+      );
+
+      const renderAttachments = (container, atts) => {
+        if (!container) return;
+        container.innerHTML = '';
+        const list = Array.isArray(atts) ? atts : [];
+        if (!list.length) return;
+        list.forEach((att) => {
+          const media = createMediaNode(att.media_type, att.url || '', {
+            title: att.filename || '',
+            alt: att.filename || '',
+            preview: att.preview_url || '',
+          });
+          if (media) {
+            if (att.url && att.media_type === 'image') {
+              const a = document.createElement('a');
+              a.href = att.url;
+              a.target = '_blank';
+              a.rel = 'noopener';
+              a.appendChild(media);
+              container.appendChild(a);
+            } else {
+              container.appendChild(media);
+            }
+          } else if (att.url) {
+            const a = document.createElement('a');
+            a.href = att.url;
+            a.target = '_blank';
+            a.rel = 'noopener';
+            a.className = 'text-link';
+            a.textContent = att.filename || 'file';
+            container.appendChild(a);
+          }
+
+          const meta = document.createElement('div');
+          meta.className = 'whiteboard-attachment__meta';
+          meta.textContent = `${att.filename || 'file'} · ${att.media_type || 'file'} · ${formatBytes(att.size_bytes || 0)}`;
+          container.appendChild(meta);
+        });
+      };
+
+      const updateLinkingUI = () => {
+        cardsById.forEach((el, id) => {
+          el.classList.toggle('is-linking', linkingFromId && Number(id) === Number(linkingFromId));
+        });
+      };
+
+      document.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Escape' && linkingFromId) {
+          linkingFromId = 0;
+          updateLinkingUI();
+        }
+      });
+
+      window.addEventListener('resize', () => scheduleDraw());
+
+      const upsertLink = (link) => {
+        if (!link || !link.id) return;
+        linksById.set(Number(link.id), link);
+        scheduleDraw();
+      };
+
+      const removeLink = (id) => {
+        linksById.delete(Number(id));
+        scheduleDraw();
+      };
+
+      const replaceLinks = (links) => {
+        linksById.clear();
+        (Array.isArray(links) ? links : []).forEach((link) => {
+          if (link && link.id) linksById.set(Number(link.id), link);
+        });
+        scheduleDraw();
+      };
+
+      const createLink = async (fromId, toId) => {
+        const resp = await apiFetch('/api/whiteboard/links', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ date, from_id: fromId, to_id: toId }),
+        });
+        if (resp && resp.link) upsertLink(resp.link);
+      };
+
+      const deleteLink = async (linkId) => {
+        await apiFetch(`/api/whiteboard/links/${linkId}`, { method: 'DELETE' });
+        removeLink(linkId);
+      };
+
+      const clearLinksForCard = async (cardId) => {
+        const ids = Array.from(linksById.values())
+          .filter((l) => Number(l.from_id || 0) === Number(cardId) || Number(l.to_id || 0) === Number(cardId))
+          .map((l) => Number(l.id || 0))
+          .filter(Boolean);
+        if (!ids.length) return;
+        // Best-effort, continue even if one delete fails.
+        for (const id of ids) {
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            await deleteLink(id);
+          } catch (err) {
+            // ignore
+          }
+        }
+      };
 
       const upsertCard = (card) => {
         if (!card || !card.id) return;
         const id = Number(card.id);
         const existing = stateById.get(id) || {};
         const next = { ...existing, ...card };
+        if (card.attachments) next.attachments = card.attachments;
         stateById.set(id, next);
 
         let el = cardsById.get(id);
@@ -1374,26 +1865,88 @@
           el = document.createElement('div');
           el.className = 'whiteboard-card';
           el.dataset.cardId = String(id);
+          el.id = `whiteboard-card-${id}`;
 
           const head = document.createElement('div');
           head.className = 'whiteboard-card__head';
           const title = document.createElement('strong');
           title.textContent = `#${id}`;
+          const actions = document.createElement('div');
+          actions.className = 'whiteboard-card__actions';
+
+          const linkBtn = document.createElement('button');
+          linkBtn.type = 'button';
+          linkBtn.className = 'whiteboard-link-btn';
+          linkBtn.textContent = '->';
+          linkBtn.title = '连接箭头：先点起点，再点终点';
+          linkBtn.addEventListener('click', async (ev) => {
+            ev.stopPropagation();
+            if (!linkingFromId) {
+              linkingFromId = id;
+              updateLinkingUI();
+              return;
+            }
+            if (Number(linkingFromId) === Number(id)) {
+              linkingFromId = 0;
+              updateLinkingUI();
+              return;
+            }
+            const fromId = linkingFromId;
+            linkingFromId = 0;
+            updateLinkingUI();
+            try {
+              await createLink(fromId, id);
+            } catch (err) {
+              window.alert(err.message);
+            }
+          });
+
+          const clearLinksBtn = document.createElement('button');
+          clearLinksBtn.type = 'button';
+          clearLinksBtn.className = 'whiteboard-clear-links-btn';
+          clearLinksBtn.textContent = 'x';
+          clearLinksBtn.title = '清除此卡片相关的所有箭头';
+          clearLinksBtn.addEventListener('click', async (ev) => {
+            ev.stopPropagation();
+            if (!window.confirm('清除与此卡片相关的所有箭头？')) return;
+            await clearLinksForCard(id);
+          });
+
           const del = document.createElement('button');
           del.type = 'button';
+          del.className = 'whiteboard-del-btn';
           del.textContent = '删除';
           del.addEventListener('click', async () => {
             if (!window.confirm('删除这张卡片？')) return;
             await apiFetch(`/api/whiteboard/cards/${id}`, { method: 'DELETE' });
           });
+          actions.appendChild(linkBtn);
+          actions.appendChild(clearLinksBtn);
+          actions.appendChild(del);
           head.appendChild(title);
-          head.appendChild(del);
+          head.appendChild(actions);
 
           const body = document.createElement('div');
           body.className = 'whiteboard-card__body';
+
+          const attachments = document.createElement('div');
+          attachments.className = 'whiteboard-attachments';
+
+          const noteBtn = document.createElement('button');
+          noteBtn.type = 'button';
+          noteBtn.className = 'whiteboard-note-btn';
+          noteBtn.textContent = '添加文字';
+          noteBtn.hidden = true;
+
           const ta = document.createElement('textarea');
           ta.value = next.text || '';
+          ta.placeholder = '写点什么...';
           ta.addEventListener('input', () => {
+            scheduleAutosize(ta);
+            if (noteBtn && !noteBtn.hidden) {
+              const hasText = String(ta.value || '').trim().length > 0;
+              noteBtn.textContent = ta.hidden ? (hasText ? '显示文字' : '添加文字') : hasText ? '隐藏文字' : '收起';
+            }
             clearTimeout(el._saveTimer);
             el._saveTimer = setTimeout(async () => {
               try {
@@ -1405,14 +1958,54 @@
               } catch (err) {
                 // ignore
               }
-            }, 300);
+            }, 350);
           });
-          body.appendChild(ta);
+          ta.addEventListener('blur', () => {
+            const st = stateById.get(id) || {};
+            const hasAttachments = Array.isArray(st.attachments) && st.attachments.length > 0;
+            const hasText = String(ta.value || '').trim().length > 0;
+            if (hasAttachments && !hasText) {
+              el.dataset.textCollapsed = '1';
+              ta.hidden = true;
+              if (noteBtn) {
+                noteBtn.hidden = false;
+                noteBtn.textContent = '添加文字';
+              }
+              scheduleDraw();
+            }
+          });
 
+          body.appendChild(attachments);
+          body.appendChild(noteBtn);
+          body.appendChild(ta);
           el.appendChild(head);
           el.appendChild(body);
-          whiteboardEl.appendChild(el);
+          whiteboardWorldEl.appendChild(el);
           cardsById.set(id, el);
+          el._attachmentsEl = attachments;
+          el._textareaEl = ta;
+          el._noteBtnEl = noteBtn;
+
+          noteBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            const st = stateById.get(id) || {};
+            const hasAttachments = Array.isArray(st.attachments) && st.attachments.length > 0;
+            if (!hasAttachments) return;
+            if (ta.hidden) {
+              el.dataset.textCollapsed = '0';
+              ta.hidden = false;
+              noteBtn.hidden = false;
+              noteBtn.textContent = String(ta.value || '').trim().length > 0 ? '隐藏文字' : '收起';
+              ta.focus();
+              scheduleAutosize(ta);
+              return;
+            }
+            el.dataset.textCollapsed = '1';
+            ta.hidden = true;
+            noteBtn.hidden = false;
+            noteBtn.textContent = String(ta.value || '').trim().length > 0 ? '显示文字' : '添加文字';
+            scheduleDraw();
+          });
 
           let dragging = false;
           let startX = 0;
@@ -1422,12 +2015,13 @@
 
           const onMove = (ev) => {
             if (!dragging) return;
-            const dx = ev.clientX - startX;
-            const dy = ev.clientY - startY;
-            const x = clamp(originX + dx, 0, whiteboardEl.clientWidth - 80);
-            const y = clamp(originY + dy, 0, whiteboardEl.clientHeight - 60);
+            const dx = (ev.clientX - startX) / camera.scale;
+            const dy = (ev.clientY - startY) / camera.scale;
+            const x = originX + dx;
+            const y = originY + dy;
             el.style.transform = `translate(${x}px, ${y}px)`;
             el._pendingPos = { x, y };
+            scheduleDraw();
           };
 
           const onUp = async () => {
@@ -1451,6 +2045,7 @@
           };
 
           head.addEventListener('pointerdown', (ev) => {
+            ev.stopPropagation();
             dragging = true;
             startX = ev.clientX;
             startY = ev.clientY;
@@ -1464,10 +2059,34 @@
         const x = Number(next.x || 0);
         const y = Number(next.y || 0);
         el.style.transform = `translate(${x}px, ${y}px)`;
-        const ta = qs('textarea', el);
+        if (el._attachmentsEl) renderAttachments(el._attachmentsEl, next.attachments || []);
+        const ta = el._textareaEl || qs('textarea', el);
         if (ta && document.activeElement !== ta) {
           ta.value = next.text || '';
         }
+        const noteBtn = el._noteBtnEl;
+        const hasAttachments = Array.isArray(next.attachments) && next.attachments.length > 0;
+        const hasText = String(next.text || '').trim().length > 0;
+        if (noteBtn) {
+          noteBtn.hidden = !hasAttachments;
+        }
+        if (ta) {
+          const collapsedFlag = String(el.dataset.textCollapsed || '');
+          const desiredCollapsed = hasAttachments
+            ? hasText
+              ? collapsedFlag === '1'
+              : collapsedFlag !== '0'
+            : false;
+          if (document.activeElement !== ta) {
+            ta.hidden = desiredCollapsed;
+          }
+          if (noteBtn && !noteBtn.hidden) {
+            noteBtn.textContent = ta.hidden ? (hasText ? '显示文字' : '添加文字') : hasText ? '隐藏文字' : '收起';
+          }
+          if (!ta.hidden) scheduleAutosize(ta);
+        }
+        updateLinkingUI();
+        scheduleDraw();
       };
 
       const removeCard = (id) => {
@@ -1475,34 +2094,61 @@
         if (el) el.remove();
         cardsById.delete(id);
         stateById.delete(id);
+        Array.from(linksById.entries()).forEach(([linkId, link]) => {
+          const fromId = Number(link.from_id || 0);
+          const toId = Number(link.to_id || 0);
+          if (fromId === Number(id) || toId === Number(id)) linksById.delete(linkId);
+        });
+        if (Number(linkingFromId) === Number(id)) {
+          linkingFromId = 0;
+          updateLinkingUI();
+        }
+        scheduleDraw();
+      };
+
+      const replaceBoard = (cards) => {
+        const nextIds = new Set((cards || []).map((c) => Number(c && c.id)));
+        Array.from(stateById.keys()).forEach((id) => {
+          if (!nextIds.has(id)) removeCard(id);
+        });
+        (cards || []).forEach((card) => upsertCard(card));
       };
 
       const loadBoard = async () => {
-        const data = await apiFetch(`/api/whiteboard/board?date=${date}`);
+        const data = await apiFetch(`/api/whiteboard/board?date=${encodeURIComponent(date)}`);
         lastEventId = Number(data.last_event_id || 0);
         const cards = Array.isArray(data.cards) ? data.cards : [];
-        cards.forEach((card) => upsertCard(card));
+        const links = Array.isArray(data.links) ? data.links : [];
+        replaceBoard(cards);
+        replaceLinks(links);
       };
 
       const poll = async () => {
         if (polling) return;
         polling = true;
         try {
-          const data = await apiFetch(`/api/whiteboard/events?date=${date}&after_id=${lastEventId}`);
+          const data = await apiFetch(`/api/whiteboard/events?date=${encodeURIComponent(date)}&after_id=${lastEventId}`);
           const events = Array.isArray(data.events) ? data.events : [];
+          let sawReset = false;
           events.forEach((ev) => {
             lastEventId = Math.max(lastEventId, Number(ev.id || 0));
+            if (ev.type === 'reset') sawReset = true;
             const id = Number(ev.card_id || 0);
-            if (!id) return;
             if (ev.type === 'create' && ev.payload && ev.payload.card) {
               upsertCard(ev.payload.card);
-            } else if (ev.type === 'update') {
+            } else if (ev.type === 'update' && id) {
               const changes = (ev.payload && ev.payload.changes) || {};
               upsertCard({ id, ...changes });
-            } else if (ev.type === 'delete') {
+            } else if (ev.type === 'delete' && id) {
               removeCard(id);
+            } else if (ev.type === 'link_create' && ev.payload && ev.payload.link) {
+              upsertLink(ev.payload.link);
+            } else if (ev.type === 'link_delete' && ev.payload && ev.payload.link) {
+              const link = ev.payload.link;
+              if (link && link.id) removeLink(link.id);
             }
           });
+          if (sawReset) await loadBoard();
         } catch (err) {
           // ignore
         } finally {
@@ -1512,18 +2158,106 @@
 
       if (whiteboardAddBtn) {
         whiteboardAddBtn.addEventListener('click', async () => {
-          const rect = whiteboardEl.getBoundingClientRect();
-          const x = Math.round(Math.random() * Math.max(0, rect.width - 280));
-          const y = Math.round(Math.random() * Math.max(0, rect.height - 200));
-          await apiFetch('/api/whiteboard/cards', {
+          const center = viewCenterWorld();
+          const x = center.x - 40;
+          const y = center.y - 40;
+          const resp = await apiFetch('/api/whiteboard/cards', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ date, x, y, text: '' }),
           });
+          if (resp && resp.card) upsertCard(resp.card);
         });
       }
 
-      loadBoard().then(() => setInterval(poll, 1000));
+      if (whiteboardResetBtn) {
+        whiteboardResetBtn.addEventListener('click', () => resetView());
+      }
+
+      if (whiteboardExportBtn) {
+        whiteboardExportBtn.addEventListener('click', async () => {
+          try {
+            const data = await apiFetch(`/api/whiteboard/export?date=${encodeURIComponent(date)}`);
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `whiteboard-${date}.json`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+          } catch (err) {
+            window.alert(err.message);
+          }
+        });
+      }
+
+      if (whiteboardImportBtn && whiteboardImportFile) {
+        whiteboardImportBtn.addEventListener('click', () => {
+          whiteboardImportFile.value = '';
+          whiteboardImportFile.click();
+        });
+        whiteboardImportFile.addEventListener('change', async () => {
+          const file = (whiteboardImportFile.files && whiteboardImportFile.files[0]) || null;
+          if (!file) return;
+          let parsed = null;
+          try {
+            const text = await file.text();
+            parsed = JSON.parse(text);
+          } catch (err) {
+            window.alert('导入失败：不是合法 JSON');
+            return;
+          }
+          const mode = window.confirm('导入模式：确定=覆盖(replace)，取消=合并(merge)') ? 'replace' : 'merge';
+          try {
+            await apiFetch('/api/whiteboard/import', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ date, mode, board: parsed }),
+            });
+            await loadBoard();
+          } catch (err) {
+            window.alert(err.message);
+          }
+        });
+      }
+
+      if (whiteboardMediaBtn && whiteboardMediaFile) {
+        whiteboardMediaBtn.addEventListener('click', () => {
+          whiteboardMediaFile.value = '';
+          whiteboardMediaFile.click();
+        });
+        whiteboardMediaFile.addEventListener('change', async () => {
+          const file = (whiteboardMediaFile.files && whiteboardMediaFile.files[0]) || null;
+          if (!file) return;
+          const center = viewCenterWorld();
+          const x = center.x - 40;
+          const y = center.y - 40;
+          const fd = new FormData();
+          fd.append('date', date);
+          fd.append('x', String(x));
+          fd.append('y', String(y));
+          fd.append('text', '');
+          fd.append('file', file);
+          try {
+            const resp = await apiFetch('/api/whiteboard/cards/upload', { method: 'POST', body: fd });
+            if (resp && resp.card) upsertCard(resp.card);
+          } catch (err) {
+            window.alert(err.message);
+          } finally {
+            whiteboardMediaFile.value = '';
+          }
+        });
+      }
+
+      applyCamera();
+      loadBoard().then(() => {
+        if (!focusFromHash()) resetView();
+        setInterval(poll, 1000);
+      });
+
+      window.addEventListener('hashchange', () => focusFromHash());
     };
 
     if (todayBtn) todayBtn.addEventListener('click', loadToday);

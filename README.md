@@ -88,6 +88,11 @@ python -m flask --app app run --host 0.0.0.0 --port 80 --debug
 
 ## 存储布局
 
+Benoss 把“业务状态”和“文件内容”分层存储：
+- SQLite：存业务状态与元数据（用户、项目、文件索引 `path -> oss_key`、活动、push request、白板等），默认 DB 在 `data/benoss.sqlite`（可通过 `DATABASE_URL` 覆盖）
+- OSS（Aliyun OSS）：存实际文件 bytes（项目文件 / push request 暂存 / 白板媒体），DB 只保存 `oss_key` 指针 + `sha256/size/content_type` 等
+- 本地临时目录：上传时先落盘到 `data/uploads/`（`UPLOAD_TMP_DIR`），计算 `sha256` 后再上传 OSS，随后删除临时文件
+
 ### SQLite（业务状态）
 用户、Quick Links、Projects、Files、Activity、Push Requests、Whiteboard 都在 SQLite。
 
@@ -97,6 +102,9 @@ python -m flask --app app run --host 0.0.0.0 --port 80 --debug
 {OSS_PREFIX}/projects/{project_uuid}/
   objects/{file_uuid}{ext}                 # 项目正式文件
   push/{push_request_id}/{file_uuid}{ext}  # push request 暂存文件
+
+{OSS_PREFIX}/whiteboard/{YYYY-MM-DD}/
+  objects/{file_uuid}{ext}                 # 白板附件/媒体
 ```
 
 文件访问：
@@ -170,7 +178,7 @@ Projects：
 - `DELETE /api/projects/<id>/files`
 - `GET /api/projects/<id>/file/text?path=...`
 - `POST /api/projects/<id>/clone`
-- `GET /api/projects/public/files`（Echoes）
+- `GET /api/projects/public/files`（Echoes，含公共白板媒体）
 
 Collab：
 - `POST /api/projects/<id>/push-requests`
@@ -207,4 +215,3 @@ OSS：
 - `MAX_CONTENT_LENGTH`（默认 1GiB）
 - `SESSION_COOKIE_SECURE`（`1` 仅 https）
 - `SESSION_COOKIE_SAMESITE`（默认 `Lax`）
-

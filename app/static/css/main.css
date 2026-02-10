@@ -752,6 +752,11 @@ select.input {
   border-bottom: 1px solid rgba(231, 216, 202, 0.7);
 }
 
+.whiteboard-hint {
+  padding: 0.65rem 1rem 0.75rem;
+  font-size: 0.85rem;
+}
+
 .whiteboard {
   position: relative;
   min-height: 420px;
@@ -772,11 +777,19 @@ select.input {
   cursor: grabbing;
 }
 
+.whiteboard-links {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
 .whiteboard-world {
   position: absolute;
   inset: 0;
   transform-origin: 0 0;
   will-change: transform;
+  z-index: 1;
 }
 
 .whiteboard-card {
@@ -800,6 +813,12 @@ select.input {
   cursor: grab;
 }
 
+.whiteboard-card__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
 .whiteboard-card__head strong {
   font-size: 0.8rem;
   color: rgba(44, 38, 32, 0.8);
@@ -809,8 +828,22 @@ select.input {
   border: none;
   background: transparent;
   cursor: pointer;
-  color: rgba(171, 67, 67, 1);
+  color: rgba(44, 38, 32, 0.72);
   font-family: inherit;
+}
+
+.whiteboard-card__head button.whiteboard-link-btn {
+  color: var(--accent);
+  font-weight: 650;
+  letter-spacing: 0.05rem;
+}
+
+.whiteboard-card__head button.whiteboard-clear-links-btn {
+  color: rgba(44, 38, 32, 0.55);
+}
+
+.whiteboard-card__head button.whiteboard-del-btn {
+  color: rgba(171, 67, 67, 1);
 }
 
 .whiteboard-card__body {
@@ -822,6 +855,10 @@ select.input {
   flex-direction: column;
   gap: 0.55rem;
   margin-bottom: 0.6rem;
+}
+
+.whiteboard-attachments:empty {
+  display: none;
 }
 
 .whiteboard-attachments img,
@@ -844,14 +881,48 @@ select.input {
 
 .whiteboard-card__body textarea {
   width: 100%;
-  min-height: 120px;
-  resize: vertical;
+  min-height: 44px;
+  resize: none;
+  overflow: hidden;
   border: none;
   outline: none;
   background: transparent;
   font-family: inherit;
   font-size: 0.95rem;
   line-height: 1.35;
+  color: rgba(44, 38, 32, 0.92);
+}
+
+.whiteboard-note-btn {
+  border: 1px dashed rgba(231, 216, 202, 0.9);
+  border-radius: 999px;
+  padding: 0.35rem 0.6rem;
+  background: rgba(255, 255, 255, 0.72);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.78rem;
+  color: var(--accent);
+  margin: 0.3rem 0 0.5rem;
+}
+
+.whiteboard-card.is-highlight {
+  outline: 3px solid rgba(241, 124, 87, 0.9);
+  outline-offset: 3px;
+}
+
+.whiteboard-card.is-linking {
+  outline: 3px solid rgba(15, 107, 93, 0.85);
+  outline-offset: 3px;
+}
+
+.whiteboard-modal__text {
+  margin-top: 1rem;
+  padding: 1rem;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: rgba(247, 241, 236, 0.75);
+  white-space: pre-wrap;
+  line-height: 1.45;
   color: rgba(44, 38, 32, 0.92);
 }
 

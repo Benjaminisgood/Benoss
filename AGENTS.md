@@ -29,6 +29,23 @@
   - Control Room（账号/协作/用户管理）：`app/static/js/admin.js`
 - CLI 增量同步：`app/cli/sync.py`（命令 `benoss-sync`）
 
+### 1.5) 数据存储方式（总览）
+Benoss 把“业务状态”和“文件内容”分开存：
+- SQLite（Flask-SQLAlchemy）：存业务状态与元数据（用户、项目、文件索引、活动、push request、白板等）
+  - 默认 `DATABASE_URL=sqlite:///data/benoss.sqlite`（见 `app/config.py`）
+- OSS（Aliyun OSS）：存实际文件 bytes；DB 只保存 `oss_key` 指针 + `sha256/size/content_type` 等
+- 本地临时目录：上传会先落盘到 `UPLOAD_TMP_DIR`（默认 `data/uploads/`），计算 hash 后再 put 到 OSS，最后删除临时文件（见 `app/routes/projects.py` / `app/routes/whiteboard.py`）
+
+OSS 前缀布局（`OSS_PREFIX` 默认 `benoss`）：
+```text
+{OSS_PREFIX}/projects/{project_uuid}/
+  objects/{file_uuid}{ext}                 # 项目正式文件
+  push/{push_request_id}/{file_uuid}{ext}  # push request 暂存文件
+
+{OSS_PREFIX}/whiteboard/{YYYY-MM-DD}/
+  objects/{file_uuid}{ext}                 # 白板附件/媒体
+```
+
 ### 2) 数据模型（“git 核心”）
 主要表定义在 `app/models.py`：
 - `Project`：一个项目=一个“repo”
@@ -87,11 +104,18 @@
 代码：`app/utils/oss_paths.py` + `app/routes/projects.py`
 
 一个项目的对象都放在：
-```\n{OSS_PREFIX}/projects/{project_uuid}/\n```
+```text
+{OSS_PREFIX}/projects/{project_uuid}/
+```
 
 细分：
 - 正式文件：`objects/{file_uuid}{ext}`
 - push request 暂存：`push/{push_request_id}/{file_uuid}{ext}`
+
+白板媒体对象放在：
+```text
+{OSS_PREFIX}/whiteboard/{YYYY-MM-DD}/objects/{file_uuid}{ext}
+```
 
 原因：
 - `path` 只是“repo 内路径”，不直接作为 OSS key（避免覆盖与注入风险）
@@ -120,10 +144,21 @@
 
 ### 7) 开发命令
 本地开发：
-```bash\npython -m venv .venv\nsource .venv/bin/activate\npython -m pip install -e .\npython -m flask --app app init-db\npython -m flask --app app run --debug --port 80\n```
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+python -m flask --app app init-db
+python -m flask --app app run --debug --port 80
+```
 
 快速自检（建议改动后跑）：
-```bash\npython -m compileall -q app\npython -m flask --app app routes\nnode --check app/static/js/site.js\nnode --check app/static/js/admin.js\n```
+```bash
+python -m compileall -q app
+python -m flask --app app routes
+node --check app/static/js/site.js
+node --check app/static/js/admin.js
+```
 
 ### 8) 修改时的注意事项
 - 任何接收 `path` 的地方必须做 traversal 防护（参考 `_safe_relpath()`）

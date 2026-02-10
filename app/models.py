@@ -153,3 +153,14 @@ class WhiteboardEvent(db.Model, TimestampMixin):
     actor_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
     actor_user = db.relationship("User", foreign_keys=[actor_user_id])
     payload_json = db.Column(db.Text, default="{}")
+
+
+class WhiteboardLink(db.Model, TimestampMixin):
+    id = db.Column(db.Integer, primary_key=True)
+    board_date = db.Column(db.String(16), nullable=False, index=True)  # YYYY-MM-DD
+    from_card_id = db.Column(db.Integer, db.ForeignKey("whiteboard_card.id"), nullable=False, index=True)
+    to_card_id = db.Column(db.Integer, db.ForeignKey("whiteboard_card.id"), nullable=False, index=True)
+    created_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    created_by = db.relationship("User", foreign_keys=[created_by_id])
+
+    __table_args__ = (db.UniqueConstraint("board_date", "from_card_id", "to_card_id", name="uq_whiteboard_link"),)

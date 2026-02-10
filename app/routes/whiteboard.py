@@ -4,12 +4,12 @@ from datetime import datetime
 from pathlib import Path
 
 from flask import Blueprint, current_app, g, jsonify, request
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import joinedload
 from werkzeug.utils import secure_filename
 
 from ..extensions import db
-from ..models import WhiteboardAttachment, WhiteboardCard, WhiteboardEvent
+from ..models import WhiteboardAttachment, WhiteboardCard, WhiteboardEvent, WhiteboardLink
 from ..oss import copy_object, delete_object, public_url, put_object_from_file
 from ..utils.ids import new_uuid
 from ..utils.oss_paths import whiteboard_object_key, whiteboard_prefix
@@ -116,6 +116,24 @@ def _card_export_payload(card: WhiteboardCard) -> dict:
     }
 
 
+def _link_payload(link: WhiteboardLink) -> dict:
+    return {
+        "id": link.id,
+        "date": link.board_date,
+        "from_id": int(link.from_card_id),
+        "to_id": int(link.to_card_id),
+        "created_at": link.created_at.isoformat() + "Z" if link.created_at else None,
+        "updated_at": link.updated_at.isoformat() + "Z" if link.updated_at else None,
+    }
+
+
+def _link_export_payload(link: WhiteboardLink) -> dict:
+    return {
+        "from_id": int(link.from_card_id),
+        "to_id": int(link.to_card_id),
+    }
+
+
 def _event_payload(event: WhiteboardEvent) -> dict:
     payload = {}
     try:
@@ -161,6 +179,7 @@ def get_board():
         .order_by(WhiteboardCard.updated_at.asc())
         .all()
     )
+    links = WhiteboardLink.query.filter_by(board_date=date_str).order_by(WhiteboardLink.id.asc()).all()
     last_event_id = (
         db.session.query(func.max(WhiteboardEvent.id)).filter(WhiteboardEvent.board_date == date_str).scalar()
     ) or 0
@@ -168,6 +187,7 @@ def get_board():
         {
             "date": date_str,
             "cards": [_card_payload(card) for card in cards],
+            "links": [_link_payload(link) for link in links],
             "last_event_id": int(last_event_id),
         }
     )
@@ -215,6 +235,13 @@ def create_card():
     db.session.flush()
     _emit_event(date_str, "create", card.id, user.id, {"card": _card_payload(card)})
     db.session.commit()
+    return jsonify({"card": _card_payload(card)})
+
+
+@whiteboard_bp.route("/api/whiteboard/cards/<int:card_id>", methods=["GET"])
+@login_required()
+def get_card(card_id: int):
+    card = WhiteboardCard.query.options(joinedload(WhiteboardCard.attachments)).get_or_404(card_id)
     return jsonify({"card": _card_payload(card)})
 
 
@@ -326,6 +353,60 @@ def update_card(card_id: int):
     return jsonify({"card": _card_payload(card)})
 
 
+@whiteboard_bp.route("/api/whiteboard/links", methods=["POST"])
+@login_required()
+def create_link():
+    user = g.get("user")
+    payload = request.get_json(silent=True) or {}
+    date_str = str(payload.get("date", "")).strip() or datetime.utcnow().strftime("%Y-%m-%d")
+    try:
+        date_str = _validate_date(date_str)
+    except ValueError:
+        return jsonify({"error": "invalid date"}), 400
+
+    try:
+        from_id = int(payload.get("from_id") or 0)
+        to_id = int(payload.get("to_id") or 0)
+    except Exception:
+        return jsonify({"error": "invalid link"}), 400
+    if from_id <= 0 or to_id <= 0 or from_id == to_id:
+        return jsonify({"error": "invalid link"}), 400
+
+    if not WhiteboardCard.query.filter_by(id=from_id, board_date=date_str).first():
+        return jsonify({"error": "invalid from card"}), 400
+    if not WhiteboardCard.query.filter_by(id=to_id, board_date=date_str).first():
+        return jsonify({"error": "invalid to card"}), 400
+
+    existing = WhiteboardLink.query.filter_by(board_date=date_str, from_card_id=from_id, to_card_id=to_id).first()
+    if existing:
+        return jsonify({"link": _link_payload(existing), "exists": True})
+
+    link = WhiteboardLink(
+        board_date=date_str,
+        from_card_id=from_id,
+        to_card_id=to_id,
+        created_by_id=user.id if user else None,
+    )
+    db.session.add(link)
+    db.session.flush()
+    _emit_event(date_str, "link_create", 0, user.id, {"link": _link_payload(link)})
+    db.session.commit()
+    return jsonify({"link": _link_payload(link)})
+
+
+@whiteboard_bp.route("/api/whiteboard/links/<int:link_id>", methods=["DELETE"])
+@login_required()
+def delete_link(link_id: int):
+    user = g.get("user")
+    link = WhiteboardLink.query.get_or_404(link_id)
+    payload = _link_payload(link)
+    date_str = link.board_date
+    db.session.delete(link)
+    _emit_event(date_str, "link_delete", 0, user.id, {"link": payload})
+    db.session.commit()
+    return jsonify({"deleted": True, "id": link_id})
+
+
 @whiteboard_bp.route("/api/whiteboard/cards/<int:card_id>", methods=["DELETE"])
 @login_required()
 def delete_card(card_id: int):
@@ -333,6 +414,17 @@ def delete_card(card_id: int):
     card = WhiteboardCard.query.get_or_404(card_id)
     date_str = card.board_date
     keys = [a.oss_key for a in (card.attachments or []) if a.oss_key]
+    links = (
+        WhiteboardLink.query.filter(
+            WhiteboardLink.board_date == date_str,
+            or_(WhiteboardLink.from_card_id == card_id, WhiteboardLink.to_card_id == card_id),
+        )
+        .order_by(WhiteboardLink.id.asc())
+        .all()
+    )
+    for link in links:
+        db.session.delete(link)
+        _emit_event(date_str, "link_delete", 0, user.id, {"link": _link_payload(link)})
     db.session.delete(card)
     _emit_event(date_str, "delete", card_id, user.id, {})
     db.session.commit()
@@ -361,12 +453,14 @@ def export_board():
         .order_by(WhiteboardCard.updated_at.asc())
         .all()
     )
+    links = WhiteboardLink.query.filter_by(board_date=date_str).order_by(WhiteboardLink.id.asc()).all()
     return jsonify(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "exported_at": datetime.utcnow().isoformat() + "Z",
             "date": date_str,
             "cards": [_card_export_payload(card) for card in cards],
+            "links": [_link_export_payload(link) for link in links],
         }
     )
 
@@ -388,15 +482,20 @@ def import_board():
         return jsonify({"error": "invalid mode"}), 400
     if not isinstance(board, dict):
         return jsonify({"error": "invalid board"}), 400
-    if int(board.get("schema_version") or 0) != 1:
+    schema_version = int(board.get("schema_version") or 0)
+    if schema_version not in {1, 2}:
         return jsonify({"error": "unsupported schema"}), 400
 
     raw_cards = board.get("cards") or []
     if not isinstance(raw_cards, list):
         return jsonify({"error": "invalid cards"}), 400
+    raw_links = board.get("links") or []
+    if raw_links and not isinstance(raw_links, list):
+        return jsonify({"error": "invalid links"}), 400
 
     keys_to_delete: list[str] = []
     if mode == "replace":
+        WhiteboardLink.query.filter_by(board_date=date_str).delete(synchronize_session=False)
         existing_cards = (
             WhiteboardCard.query.options(joinedload(WhiteboardCard.attachments))
             .filter_by(board_date=date_str)
@@ -409,8 +508,11 @@ def import_board():
             db.session.delete(card)
 
     created_cards = 0
+    created_links = 0
+    skipped_links = 0
     skipped_attachments = 0
     src_prefix = whiteboard_prefix().rstrip("/") + "/"
+    id_map: dict[int, int] = {}
 
     for raw in raw_cards:
         if not isinstance(raw, dict):
@@ -429,6 +531,12 @@ def import_board():
         db.session.add(card)
         db.session.flush()
         created_cards += 1
+        try:
+            raw_id = int(raw.get("id") or 0)
+        except Exception:
+            raw_id = 0
+        if raw_id > 0:
+            id_map[raw_id] = int(card.id)
 
         raw_atts = raw.get("attachments") or []
         if not isinstance(raw_atts, list):
@@ -474,7 +582,51 @@ def import_board():
                 )
             )
 
-    _emit_event(date_str, "reset", 0, user.id, {"mode": mode, "cards": created_cards})
+    existing_pairs: set[tuple[int, int]] = set()
+    if mode == "merge":
+        for from_id, to_id in (
+            db.session.query(WhiteboardLink.from_card_id, WhiteboardLink.to_card_id)
+            .filter(WhiteboardLink.board_date == date_str)
+            .all()
+        ):
+            existing_pairs.add((int(from_id), int(to_id)))
+
+    for raw_link in raw_links:
+        if not isinstance(raw_link, dict):
+            continue
+        try:
+            from_old = int(raw_link.get("from_id") or raw_link.get("from") or 0)
+            to_old = int(raw_link.get("to_id") or raw_link.get("to") or 0)
+        except Exception:
+            skipped_links += 1
+            continue
+        if from_old <= 0 or to_old <= 0:
+            skipped_links += 1
+            continue
+        from_new = id_map.get(from_old)
+        to_new = id_map.get(to_old)
+        if not from_new or not to_new:
+            skipped_links += 1
+            continue
+        if from_new == to_new:
+            skipped_links += 1
+            continue
+        pair = (int(from_new), int(to_new))
+        if pair in existing_pairs:
+            skipped_links += 1
+            continue
+        existing_pairs.add(pair)
+        db.session.add(
+            WhiteboardLink(
+                board_date=date_str,
+                from_card_id=from_new,
+                to_card_id=to_new,
+                created_by_id=user.id if user else None,
+            )
+        )
+        created_links += 1
+
+    _emit_event(date_str, "reset", 0, user.id, {"mode": mode, "cards": created_cards, "links": created_links})
     db.session.commit()
 
     deleted_failed = 0
@@ -492,6 +644,8 @@ def import_board():
             "date": date_str,
             "mode": mode,
             "created_cards": created_cards,
+            "created_links": created_links,
+            "skipped_links": skipped_links,
             "skipped_attachments": skipped_attachments,
             "deleted_failed": deleted_failed,
         }
