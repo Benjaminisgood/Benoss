@@ -982,12 +982,15 @@
           left.appendChild(meta);
           row.appendChild(left);
 
+          const actions = document.createElement('div');
+          actions.className = 'stack-actions';
+
           const openBtn = document.createElement('button');
           openBtn.type = 'button';
           openBtn.className = 'row-btn';
           openBtn.textContent = '打开';
           openBtn.addEventListener('click', () => showPreview(file));
-          row.appendChild(openBtn);
+          actions.appendChild(openBtn);
 
           if (canEdit) {
             const delBtn = document.createElement('button');
@@ -1000,12 +1003,13 @@
                 method: 'DELETE',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ path: file.path }),
-              });
+                });
               await renderProjectWindow(projectId, prefix, scope, opts);
             });
-            row.appendChild(delBtn);
+            actions.appendChild(delBtn);
           }
 
+          row.appendChild(actions);
           filesEl.appendChild(row);
         });
       }
@@ -2070,23 +2074,28 @@
 	                ? new Date(ev.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 	                : '';
 	              meta.textContent = [time, projTitle].filter(Boolean).join('  ·  ');
-	              left.appendChild(strong);
-	              left.appendChild(meta);
-	              row.appendChild(left);
+              left.appendChild(strong);
+              left.appendChild(meta);
+              row.appendChild(left);
 
-	              if (ev.whiteboard && wbDate) {
-	                const a = document.createElement('a');
-	                a.className = 'text-link';
-	                a.href = `/whiteboard?date=${encodeURIComponent(wbDate)}${wbCardId ? `#whiteboard-card-${wbCardId}` : ''}`;
-	                a.textContent = '打开';
-	                row.appendChild(a);
-	              } else if (ev.project && ev.project.id) {
-	                const a = document.createElement('a');
-	                a.className = 'text-link';
-	                a.href = `/${ev.project.module || module || 'blog'}?project=${ev.project.id}`;
-	                a.textContent = '打开';
-                row.appendChild(a);
+              const actions = document.createElement('div');
+              actions.className = 'stack-actions';
+
+              if (ev.whiteboard && wbDate) {
+                const a = document.createElement('a');
+                a.className = 'text-link';
+                a.href = `/whiteboard?date=${encodeURIComponent(wbDate)}${wbCardId ? `#whiteboard-card-${wbCardId}` : ''}`;
+                a.textContent = '打开';
+                actions.appendChild(a);
+              } else if (ev.project && ev.project.id) {
+                const a = document.createElement('a');
+                a.className = 'text-link';
+                a.href = `/${ev.project.module || module || 'blog'}?project=${ev.project.id}`;
+                a.textContent = '打开';
+                actions.appendChild(a);
               }
+
+              if (actions.childNodes.length) row.appendChild(actions);
               feed.appendChild(row);
             });
           }
@@ -2585,37 +2594,127 @@
         centerOnWorld(cx, cy, 1);
       };
 
-      let panning = false;
+      // Support both:
+      // - Drag to pan (mouse/touch, single pointer)
+      // - Pinch to zoom (touch, two pointers)
+      const pointers = new Map(); // pointerId -> { cx, cy }
+      let gesture = 'none'; // 'none' | 'pan' | 'pinch'
+
+      let panPointerId = 0;
       let panStartX = 0;
       let panStartY = 0;
       let panOriginX = 0;
       let panOriginY = 0;
 
-      const endPan = () => {
-        if (!panning) return;
-        panning = false;
-        whiteboardEl.classList.remove('is-panning');
+      let pinchStartDist = 0;
+      let pinchStartScale = 1;
+      let pinchWorldMidX = 0;
+      let pinchWorldMidY = 0;
+
+      const setGesture = (next) => {
+        gesture = next;
+        whiteboardEl.classList.toggle('is-panning', next !== 'none');
+      };
+
+      const startPanFrom = (pointerId, cx, cy) => {
+        panPointerId = pointerId;
+        panStartX = cx;
+        panStartY = cy;
+        panOriginX = camera.x;
+        panOriginY = camera.y;
+        setGesture('pan');
+      };
+
+      const startPinch = () => {
+        if (pointers.size < 2) return;
+        const rect = whiteboardEl.getBoundingClientRect();
+        const pts = Array.from(pointers.values());
+        const a = pts[0];
+        const b = pts[1];
+        pinchStartDist = Math.max(1, Math.hypot(a.cx - b.cx, a.cy - b.cy));
+        pinchStartScale = camera.scale;
+        const midClientX = (a.cx + b.cx) / 2;
+        const midClientY = (a.cy + b.cy) / 2;
+        const sx = midClientX - rect.left;
+        const sy = midClientY - rect.top;
+        pinchWorldMidX = (sx - camera.x) / camera.scale;
+        pinchWorldMidY = (sy - camera.y) / camera.scale;
+        setGesture('pinch');
+      };
+
+      const updatePinch = () => {
+        if (gesture !== 'pinch' || pointers.size < 2) return;
+        const rect = whiteboardEl.getBoundingClientRect();
+        const pts = Array.from(pointers.values());
+        const a = pts[0];
+        const b = pts[1];
+        const dist = Math.max(1, Math.hypot(a.cx - b.cx, a.cy - b.cy));
+        const nextScale = clamp(pinchStartScale * (dist / pinchStartDist), 0.2, 3);
+        const midClientX = (a.cx + b.cx) / 2;
+        const midClientY = (a.cy + b.cy) / 2;
+        const sx = midClientX - rect.left;
+        const sy = midClientY - rect.top;
+        camera.scale = nextScale;
+        camera.x = sx - pinchWorldMidX * camera.scale;
+        camera.y = sy - pinchWorldMidY * camera.scale;
+        applyCamera();
+      };
+
+      const onPointerEnd = (ev) => {
+        if (!pointers.has(ev.pointerId)) return;
+        pointers.delete(ev.pointerId);
+
+        if (gesture === 'pinch') {
+          if (pointers.size === 1) {
+            const [nextId, nextPt] = pointers.entries().next().value;
+            startPanFrom(nextId, nextPt.cx, nextPt.cy);
+          } else if (!pointers.size) {
+            setGesture('none');
+          }
+          return;
+        }
+
+        if (gesture === 'pan' && ev.pointerId === panPointerId) {
+          if (pointers.size === 1) {
+            const [nextId, nextPt] = pointers.entries().next().value;
+            startPanFrom(nextId, nextPt.cx, nextPt.cy);
+          } else {
+            setGesture('none');
+          }
+          return;
+        }
+
+        if (!pointers.size) setGesture('none');
       };
 
       whiteboardEl.addEventListener('pointerdown', (ev) => {
-        if (!ev.isPrimary) return;
         if (ev.button != null && ev.button !== 0) return;
         if (ev.target && ev.target.closest && ev.target.closest('.whiteboard-card')) return;
-        panning = true;
-        panStartX = ev.clientX;
-        panStartY = ev.clientY;
-        panOriginX = camera.x;
-        panOriginY = camera.y;
-        whiteboardEl.classList.add('is-panning');
+
+        // Cap to 2 pointers for pinch; ignore extra touches.
+        if (pointers.size >= 2 && !pointers.has(ev.pointerId)) return;
+
+        pointers.set(ev.pointerId, { cx: ev.clientX, cy: ev.clientY });
         try {
           whiteboardEl.setPointerCapture(ev.pointerId);
         } catch (err) {
           // ignore
         }
+
+        if (pointers.size === 1) startPanFrom(ev.pointerId, ev.clientX, ev.clientY);
+        else if (pointers.size === 2) startPinch();
       });
 
       whiteboardEl.addEventListener('pointermove', (ev) => {
-        if (!panning) return;
+        if (!pointers.has(ev.pointerId)) return;
+        pointers.set(ev.pointerId, { cx: ev.clientX, cy: ev.clientY });
+
+        if (gesture === 'pinch') {
+          updatePinch();
+          return;
+        }
+
+        if (gesture !== 'pan' || ev.pointerId !== panPointerId) return;
         const dx = ev.clientX - panStartX;
         const dy = ev.clientY - panStartY;
         camera.x = panOriginX + dx;
@@ -2623,8 +2722,8 @@
         applyCamera();
       });
 
-      whiteboardEl.addEventListener('pointerup', endPan);
-      whiteboardEl.addEventListener('pointercancel', endPan);
+      whiteboardEl.addEventListener('pointerup', onPointerEnd);
+      whiteboardEl.addEventListener('pointercancel', onPointerEnd);
 
       whiteboardEl.addEventListener(
         'wheel',

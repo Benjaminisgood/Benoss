@@ -161,6 +161,7 @@
             }
 
             const actions = document.createElement('div');
+            actions.className = 'stack-actions';
             const approve = document.createElement('button');
             approve.textContent = '同意';
             approve.addEventListener('click', async () => {
@@ -231,6 +232,8 @@
             row.appendChild(left);
 
             if (item.status === 'pending') {
+              const actions = document.createElement('div');
+              actions.className = 'stack-actions';
               const cancel = document.createElement('button');
               cancel.textContent = '撤销';
               cancel.addEventListener('click', async () => {
@@ -244,7 +247,8 @@
                   setStatus(err.message);
                 }
               });
-              row.appendChild(cancel);
+              actions.appendChild(cancel);
+              row.appendChild(actions);
             }
 
             outboxEl.appendChild(row);
@@ -282,6 +286,7 @@
         left.appendChild(meta);
 
         const actions = document.createElement('div');
+        actions.className = 'stack-actions';
 
         const toggleActive = document.createElement('button');
         toggleActive.textContent = user.is_active ? '停用' : '启用';

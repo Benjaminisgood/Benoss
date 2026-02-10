@@ -224,6 +224,8 @@ img {
   gap: 4px;
   border: none;
   background: transparent;
+  padding: 0.55rem;
+  border-radius: 14px;
 }
 
 .nav-toggle span {
@@ -231,6 +233,16 @@ img {
   width: 24px;
   height: 2px;
   background: var(--ink);
+}
+
+.nav-toggle:hover {
+  background: rgba(255, 255, 255, 0.65);
+  box-shadow: 0 10px 22px rgba(25, 18, 8, 0.08);
+}
+
+.nav-toggle:focus-visible {
+  outline: 2px solid rgba(15, 107, 93, 0.4);
+  outline-offset: 3px;
 }
 
 .page {
@@ -732,6 +744,8 @@ select.input {
 .button-row {
   display: flex;
   gap: 0.6rem;
+  flex-wrap: wrap;
+  align-items: center;
   margin-bottom: 1rem;
 }
 
@@ -767,6 +781,10 @@ select.input {
   gap: 0.8rem;
   padding: 0.9rem 1rem;
   border-bottom: 1px solid rgba(231, 216, 202, 0.7);
+}
+
+.whiteboard-head .button-row {
+  margin-bottom: 0;
 }
 
 .whiteboard-hint {
@@ -1671,13 +1689,32 @@ body.modal-open {
 
 .stack-item {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 0.6rem;
   padding: 0.7rem 0.9rem;
   border-radius: 12px;
   border: 1px solid var(--border);
   background: var(--card);
   align-items: center;
+}
+
+.stack-item > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.stack-item strong,
+.stack-item .album-meta {
+  overflow-wrap: anywhere;
+}
+
+.stack-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  flex-wrap: wrap;
 }
 
 .stack-item button {
@@ -1755,6 +1792,10 @@ body.modal-open {
     gap: 0.6rem 1rem;
   }
 
+  .nav-link {
+    padding: 0.55rem 0.35rem;
+  }
+
   .nav-actions {
     width: 100%;
     flex-wrap: wrap;
@@ -1817,12 +1858,182 @@ body.modal-open {
     padding: 0.9rem 1rem;
   }
 
+  .brand-title {
+    letter-spacing: 0.14rem;
+  }
+
   .page {
     padding: 1.8rem 1rem 3rem;
   }
 
   .hero {
     padding: 1.6rem;
+  }
+
+  .viewer-head__row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .viewer-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .whiteboard-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .modal {
+    padding: 1rem;
+  }
+
+  .modal-panel {
+    padding: 1.1rem;
+  }
+
+  .modal-close {
+    top: 0.85rem;
+    right: 0.85rem;
+    padding: 0.55rem 1rem;
+    font-size: 0.75rem;
+  }
+
+  .button-row > .pill-btn,
+  .button-row > a.pill-btn {
+    flex: 1 1 auto;
+    text-align: center;
+  }
+
+  .input,
+  .textarea,
+  select.input,
+  .filter-select {
+    /* Prevent iOS from zooming form controls on focus. */
+    font-size: 16px;
+  }
+
+  #quick-links-table,
+  #dailyreal-scoreboard {
+    display: block;
+    padding: 0.6rem 0.9rem;
+  }
+
+  #quick-links-table thead,
+  #dailyreal-scoreboard thead {
+    display: none;
+  }
+
+  #quick-links-table tbody,
+  #quick-links-table tr,
+  #quick-links-table td,
+  #dailyreal-scoreboard tbody,
+  #dailyreal-scoreboard tr,
+  #dailyreal-scoreboard td {
+    display: block;
+    width: 100%;
+  }
+
+  #quick-links-table tr,
+  #dailyreal-scoreboard tr {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 0.6rem 0.8rem;
+    margin: 0 0 0.9rem;
+  }
+
+  #quick-links-table tbody td,
+  #dailyreal-scoreboard tbody td {
+    min-width: 0;
+    padding: 0.45rem 0;
+    border-bottom: 1px dashed rgba(231, 216, 202, 0.85);
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.8rem;
+    overflow-wrap: anywhere;
+  }
+
+  #quick-links-table tbody td:last-child,
+  #dailyreal-scoreboard tbody td:last-child {
+    border-bottom: none;
+  }
+
+  #quick-links-table tbody td::before,
+  #dailyreal-scoreboard tbody td::before {
+    flex: 0 0 5.6rem;
+    font-size: 0.7rem;
+    font-weight: 650;
+    letter-spacing: 0.08rem;
+    color: rgba(98, 88, 79, 0.92);
+  }
+
+  #quick-links-table td[colspan],
+  #dailyreal-scoreboard td[colspan] {
+    justify-content: center;
+  }
+
+  #quick-links-table td[colspan]::before,
+  #dailyreal-scoreboard td[colspan]::before {
+    display: none;
+  }
+
+  #quick-links-table td:nth-of-type(1)::before {
+    content: '标题';
+  }
+
+  #quick-links-table td:nth-of-type(2)::before {
+    content: 'URL';
+  }
+
+  #quick-links-table td:nth-of-type(3)::before {
+    content: '排序';
+  }
+
+  #quick-links-table td.actions {
+    justify-content: flex-end;
+    gap: 0.75rem;
+  }
+
+  #quick-links-table td.actions::before {
+    display: none;
+  }
+
+  #quick-links-table .row-btn {
+    padding: 0.45rem 0.85rem;
+    border-radius: 999px;
+    border: 1px solid rgba(231, 216, 202, 0.95);
+    background: rgba(255, 255, 255, 0.85);
+  }
+
+  #dailyreal-scoreboard td:nth-of-type(1)::before {
+    content: '用户';
+  }
+
+  #dailyreal-scoreboard td:nth-of-type(2)::before {
+    content: 'Blog git';
+  }
+
+  #dailyreal-scoreboard td:nth-of-type(3)::before {
+    content: 'Note git';
+  }
+
+  #dailyreal-scoreboard td:nth-of-type(4)::before {
+    content: 'Push';
+  }
+
+  #dailyreal-scoreboard td:nth-of-type(5)::before {
+    content: 'Clone';
+  }
+
+  #dailyreal-scoreboard td:nth-of-type(6)::before {
+    content: 'Whiteboard';
+  }
+
+  #dailyreal-scoreboard td:nth-of-type(7)::before {
+    content: '总计';
   }
 
   .real-window {
@@ -1841,5 +2052,11 @@ body.modal-open {
 
   .album-stream {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 420px) {
+  .brand-title {
+    display: none;
   }
 }
