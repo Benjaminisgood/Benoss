@@ -25,6 +25,14 @@ def put_object_from_file(key: str, filename: str, content_type: Optional[str] = 
     bucket.put_object_from_file(key, filename, headers=headers)
 
 
+def put_object_bytes(key: str, data: bytes, content_type: Optional[str] = None) -> None:
+    bucket = _get_bucket()
+    headers = {}
+    if content_type:
+        headers["Content-Type"] = content_type
+    bucket.put_object(key, data, headers=headers)
+
+
 def delete_object(key: str) -> None:
     bucket = _get_bucket()
     bucket.delete_object(key)
@@ -50,4 +58,3 @@ def public_url(key: str, expires: int = 3600, params: Optional[dict] = None) -> 
         return f"{base.rstrip('/')}/{key}{query}"
     bucket = _get_bucket()
     return bucket.sign_url("GET", key, expires, params=params)
-

@@ -104,6 +104,7 @@ Benoss 把“业务状态”和“文件内容”分层存储：
   push/{push_request_id}/{file_uuid}{ext}  # push request 暂存文件
 
 {OSS_PREFIX}/whiteboard/{YYYY-MM-DD}/
+  board.json                               # 白板 JSON 快照（schema_version=2）
   objects/{file_uuid}{ext}                 # 白板附件/媒体
 ```
 
@@ -190,6 +191,9 @@ Home：
 - `GET/POST/PATCH/DELETE /api/links/quick...`
 - `GET /api/whiteboard/board`、`GET /api/whiteboard/events`
 - `POST/PATCH/DELETE /api/whiteboard/cards...`
+- `POST /api/whiteboard/links`、`DELETE /api/whiteboard/links/<id>`
+- `GET /api/whiteboard/export`、`POST /api/whiteboard/import`
+- `GET /api/whiteboard/snapshot`（返回 OSS 的 `board.json` 签名 URL）
 
 Dailyreel：
 - `GET /api/dailyreel/today`

@@ -10,7 +10,7 @@ from werkzeug.utils import secure_filename
 
 from ..extensions import db
 from ..models import WhiteboardAttachment, WhiteboardCard, WhiteboardEvent, WhiteboardLink
-from ..oss import copy_object, delete_object, public_url, put_object_from_file
+from ..oss import copy_object, delete_object, public_url, put_object_bytes, put_object_from_file
 from ..utils.ids import new_uuid
 from ..utils.oss_paths import whiteboard_object_key, whiteboard_prefix
 from ..utils.session_auth import login_required
@@ -162,6 +162,37 @@ def _emit_event(date_str: str, event_type: str, card_id: int, actor_user_id: int
     db.session.add(ev)
 
 
+def _board_snapshot_key(date_str: str) -> str:
+    return whiteboard_object_key(date_str, "board.json")
+
+
+def _build_board_export(date_str: str) -> dict:
+    cards = (
+        WhiteboardCard.query.options(joinedload(WhiteboardCard.attachments))
+        .filter_by(board_date=date_str)
+        .order_by(WhiteboardCard.updated_at.asc())
+        .all()
+    )
+    links = WhiteboardLink.query.filter_by(board_date=date_str).order_by(WhiteboardLink.id.asc()).all()
+    return {
+        "schema_version": 2,
+        "exported_at": datetime.utcnow().isoformat() + "Z",
+        "date": date_str,
+        "cards": [_card_export_payload(card) for card in cards],
+        "links": [_link_export_payload(link) for link in links],
+    }
+
+
+def _write_board_snapshot(date_str: str) -> None:
+    # Best-effort snapshot for backup/fast preview; DB remains source of truth.
+    try:
+        payload = _build_board_export(date_str)
+        raw = (json.dumps(payload, ensure_ascii=True, separators=(",", ":")) + "\n").encode("utf-8")
+        put_object_bytes(_board_snapshot_key(date_str), raw, content_type="application/json")
+    except Exception:
+        current_app.logger.exception("Failed to write whiteboard snapshot for %s", date_str)
+
+
 @whiteboard_bp.route("/api/whiteboard/board", methods=["GET"])
 @login_required()
 def get_board():
@@ -235,6 +266,7 @@ def create_card():
     db.session.flush()
     _emit_event(date_str, "create", card.id, user.id, {"card": _card_payload(card)})
     db.session.commit()
+    _write_board_snapshot(date_str)
     return jsonify({"card": _card_payload(card)})
 
 
@@ -320,6 +352,7 @@ def upload_media_card():
     db.session.flush()
     _emit_event(date_str, "create", card.id, user.id, {"card": _card_payload(card)})
     db.session.commit()
+    _write_board_snapshot(date_str)
     return jsonify({"card": _card_payload(card)})
 
 
@@ -350,6 +383,7 @@ def update_card(card_id: int):
     db.session.flush()
     _emit_event(card.board_date, "update", card.id, user.id, {"changes": changed})
     db.session.commit()
+    _write_board_snapshot(card.board_date)
     return jsonify({"card": _card_payload(card)})
 
 
@@ -391,6 +425,7 @@ def create_link():
     db.session.flush()
     _emit_event(date_str, "link_create", 0, user.id, {"link": _link_payload(link)})
     db.session.commit()
+    _write_board_snapshot(date_str)
     return jsonify({"link": _link_payload(link)})
 
 
@@ -404,6 +439,7 @@ def delete_link(link_id: int):
     db.session.delete(link)
     _emit_event(date_str, "link_delete", 0, user.id, {"link": payload})
     db.session.commit()
+    _write_board_snapshot(date_str)
     return jsonify({"deleted": True, "id": link_id})
 
 
@@ -428,6 +464,7 @@ def delete_card(card_id: int):
     db.session.delete(card)
     _emit_event(date_str, "delete", card_id, user.id, {})
     db.session.commit()
+    _write_board_snapshot(date_str)
     for key in keys:
         try:
             delete_object(key)
@@ -447,22 +484,24 @@ def export_board():
     except ValueError:
         return jsonify({"error": "invalid date"}), 400
 
-    cards = (
-        WhiteboardCard.query.options(joinedload(WhiteboardCard.attachments))
-        .filter_by(board_date=date_str)
-        .order_by(WhiteboardCard.updated_at.asc())
-        .all()
-    )
-    links = WhiteboardLink.query.filter_by(board_date=date_str).order_by(WhiteboardLink.id.asc()).all()
-    return jsonify(
-        {
-            "schema_version": 2,
-            "exported_at": datetime.utcnow().isoformat() + "Z",
-            "date": date_str,
-            "cards": [_card_export_payload(card) for card in cards],
-            "links": [_link_export_payload(link) for link in links],
-        }
-    )
+    return jsonify(_build_board_export(date_str))
+
+
+@whiteboard_bp.route("/api/whiteboard/snapshot", methods=["GET"])
+@login_required()
+def get_board_snapshot():
+    date_str = (request.args.get("date") or "").strip()
+    if not date_str:
+        date_str = datetime.utcnow().strftime("%Y-%m-%d")
+    try:
+        date_str = _validate_date(date_str)
+    except ValueError:
+        return jsonify({"error": "invalid date"}), 400
+
+    # Ensure snapshot exists best-effort.
+    _write_board_snapshot(date_str)
+    key = _board_snapshot_key(date_str)
+    return jsonify({"date": date_str, "oss_key": key, "url": public_url(key, expires=3600)})
 
 
 @whiteboard_bp.route("/api/whiteboard/import", methods=["POST"])
@@ -628,6 +667,7 @@ def import_board():
 
     _emit_event(date_str, "reset", 0, user.id, {"mode": mode, "cards": created_cards, "links": created_links})
     db.session.commit()
+    _write_board_snapshot(date_str)
 
     deleted_failed = 0
     if mode == "replace" and keys_to_delete:

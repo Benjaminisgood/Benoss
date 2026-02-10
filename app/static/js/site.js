@@ -40,12 +40,99 @@
     return `${num.toFixed(num >= 10 || exp === 0 ? 0 : 1)} ${units[exp]}`;
   };
 
+  const safeRelPath = (value, fallback = 'file') => {
+    const fb = String(fallback || 'file')
+      .replace(/\\/g, '/')
+      .split('/')
+      .slice(-1)[0]
+      .trim();
+    let raw = String(value || '').replace(/\\/g, '/').trim();
+    if (!raw) raw = fb || 'file';
+    raw = raw.replace(/^\/+/, '');
+    const parts = [];
+    for (const seg of raw.split('/')) {
+      if (!seg || seg === '.') continue;
+      if (seg === '..') {
+        if (!parts.length) return null;
+        parts.pop();
+        continue;
+      }
+      parts.push(seg);
+    }
+    let out = parts.join('/');
+    if (!out || out === '.' || out === '/') out = fb || 'file';
+    if (!out || out.length > 500) return null;
+    const check = out.split('/');
+    if (check.some((p) => !p || p === '.' || p === '..')) return null;
+    return out;
+  };
+
+  const isIgnoredRelPath = (relPath) => {
+    const raw = String(relPath || '').replace(/\\/g, '/');
+    if (!raw) return false;
+    const parts = raw.split('/').filter(Boolean);
+    const denyDirs = new Set(['.benoss', '.git', '.venv', 'node_modules', '__pycache__']);
+    if (parts.some((p) => denyDirs.has(p))) return true;
+    const base = parts[parts.length - 1] || '';
+    if (base === '.DS_Store') return true;
+    if (base.endsWith('.pyc')) return true;
+    return false;
+  };
+
+  const hexFromArrayBuffer = (buf) =>
+    Array.from(new Uint8Array(buf || new ArrayBuffer(0)))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+
+  const sha256Hex = async (blob) => {
+    try {
+      if (window.DigestStream && blob && typeof blob.stream === 'function') {
+        const ds = new DigestStream('SHA-256');
+        await blob.stream().pipeTo(ds.writable);
+        const digest = await ds.digest;
+        return hexFromArrayBuffer(digest);
+      }
+      if (window.crypto && crypto.subtle && typeof crypto.subtle.digest === 'function') {
+        const ab = await blob.arrayBuffer();
+        const digest = await crypto.subtle.digest('SHA-256', ab);
+        return hexFromArrayBuffer(digest);
+      }
+    } catch (err) {
+      // Fall back to no-hash mode (we'll just upload).
+    }
+    return '';
+  };
+
   const MEDIA_EXTS = {
     image: new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg']),
     video: new Set(['.mp4', '.mov', '.webm', '.mkv', '.avi']),
     audio: new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg']),
     pdf: new Set(['.pdf']),
-    text: new Set(['.md', '.markdown', '.txt', '.json', '.yaml', '.yml', '.toml', '.ini', '.csv', '.tsv', '.log']),
+    text: new Set([
+      '.md',
+      '.markdown',
+      '.txt',
+      '.json',
+      '.yaml',
+      '.yml',
+      '.toml',
+      '.ini',
+      '.csv',
+      '.tsv',
+      '.log',
+      '.py',
+      '.js',
+      '.ts',
+      '.tsx',
+      '.jsx',
+      '.html',
+      '.css',
+      '.xml',
+      '.sh',
+      '.zsh',
+      '.bash',
+      '.sql',
+    ]),
   };
 
   const normalizeUrl = (value) => {
@@ -209,11 +296,61 @@
     });
   };
 
+  const highlightCodeBlocks = (root) => {
+    if (!root || !window.hljs) return;
+    qsa('pre code', root).forEach((block) => {
+      try {
+        window.hljs.highlightElement(block);
+      } catch (err) {
+        // ignore
+      }
+    });
+  };
+
   const renderMarkdown = (text, container) => {
     if (!container) return;
-    const html = window.marked ? window.marked.parse(text || '') : text || '';
-    container.innerHTML = html;
+    const source = String(text || '');
+    if (!window.marked) {
+      container.textContent = source;
+      return;
+    }
+    if (!window.DOMPurify) {
+      // Fail closed (no HTML rendering) if sanitizer isn't available.
+      container.textContent = source;
+      return;
+    }
+    const raw = window.marked.parse(source);
+    const safe = window.DOMPurify.sanitize(raw, { USE_PROFILES: { html: true } });
+    container.innerHTML = safe;
     renderMath(container);
+    highlightCodeBlocks(container);
+  };
+
+  const guessCodeLanguage = (path) => {
+    const p = String(path || '').toLowerCase();
+    const dot = p.lastIndexOf('.');
+    if (dot === -1) return '';
+    const ext = p.slice(dot);
+    const map = {
+      '.py': 'python',
+      '.js': 'javascript',
+      '.jsx': 'javascript',
+      '.ts': 'typescript',
+      '.tsx': 'typescript',
+      '.json': 'json',
+      '.yaml': 'yaml',
+      '.yml': 'yaml',
+      '.toml': 'toml',
+      '.ini': 'ini',
+      '.sql': 'sql',
+      '.sh': 'bash',
+      '.bash': 'bash',
+      '.zsh': 'bash',
+      '.html': 'xml',
+      '.xml': 'xml',
+      '.css': 'css',
+    };
+    return map[ext] || '';
   };
 
   const normalizeProjectPath = (value) => {
@@ -357,10 +494,12 @@
     }
 
     const fileUrlByPath = new Map();
+    const remoteMetaByPath = new Map();
     files.forEach((f) => {
-      if (f && f.path && f.url) {
-        fileUrlByPath.set(normalizeProjectPath(f.path), f.url);
-      }
+      const rel = normalizeProjectPath(f && f.path);
+      if (!rel) return;
+      if (f && f.url) fileUrlByPath.set(rel, f.url);
+      remoteMetaByPath.set(rel, { sha256: String((f && f.sha256) || ''), sizeBytes: Number((f && f.size_bytes) || 0) });
     });
 
     const showPreview = async (file) => {
@@ -380,9 +519,11 @@
           );
           const text = data.text || '';
           previewEl.innerHTML = '';
-          const baseDir = normalizeProjectPath(path).split('/').slice(0, -1).join('/');
-          const rewritten = rewriteProjectMarkdown(text, fileUrlByPath, baseDir);
-          if (String(path).toLowerCase().endsWith('.md') || String(path).toLowerCase().endsWith('.markdown')) {
+          const lowerPath = String(path).toLowerCase();
+          const isMarkdown = lowerPath.endsWith('.md') || lowerPath.endsWith('.markdown');
+          if (isMarkdown) {
+            const baseDir = normalizeProjectPath(path).split('/').slice(0, -1).join('/');
+            const rewritten = rewriteProjectMarkdown(text, fileUrlByPath, baseDir);
             const wrap = document.createElement('div');
             wrap.className = 'markdown-body';
             previewEl.appendChild(wrap);
@@ -390,8 +531,13 @@
           } else {
             const pre = document.createElement('pre');
             pre.className = 'code-block';
-            pre.textContent = rewritten;
+            const code = document.createElement('code');
+            const lang = guessCodeLanguage(path);
+            if (lang) code.className = `language-${lang}`;
+            code.textContent = text;
+            pre.appendChild(code);
             previewEl.appendChild(pre);
+            if (lang) highlightCodeBlocks(pre);
           }
         } catch (err) {
           previewEl.innerHTML = `<div class="card placeholder">${err.message}</div>`;
@@ -399,22 +545,35 @@
         return;
       }
 
-      const node = createMediaNode(file.media_type || 'file', file.url || '', {
-        alt: path,
-        title: path,
-        preview: file.preview_url || '',
-        className: 'markdown-media',
-      });
-      if (node) {
-        previewEl.appendChild(node);
+      const resolvedType = (file.media_type || detectMediaType(file.url || '') || 'file').toLowerCase();
+      if (resolvedType === 'pdf') {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'pdf-embed';
+        const iframe = document.createElement('iframe');
+        iframe.src = file.url || '';
+        iframe.loading = 'lazy';
+        iframe.title = path || 'PDF';
+        iframe.referrerPolicy = 'no-referrer';
+        wrapper.appendChild(iframe);
+        previewEl.appendChild(wrapper);
       } else {
-        const link = document.createElement('a');
-        link.href = file.url || '#';
-        link.textContent = '下载';
-        link.className = 'text-link';
-        link.target = '_blank';
-        link.rel = 'noopener';
-        previewEl.appendChild(link);
+        const node = createMediaNode(resolvedType, file.url || '', {
+          alt: path,
+          title: path,
+          preview: file.preview_url || '',
+          className: 'markdown-media',
+        });
+        if (node) {
+          previewEl.appendChild(node);
+        } else {
+          const link = document.createElement('a');
+          link.href = file.url || '#';
+          link.textContent = '下载';
+          link.className = 'text-link';
+          link.target = '_blank';
+          link.rel = 'noopener';
+          previewEl.appendChild(link);
+        }
       }
 
       const dl = document.createElement('a');
@@ -473,16 +632,6 @@
       } else {
         addBtn('Propose push', async () => {
           const message = window.prompt('留言(可选):', '') || '';
-          const created = await apiFetch(`/api/projects/${projectId}/push-requests`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message }),
-          });
-          const prId = created && created.push_request && created.push_request.id;
-          if (!prId) {
-            window.alert('创建 push request 失败');
-            return;
-          }
           const input = document.createElement('input');
           input.type = 'file';
           input.multiple = true;
@@ -497,15 +646,76 @@
               const selected = Array.from(input.files || []);
               if (!selected.length) return;
               const prefixPath = window.prompt('路径前缀(可选):', '') || '';
+              const base = String(prefixPath || '').trim();
+              const byPath = new Map();
+              let ignored = 0;
               for (const file of selected) {
-                const fd = new FormData();
                 const rel = (file.webkitRelativePath || file.name || '').replace(/\\\\/g, '/');
-                const path = `${prefixPath || ''}${prefixPath && !prefixPath.endsWith('/') ? '/' : ''}${rel}`;
+                const fallback = String(file.name || 'file').replace(/\\\\/g, '/').split('/').slice(-1)[0] || 'file';
+                const rawPath = `${base || ''}${base && !base.endsWith('/') ? '/' : ''}${rel}`;
+                const safePath = safeRelPath(rawPath, fallback);
+                if (!safePath) {
+                  window.alert(`路径非法: ${rawPath}`);
+                  return;
+                }
+                if (isIgnoredRelPath(safePath)) {
+                  ignored += 1;
+                  continue;
+                }
+                byPath.set(safePath, file);
+              }
+
+              const entries = Array.from(byPath.entries());
+              if (!entries.length) {
+                window.alert(`没有可上传的文件（忽略 ${ignored}）`);
+                return;
+              }
+
+              const toUpload = [];
+              let skipped = 0;
+              for (const [path, file] of entries) {
+                const remote = remoteMetaByPath.get(path);
+                if (remote && remote.sha256) {
+                  const remoteSize = Number(remote.sizeBytes || 0);
+                  if (Number(file.size || 0) === remoteSize) {
+                    const localSha = await sha256Hex(file);
+                    if (localSha && localSha === remote.sha256) {
+                      skipped += 1;
+                      continue;
+                    }
+                  }
+                }
+                toUpload.push([path, file]);
+              }
+
+              if (!toUpload.length) {
+                window.alert(`没有检测到变更（跳过 ${skipped}，忽略 ${ignored}）`);
+                return;
+              }
+
+              const created = await apiFetch(`/api/projects/${projectId}/push-requests`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message }),
+              });
+              const prId = created && created.push_request && created.push_request.id;
+              if (!prId) {
+                window.alert('创建 push request 失败');
+                return;
+              }
+
+              let uploaded = 0;
+              for (const [path, file] of toUpload) {
+                const fd = new FormData();
                 fd.append('path', path);
                 fd.append('file', file);
                 await apiFetch(`/api/push-requests/${prId}/files/upload`, { method: 'POST', body: fd });
+                uploaded += 1;
               }
-              window.alert('已发送 push 请求，项目拥有者可在 Control Room 中同意。');
+
+              window.alert(
+                `已发送 push 请求 #${prId}：上传 ${uploaded}，跳过 ${skipped}，忽略 ${ignored}。项目拥有者可在 Control Room 中同意。`
+              );
             },
             { once: true }
           );
@@ -578,18 +788,58 @@
           return;
         }
         const prefixValue = (uploadPrefixInput && uploadPrefixInput.value) || '';
-        setUploadStatus('上传中...');
+        const base = String(prefixValue || '').trim();
+        const byPath = new Map();
+        let ignored = 0;
+        for (const file of selected) {
+          const rel = (file.webkitRelativePath || file.name || '').replace(/\\\\/g, '/');
+          const fallback = String(file.name || 'file').replace(/\\\\/g, '/').split('/').slice(-1)[0] || 'file';
+          const rawPath = `${base || ''}${base && !base.endsWith('/') ? '/' : ''}${rel}`;
+          const safePath = safeRelPath(rawPath, fallback);
+          if (!safePath) {
+            setUploadStatus(`路径非法: ${rawPath}`);
+            return;
+          }
+          if (isIgnoredRelPath(safePath)) {
+            ignored += 1;
+            continue;
+          }
+          byPath.set(safePath, file);
+        }
+
+        const entries = Array.from(byPath.entries());
+        if (!entries.length) {
+          setUploadStatus(`没有可上传的文件（忽略 ${ignored}）`);
+          return;
+        }
+
+        setUploadStatus('准备上传...');
         try {
-          for (const file of selected) {
+          let uploaded = 0;
+          let skipped = 0;
+          for (let i = 0; i < entries.length; i += 1) {
+            const [path, file] = entries[i];
+            const remote = remoteMetaByPath.get(path);
+            if (remote && remote.sha256) {
+              const remoteSize = Number(remote.sizeBytes || 0);
+              if (Number(file.size || 0) === remoteSize) {
+                setUploadStatus(`校验 ${i + 1}/${entries.length}: ${path}`);
+                const localSha = await sha256Hex(file);
+                if (localSha && localSha === remote.sha256) {
+                  skipped += 1;
+                  continue;
+                }
+              }
+            }
+
+            setUploadStatus(`上传 ${i + 1}/${entries.length}: ${path}`);
             const fd = new FormData();
-            const rel = (file.webkitRelativePath || file.name || '').replace(/\\\\/g, '/');
-            const base = String(prefixValue || '').trim();
-            const path = `${base || ''}${base && !base.endsWith('/') ? '/' : ''}${rel}`;
             fd.append('path', path);
             fd.append('file', file);
             await apiFetch(`/api/projects/${projectId}/files/upload`, { method: 'POST', body: fd });
+            uploaded += 1;
           }
-          setUploadStatus('已上传');
+          setUploadStatus(`完成：上传 ${uploaded}，跳过 ${skipped}，忽略 ${ignored}`);
           if (uploadInput) uploadInput.value = '';
           if (uploadFolder) uploadFolder.value = '';
           await renderProjectWindow(projectId, prefix, scope, opts);
@@ -766,12 +1016,20 @@
       modalContent.innerHTML = `<div class="card placeholder">${message}</div>`;
     };
 
-    const closeModal = () => {
-      if (!modal) return;
-      modal.hidden = true;
-      document.body.classList.remove('modal-open');
-      if (modalContent) modalContent.innerHTML = '';
-    };
+	    const closeModal = () => {
+	      if (!modal) return;
+	      modal.hidden = true;
+	      document.body.classList.remove('modal-open');
+	      if (modalContent) {
+	        try {
+	          if (typeof modalContent._cleanup === 'function') modalContent._cleanup();
+	        } catch (err) {
+	          // ignore
+	        }
+	        modalContent._cleanup = null;
+	        modalContent.innerHTML = '';
+	      }
+	    };
 
     const openProjectModal = async (item) => {
       if (!modal || !modalContent) return;
@@ -795,106 +1053,502 @@
       }
     };
 
-    const openWhiteboardModal = async (item) => {
-      if (!modalContent) return;
-      modalContent.innerHTML = '<div class="card placeholder">Loading...</div>';
-      try {
-        const wb = (item && item.whiteboard) || {};
-        const cardId = Number(wb.card_id || 0);
-        if (!cardId) {
-          showModalMessage('Missing whiteboard card id.');
-          return;
-        }
-        const data = await apiFetch(`/api/whiteboard/cards/${cardId}`);
-        const card = data && data.card;
-        if (!card || !card.id) {
-          showModalMessage('Missing whiteboard card.');
-          return;
-        }
+	    const openWhiteboardModal = async (item) => {
+	      if (!modalContent) return;
+	      if (typeof modalContent._cleanup === 'function') {
+	        try {
+	          modalContent._cleanup();
+	        } catch (err) {
+	          // ignore
+	        }
+	      }
+	      modalContent._cleanup = null;
+	      modalContent.innerHTML = '<div class="card placeholder">Loading...</div>';
+	      try {
+	        const wb = (item && item.whiteboard) || {};
+	        const focusCardId = Number(wb.card_id || 0);
+	        const isValidDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || '').trim());
+	        let dateLabel = String(wb.date || '').trim();
+	        if (!isValidDate(dateLabel) && focusCardId) {
+	          const cardData = await apiFetch(`/api/whiteboard/cards/${focusCardId}`);
+	          dateLabel = String((cardData && cardData.card && cardData.card.date) || '').trim();
+	        }
+	        if (!isValidDate(dateLabel)) {
+	          showModalMessage('Missing whiteboard date.');
+	          return;
+	        }
 
-        const panel = document.createElement('div');
-        panel.className = 'panel';
-        const head = document.createElement('div');
-        head.className = 'panel-head';
+	        const aborter = new AbortController();
+	        const { signal } = aborter;
+	        modalContent._cleanup = () => aborter.abort();
 
-        const title = document.createElement('h2');
-        const dateLabel = card.date || wb.date || '';
-        title.textContent = `Whiteboard · ${dateLabel} · #${card.id}`;
+	        const cardsById = new Map();
+	        const stateById = new Map();
+	        let links = [];
 
-        const meta = document.createElement('p');
-        meta.className = 'muted';
-        const excerpt = String(wb.text || '').trim();
-        meta.textContent = excerpt ? excerpt : '公共白板媒体卡片预览。';
+	        const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
+	        const camera = { x: 0, y: 0, scale: 1 };
 
-        const actions = document.createElement('div');
-        actions.className = 'button-row';
-        const openBoard = document.createElement('a');
-        openBoard.className = 'pill-btn';
-        openBoard.href = `/?date=${encodeURIComponent(dateLabel)}#whiteboard-card-${card.id}`;
-        openBoard.target = '_blank';
-        openBoard.rel = 'noopener';
-        openBoard.textContent = '打开白板';
-        actions.appendChild(openBoard);
+	        const shell = document.createElement('div');
+	        shell.className = 'whiteboard-shell whiteboard-shell--modal';
 
-        head.appendChild(title);
-        head.appendChild(meta);
-        head.appendChild(actions);
-        panel.appendChild(head);
+	        const head = document.createElement('div');
+	        head.className = 'whiteboard-head';
 
-        const attsWrap = document.createElement('div');
-        attsWrap.className = 'whiteboard-attachments';
-        const atts = Array.isArray(card.attachments) ? card.attachments : [];
-        if (!atts.length) {
-          attsWrap.innerHTML = '<div class="muted">No attachments.</div>';
-        } else {
-          atts.forEach((att) => {
-            const media = createMediaNode(att.media_type, att.url || '', {
-              title: att.filename || '',
-              alt: att.filename || '',
-              preview: att.preview_url || '',
-            });
-            if (media) {
-              if (att.url && att.media_type === 'image') {
-                const a = document.createElement('a');
-                a.href = att.url;
-                a.target = '_blank';
-                a.rel = 'noopener';
-                a.appendChild(media);
-                attsWrap.appendChild(a);
-              } else {
-                attsWrap.appendChild(media);
-              }
-            } else if (att.url) {
-              const a = document.createElement('a');
-              a.href = att.url;
-              a.target = '_blank';
-              a.rel = 'noopener';
-              a.className = 'text-link';
-              a.textContent = att.filename || 'file';
-              attsWrap.appendChild(a);
-            }
+	        const dateEl = document.createElement('div');
+	        dateEl.className = 'muted';
+	        dateEl.textContent = dateLabel;
 
-            const metaRow = document.createElement('div');
-            metaRow.className = 'whiteboard-attachment__meta';
-            metaRow.textContent = `${att.filename || 'file'} · ${att.media_type || 'file'} · ${formatBytes(att.size_bytes || 0)}`;
-            attsWrap.appendChild(metaRow);
-          });
-        }
-        panel.appendChild(attsWrap);
+	        const actions = document.createElement('div');
+	        actions.className = 'button-row';
 
-        if (card.text) {
-          const textBox = document.createElement('div');
-          textBox.className = 'whiteboard-modal__text';
-          textBox.textContent = card.text;
-          panel.appendChild(textBox);
-        }
+	        const resetBtn = document.createElement('button');
+	        resetBtn.type = 'button';
+	        resetBtn.className = 'pill-btn ghost';
+	        resetBtn.textContent = '重置视图';
 
-        modalContent.innerHTML = '';
-        modalContent.appendChild(panel);
-      } catch (err) {
-        showModalMessage(err.message);
-      }
-    };
+	        const refreshBtn = document.createElement('button');
+	        refreshBtn.type = 'button';
+	        refreshBtn.className = 'pill-btn ghost';
+	        refreshBtn.textContent = '刷新';
+
+	        const openBoard = document.createElement('a');
+	        openBoard.className = 'pill-btn';
+	        openBoard.href = `/?date=${encodeURIComponent(dateLabel)}${focusCardId ? `#whiteboard-card-${focusCardId}` : ''}`;
+	        openBoard.target = '_blank';
+	        openBoard.rel = 'noopener';
+	        openBoard.textContent = '在主页打开';
+
+	        const snapshotBtn = document.createElement('button');
+	        snapshotBtn.type = 'button';
+	        snapshotBtn.className = 'pill-btn ghost';
+	        snapshotBtn.textContent = 'JSON快照';
+
+	        actions.appendChild(resetBtn);
+	        actions.appendChild(refreshBtn);
+	        actions.appendChild(openBoard);
+	        actions.appendChild(snapshotBtn);
+	        head.appendChild(dateEl);
+	        head.appendChild(actions);
+	        shell.appendChild(head);
+
+	        const hint = document.createElement('div');
+	        hint.className = 'whiteboard-hint muted';
+	        hint.textContent = '拖动空白处平移 · 滚轮平移 · Ctrl/触控板捏合缩放 · 仅查看（不可编辑）';
+	        shell.appendChild(hint);
+
+	        const whiteboardEl = document.createElement('div');
+	        whiteboardEl.className = 'whiteboard whiteboard--modal';
+	        const whiteboardWorldEl = document.createElement('div');
+	        whiteboardWorldEl.className = 'whiteboard-world';
+	        whiteboardEl.appendChild(whiteboardWorldEl);
+	        shell.appendChild(whiteboardEl);
+
+	        modalContent.innerHTML = '';
+	        modalContent.appendChild(shell);
+
+	        let linksCanvas = null;
+	        let linksCtx = null;
+	        let drawPending = false;
+
+	        const getAccent = () => {
+	          const value = window.getComputedStyle(document.documentElement).getPropertyValue('--accent');
+	          return (value && value.trim()) || '#0f6b5d';
+	        };
+
+	        const ensureLinksCanvas = () => {
+	          if (linksCanvas) return;
+	          linksCanvas = document.createElement('canvas');
+	          linksCanvas.className = 'whiteboard-links';
+	          whiteboardEl.insertBefore(linksCanvas, whiteboardWorldEl);
+	          linksCtx = linksCanvas.getContext('2d');
+	        };
+
+	        const resizeLinksCanvas = () => {
+	          ensureLinksCanvas();
+	          if (!linksCanvas || !linksCtx) return;
+	          const dpr = window.devicePixelRatio || 1;
+	          const w = Math.max(1, whiteboardEl.clientWidth || 1);
+	          const h = Math.max(1, whiteboardEl.clientHeight || 1);
+	          const pw = Math.floor(w * dpr);
+	          const ph = Math.floor(h * dpr);
+	          if (linksCanvas.width !== pw || linksCanvas.height !== ph) {
+	            linksCanvas.width = pw;
+	            linksCanvas.height = ph;
+	            linksCanvas.style.width = `${w}px`;
+	            linksCanvas.style.height = `${h}px`;
+	          }
+	          linksCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+	        };
+
+	        const pointOnRectEdge = (cx, cy, hw, hh, dx, dy) => {
+	          const absDx = Math.abs(dx);
+	          const absDy = Math.abs(dy);
+	          if (hw <= 0 || hh <= 0 || (absDx === 0 && absDy === 0)) return { x: cx, y: cy };
+	          const scale = 1 / Math.max(absDx / hw, absDy / hh);
+	          return { x: cx + dx * scale, y: cy + dy * scale };
+	        };
+
+	        const drawArrow = (ctx, fromRect, toRect, accent) => {
+	          const fromCx = fromRect.x + fromRect.w / 2;
+	          const fromCy = fromRect.y + fromRect.h / 2;
+	          const toCx = toRect.x + toRect.w / 2;
+	          const toCy = toRect.y + toRect.h / 2;
+	          const dx = toCx - fromCx;
+	          const dy = toCy - fromCy;
+	          const dist = Math.hypot(dx, dy);
+	          if (!Number.isFinite(dist) || dist < 5) return;
+
+	          const start = pointOnRectEdge(fromCx, fromCy, fromRect.w / 2, fromRect.h / 2, dx, dy);
+	          const end = pointOnRectEdge(toCx, toCy, toRect.w / 2, toRect.h / 2, -dx, -dy);
+
+	          ctx.save();
+	          ctx.globalAlpha = 0.6;
+	          ctx.strokeStyle = accent;
+	          ctx.fillStyle = accent;
+	          ctx.lineWidth = 2;
+	          ctx.lineCap = 'round';
+
+	          ctx.beginPath();
+	          ctx.moveTo(start.x, start.y);
+	          ctx.lineTo(end.x, end.y);
+	          ctx.stroke();
+
+	          const ux = (end.x - start.x) / dist;
+	          const uy = (end.y - start.y) / dist;
+	          const arrowLen = 11;
+	          const arrowW = 7;
+	          const bx = end.x - ux * arrowLen;
+	          const by = end.y - uy * arrowLen;
+	          const px = -uy;
+	          const py = ux;
+
+	          ctx.beginPath();
+	          ctx.moveTo(end.x, end.y);
+	          ctx.lineTo(bx + px * arrowW, by + py * arrowW);
+	          ctx.lineTo(bx - px * arrowW, by - py * arrowW);
+	          ctx.closePath();
+	          ctx.fill();
+	          ctx.restore();
+	        };
+
+	        const drawLinks = () => {
+	          ensureLinksCanvas();
+	          if (!linksCanvas || !linksCtx) return;
+	          resizeLinksCanvas();
+	          const boardRect = whiteboardEl.getBoundingClientRect();
+	          linksCtx.clearRect(0, 0, whiteboardEl.clientWidth || 1, whiteboardEl.clientHeight || 1);
+	          const accent = getAccent();
+	          (Array.isArray(links) ? links : []).forEach((link) => {
+	            const fromId = Number(link.from_id || 0);
+	            const toId = Number(link.to_id || 0);
+	            if (!fromId || !toId) return;
+	            const fromEl = cardsById.get(fromId);
+	            const toEl = cardsById.get(toId);
+	            if (!fromEl || !toEl) return;
+	            const fr = fromEl.getBoundingClientRect();
+	            const tr = toEl.getBoundingClientRect();
+	            const fromRect = { x: fr.left - boardRect.left, y: fr.top - boardRect.top, w: fr.width, h: fr.height };
+	            const toRect = { x: tr.left - boardRect.left, y: tr.top - boardRect.top, w: tr.width, h: tr.height };
+	            drawArrow(linksCtx, fromRect, toRect, accent);
+	          });
+	        };
+
+	        const scheduleDraw = () => {
+	          if (drawPending) return;
+	          drawPending = true;
+	          window.requestAnimationFrame(() => {
+	            drawPending = false;
+	            if (signal.aborted) return;
+	            drawLinks();
+	          });
+	        };
+
+	        const applyCamera = () => {
+	          whiteboardWorldEl.style.transform = `translate(${camera.x}px, ${camera.y}px) scale(${camera.scale})`;
+	          scheduleDraw();
+	        };
+
+	        const centerOnWorld = (wx, wy, scale = camera.scale) => {
+	          const rect = whiteboardEl.getBoundingClientRect();
+	          camera.scale = scale;
+	          camera.x = rect.width / 2 - wx * camera.scale;
+	          camera.y = rect.height / 2 - wy * camera.scale;
+	          applyCamera();
+	        };
+
+	        let highlightTimer = 0;
+	        modalContent._cleanup = () => {
+	          aborter.abort();
+	          clearTimeout(highlightTimer);
+	        };
+	        const focusCard = (id) => {
+	          const st = stateById.get(Number(id));
+	          if (!st) return false;
+	          const x = Number(st.x || 0);
+	          const y = Number(st.y || 0);
+	          centerOnWorld(x + 130, y + 110, camera.scale);
+	          const el = cardsById.get(Number(id));
+	          if (el) {
+	            el.classList.add('is-highlight');
+	            clearTimeout(highlightTimer);
+	            highlightTimer = setTimeout(() => el.classList.remove('is-highlight'), 1200);
+	          }
+	          return true;
+	        };
+
+	        const resetView = () => {
+	          if (!stateById.size) {
+	            camera.x = 0;
+	            camera.y = 0;
+	            camera.scale = 1;
+	            applyCamera();
+	            return;
+	          }
+	          let minX = Infinity;
+	          let minY = Infinity;
+	          let maxX = -Infinity;
+	          let maxY = -Infinity;
+	          stateById.forEach((c) => {
+	            const x = Number(c.x || 0);
+	            const y = Number(c.y || 0);
+	            minX = Math.min(minX, x);
+	            minY = Math.min(minY, y);
+	            maxX = Math.max(maxX, x + 260);
+	            maxY = Math.max(maxY, y + 220);
+	          });
+	          const cx = (minX + maxX) / 2;
+	          const cy = (minY + maxY) / 2;
+	          centerOnWorld(cx, cy, 1);
+	        };
+
+	        const renderAttachments = (container, atts) => {
+	          if (!container) return;
+	          container.innerHTML = '';
+	          const list = Array.isArray(atts) ? atts : [];
+	          if (!list.length) return;
+	          list.forEach((att) => {
+	            const media = createMediaNode(att.media_type, att.url || '', {
+	              title: att.filename || '',
+	              alt: att.filename || '',
+	              preview: att.preview_url || '',
+	            });
+	            if (media) {
+	              const scheduleOnce = () => scheduleDraw();
+	              const tag = String(media.tagName || '').toLowerCase();
+	              if (tag === 'img') media.addEventListener('load', scheduleOnce, { once: true });
+	              if (tag === 'video' || tag === 'audio') media.addEventListener('loadedmetadata', scheduleOnce, { once: true });
+	              if (media.querySelector) {
+	                const innerImg = media.querySelector('img');
+	                if (innerImg) innerImg.addEventListener('load', scheduleOnce, { once: true });
+	                const innerMedia = media.querySelector('video,audio');
+	                if (innerMedia) innerMedia.addEventListener('loadedmetadata', scheduleOnce, { once: true });
+	              }
+	              if (att.url && att.media_type === 'image') {
+	                const a = document.createElement('a');
+	                a.href = att.url;
+	                a.target = '_blank';
+	                a.rel = 'noopener';
+	                a.appendChild(media);
+	                container.appendChild(a);
+	              } else {
+	                container.appendChild(media);
+	              }
+	            } else if (att.url) {
+	              const a = document.createElement('a');
+	              a.href = att.url;
+	              a.target = '_blank';
+	              a.rel = 'noopener';
+	              a.className = 'text-link';
+	              a.textContent = att.filename || 'file';
+	              container.appendChild(a);
+	            }
+
+	            const meta = document.createElement('div');
+	            meta.className = 'whiteboard-attachment__meta';
+	            meta.textContent = `${att.filename || 'file'} · ${att.media_type || 'file'} · ${formatBytes(att.size_bytes || 0)}`;
+	            container.appendChild(meta);
+	          });
+	        };
+
+	        const renderCard = (card) => {
+	          if (!card || !card.id) return;
+	          const id = Number(card.id);
+	          stateById.set(id, card);
+	          let el = cardsById.get(id);
+	          if (!el) {
+	            el = document.createElement('div');
+	            el.className = 'whiteboard-card';
+	            el.dataset.cardId = String(id);
+	            el.id = `whiteboard-card-${id}`;
+
+	            const head = document.createElement('div');
+	            head.className = 'whiteboard-card__head';
+	            const title = document.createElement('strong');
+	            title.textContent = `#${id}`;
+	            head.appendChild(title);
+	            el.appendChild(head);
+
+	            const body = document.createElement('div');
+	            body.className = 'whiteboard-card__body';
+	            const attachments = document.createElement('div');
+	            attachments.className = 'whiteboard-attachments';
+	            body.appendChild(attachments);
+	            el._attachmentsEl = attachments;
+
+	            const textBox = document.createElement('div');
+	            textBox.className = 'whiteboard-card__text';
+	            body.appendChild(textBox);
+	            el._textEl = textBox;
+
+	            el.appendChild(body);
+	            whiteboardWorldEl.appendChild(el);
+	            cardsById.set(id, el);
+	          }
+
+	          const x = Number(card.x || 0);
+	          const y = Number(card.y || 0);
+	          el.style.transform = `translate(${x}px, ${y}px)`;
+	          if (el._attachmentsEl) renderAttachments(el._attachmentsEl, card.attachments || []);
+	          const text = String(card.text || '');
+	          if (el._textEl) {
+	            const trimmed = text.trim();
+	            if (!trimmed) {
+	              el._textEl.textContent = '';
+	              el._textEl.hidden = true;
+	            } else {
+	              el._textEl.hidden = false;
+	              el._textEl.textContent = text;
+	            }
+	          }
+	        };
+
+	        const renderBoard = (data) => {
+	          cardsById.clear();
+	          stateById.clear();
+	          whiteboardWorldEl.innerHTML = '';
+	          const cards = Array.isArray(data.cards) ? data.cards : [];
+	          links = Array.isArray(data.links) ? data.links : [];
+	          cards.forEach((c) => renderCard(c));
+	          applyCamera();
+	          // draw once after layout settles
+	          window.requestAnimationFrame(() => scheduleDraw());
+	        };
+
+	        const loadBoard = async (opts = {}) => {
+	          const { focus = true } = opts;
+	          const data = await apiFetch(`/api/whiteboard/board?date=${encodeURIComponent(dateLabel)}`);
+	          if (signal.aborted) return;
+	          renderBoard(data || {});
+	          if (focus && focusCardId) {
+	            if (!focusCard(focusCardId)) resetView();
+	          } else {
+	            resetView();
+	          }
+	        };
+
+	        resetBtn.addEventListener('click', () => resetView(), { signal });
+	        refreshBtn.addEventListener('click', () => loadBoard({ focus: false }), { signal });
+	        snapshotBtn.addEventListener(
+	          'click',
+	          async () => {
+	            try {
+	              const data = await apiFetch(`/api/whiteboard/snapshot?date=${encodeURIComponent(dateLabel)}`);
+	              if (signal.aborted) return;
+	              const url = data && data.url;
+	              if (url) window.open(url, '_blank', 'noopener');
+	            } catch (err) {
+	              window.alert(err.message);
+	            }
+	          },
+	          { signal }
+	        );
+
+	        let panning = false;
+	        let panStartX = 0;
+	        let panStartY = 0;
+	        let panOriginX = 0;
+	        let panOriginY = 0;
+
+	        const endPan = () => {
+	          if (!panning) return;
+	          panning = false;
+	          whiteboardEl.classList.remove('is-panning');
+	        };
+
+	        whiteboardEl.addEventListener(
+	          'pointerdown',
+	          (ev) => {
+	            if (!ev.isPrimary) return;
+	            if (ev.button != null && ev.button !== 0) return;
+	            if (ev.target && ev.target.closest && ev.target.closest('.whiteboard-card')) return;
+	            panning = true;
+	            panStartX = ev.clientX;
+	            panStartY = ev.clientY;
+	            panOriginX = camera.x;
+	            panOriginY = camera.y;
+	            whiteboardEl.classList.add('is-panning');
+	            try {
+	              whiteboardEl.setPointerCapture(ev.pointerId);
+	            } catch (err) {
+	              // ignore
+	            }
+	          },
+	          { signal }
+	        );
+
+	        whiteboardEl.addEventListener(
+	          'pointermove',
+	          (ev) => {
+	            if (!panning) return;
+	            const dx = ev.clientX - panStartX;
+	            const dy = ev.clientY - panStartY;
+	            camera.x = panOriginX + dx;
+	            camera.y = panOriginY + dy;
+	            applyCamera();
+	          },
+	          { signal }
+	        );
+
+	        whiteboardEl.addEventListener('pointerup', endPan, { signal });
+	        whiteboardEl.addEventListener('pointercancel', endPan, { signal });
+
+	        whiteboardEl.addEventListener(
+	          'wheel',
+	          (ev) => {
+	            const overCard = ev.target && ev.target.closest && ev.target.closest('.whiteboard-card');
+	            const rect = whiteboardEl.getBoundingClientRect();
+	            const sx = ev.clientX - rect.left;
+	            const sy = ev.clientY - rect.top;
+	            if (ev.ctrlKey || ev.metaKey) {
+	              ev.preventDefault();
+	              const zoomIntensity = 0.0018;
+	              const nextScale = clamp(camera.scale * (1 - ev.deltaY * zoomIntensity), 0.2, 3);
+	              const wx = (sx - camera.x) / camera.scale;
+	              const wy = (sy - camera.y) / camera.scale;
+	              camera.scale = nextScale;
+	              camera.x = sx - wx * camera.scale;
+	              camera.y = sy - wy * camera.scale;
+	              applyCamera();
+	            } else {
+	              if (overCard) return;
+	              ev.preventDefault();
+	              camera.x -= ev.deltaX;
+	              camera.y -= ev.deltaY;
+	              applyCamera();
+	            }
+	          },
+	          { passive: false, signal }
+	        );
+
+	        window.addEventListener('resize', () => scheduleDraw(), { signal });
+
+	        applyCamera();
+	        await loadBoard({ focus: true });
+	      } catch (err) {
+	        showModalMessage(err.message);
+	      }
+	    };
 
     const openModal = async (item) => {
       if (!modal || !modalContent) return;
@@ -1748,22 +2402,32 @@
         { passive: false }
       );
 
-      const renderAttachments = (container, atts) => {
-        if (!container) return;
-        container.innerHTML = '';
-        const list = Array.isArray(atts) ? atts : [];
-        if (!list.length) return;
-        list.forEach((att) => {
-          const media = createMediaNode(att.media_type, att.url || '', {
-            title: att.filename || '',
-            alt: att.filename || '',
-            preview: att.preview_url || '',
-          });
-          if (media) {
-            if (att.url && att.media_type === 'image') {
-              const a = document.createElement('a');
-              a.href = att.url;
-              a.target = '_blank';
+	      const renderAttachments = (container, atts) => {
+	        if (!container) return;
+	        container.innerHTML = '';
+	        const list = Array.isArray(atts) ? atts : [];
+	        if (!list.length) return;
+	        list.forEach((att) => {
+	          const media = createMediaNode(att.media_type, att.url || '', {
+	            title: att.filename || '',
+	            alt: att.filename || '',
+	            preview: att.preview_url || '',
+	          });
+	          if (media) {
+	            const scheduleOnce = () => scheduleDraw();
+	            const tag = String(media.tagName || '').toLowerCase();
+	            if (tag === 'img') media.addEventListener('load', scheduleOnce, { once: true });
+	            if (tag === 'video' || tag === 'audio') media.addEventListener('loadedmetadata', scheduleOnce, { once: true });
+	            if (media.querySelector) {
+	              const innerImg = media.querySelector('img');
+	              if (innerImg) innerImg.addEventListener('load', scheduleOnce, { once: true });
+	              const innerMedia = media.querySelector('video,audio');
+	              if (innerMedia) innerMedia.addEventListener('loadedmetadata', scheduleOnce, { once: true });
+	            }
+	            if (att.url && att.media_type === 'image') {
+	              const a = document.createElement('a');
+	              a.href = att.url;
+	              a.target = '_blank';
               a.rel = 'noopener';
               a.appendChild(media);
               container.appendChild(a);

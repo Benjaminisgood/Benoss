@@ -48,6 +48,7 @@ _TEXT_EXTS = {
     ".bash",
     ".sql",
 }
+_VALID_MEDIA_TYPES = {"image", "video", "audio", "pdf", "text", "file"}
 
 
 def _sha256_file(path: Path) -> str:
@@ -71,6 +72,18 @@ def _media_type_for(path: str, content_type: str = "") -> str:
     if ext in _TEXT_EXTS or (content_type or "").startswith("text/"):
         return "text"
     return "file"
+
+
+def _effective_media_type(stored: str | None, path: str, content_type: str = "") -> str:
+    """Return a stable media_type even if older DB rows stored a generic 'file'."""
+
+    derived = _media_type_for(path, content_type or "")
+    raw = (stored or "").strip().lower()
+    if not raw or raw == "file":
+        return derived
+    if raw not in _VALID_MEDIA_TYPES:
+        return derived
+    return raw
 
 
 def _preview_params(media_type: str) -> dict | None:
@@ -136,7 +149,7 @@ def _project_payload(project: Project, file_count: int | None = None) -> dict:
 
 
 def _file_payload(file: ProjectFile) -> dict:
-    media_type = file.media_type or _media_type_for(file.path or "", file.content_type or "")
+    media_type = _effective_media_type(file.media_type, file.path or "", file.content_type or "")
     params = _preview_params(media_type)
     return {
         "id": file.id,
@@ -153,7 +166,7 @@ def _file_payload(file: ProjectFile) -> dict:
 
 
 def _whiteboard_attachment_payload(att: WhiteboardAttachment, card: WhiteboardCard) -> dict:
-    media_type = att.media_type or _media_type_for(att.filename or "", att.content_type or "")
+    media_type = _effective_media_type(att.media_type, att.filename or "", att.content_type or "")
     params = _preview_params(media_type)
     filename = (att.filename or "").strip() or "file"
     text = (card.text or "") if card else ""
@@ -399,6 +412,18 @@ def upload_project_file(project_id: int):
     except Exception:
         sha256 = ""
 
+    existing = ProjectFile.query.filter_by(project_id=project.id, path=rel_path).first()
+    # Idempotency: if content is unchanged, don't churn OSS objects or DB.
+    if (
+        existing
+        and sha256
+        and existing.sha256
+        and existing.sha256 == sha256
+        and int(existing.size_bytes or 0) == int(size_bytes or 0)
+    ):
+        tmp_path.unlink(missing_ok=True)
+        return jsonify({"uploaded": True, "skipped": True, "file": _file_payload(existing)})
+
     try:
         put_object_from_file(oss_key, str(tmp_path), content_type=file_obj.mimetype or None)
     finally:
@@ -406,7 +431,6 @@ def upload_project_file(project_id: int):
 
     media_type = _media_type_for(rel_path, file_obj.mimetype or "")
 
-    existing = ProjectFile.query.filter_by(project_id=project.id, path=rel_path).first()
     replaced_key = None
     if existing:
         replaced_key = existing.oss_key
@@ -414,7 +438,8 @@ def upload_project_file(project_id: int):
         existing.content_type = file_obj.mimetype or ""
         existing.media_type = media_type
         existing.size_bytes = size_bytes
-        existing.sha256 = sha256
+        if sha256:
+            existing.sha256 = sha256
         existing.updated_by_id = user.id
     else:
         existing = ProjectFile(
@@ -500,7 +525,7 @@ def get_project_file_text(project_id: int):
     record = ProjectFile.query.filter_by(project_id=project.id, path=rel_path).first()
     if not record:
         return jsonify({"error": "not found"}), 404
-    if (record.media_type or _media_type_for(rel_path, record.content_type or "")) != "text":
+    if _effective_media_type(record.media_type, rel_path, record.content_type or "") != "text":
         return jsonify({"error": "not a text file"}), 400
     if record.size_bytes and record.size_bytes > 500_000:
         return jsonify({"error": "file too large"}), 400
@@ -553,7 +578,7 @@ def clone_project(project_id: int):
                     path=f.path,
                     oss_key=target_key,
                     content_type=f.content_type or "",
-                    media_type=f.media_type or _media_type_for(f.path, f.content_type or ""),
+                    media_type=_effective_media_type(f.media_type, f.path, f.content_type or ""),
                     size_bytes=int(f.size_bytes or 0),
                     sha256=f.sha256 or "",
                     created_by_id=user.id,
@@ -713,23 +738,69 @@ def upload_push_request_file(push_request_id: int):
     except Exception:
         sha256 = ""
 
+    existing_remote = ProjectFile.query.filter_by(project_id=project.id, path=rel_path).first()
+    # If the proposed content is identical to the current project file, treat as a no-op.
+    if (
+        existing_remote
+        and sha256
+        and existing_remote.sha256
+        and existing_remote.sha256 == sha256
+        and int(existing_remote.size_bytes or 0) == int(size_bytes or 0)
+    ):
+        tmp_path.unlink(missing_ok=True)
+        return jsonify({"uploaded": True, "skipped": True, "reason": "unchanged"})
+
+    existing_pr_file = (
+        PushRequestFile.query.filter_by(push_request_id=pr.id, path=rel_path).order_by(PushRequestFile.id.desc()).first()
+    )
+    # If the same path already exists in this push request with identical content, skip OSS churn.
+    if (
+        existing_pr_file
+        and sha256
+        and existing_pr_file.sha256
+        and existing_pr_file.sha256 == sha256
+        and int(existing_pr_file.size_bytes or 0) == int(size_bytes or 0)
+    ):
+        tmp_path.unlink(missing_ok=True)
+        return jsonify({"uploaded": True, "skipped": True, "reason": "duplicate"})
+
     try:
         put_object_from_file(oss_key, str(tmp_path), content_type=file_obj.mimetype or None)
     finally:
         tmp_path.unlink(missing_ok=True)
 
     media_type = _media_type_for(rel_path, file_obj.mimetype or "")
-    record = PushRequestFile(
-        push_request_id=pr.id,
-        path=rel_path,
-        oss_key=oss_key,
-        content_type=file_obj.mimetype or "",
-        media_type=media_type,
-        size_bytes=size_bytes,
-        sha256=sha256,
-    )
-    db.session.add(record)
+
+    replaced_key = None
+    if existing_pr_file:
+        replaced_key = existing_pr_file.oss_key
+        existing_pr_file.oss_key = oss_key
+        existing_pr_file.content_type = file_obj.mimetype or ""
+        existing_pr_file.media_type = media_type
+        existing_pr_file.size_bytes = size_bytes
+        if sha256:
+            existing_pr_file.sha256 = sha256
+        record = existing_pr_file
+    else:
+        record = PushRequestFile(
+            push_request_id=pr.id,
+            path=rel_path,
+            oss_key=oss_key,
+            content_type=file_obj.mimetype or "",
+            media_type=media_type,
+            size_bytes=size_bytes,
+            sha256=sha256,
+        )
+        db.session.add(record)
+
     db.session.commit()
+
+    if replaced_key and replaced_key != oss_key:
+        try:
+            delete_object(replaced_key)
+        except Exception:
+            current_app.logger.exception("Failed to delete replaced push request object %s", replaced_key)
+
     return jsonify({"uploaded": True, "file": {"id": record.id, "path": record.path}})
 
 
@@ -844,24 +915,38 @@ def approve_push_request(push_request_id: int):
     if pr.status != "pending":
         return jsonify({"error": "push request closed"}), 400
 
-    request_files = list(pr.files or [])
+    request_files = sorted(list(pr.files or []), key=lambda f: int(f.id or 0))
+    # If the proposer uploaded the same path multiple times, keep the latest one.
+    latest_by_path: dict[str, PushRequestFile] = {}
+    for rf in request_files:
+        path = str(getattr(rf, "path", "") or "").strip()
+        if not path:
+            continue
+        latest_by_path[path] = rf
+    request_files = sorted(list(latest_by_path.values()), key=lambda f: int(f.id or 0))
     copied = []
     replaced = []
     try:
         for rf in request_files:
+            existing = ProjectFile.query.filter_by(project_id=project.id, path=rf.path).first()
+            if existing and rf.sha256 and existing.sha256 and rf.sha256 == existing.sha256:
+                # No-op: don't churn OSS objects for identical content.
+                continue
+
             ext = Path(rf.path).suffix.lower()
             file_uuid = new_uuid()
             target_key = project_object_key(project.uuid, f"objects/{file_uuid}{ext}")
             copy_object(rf.oss_key, target_key)
             copied.append(target_key)
 
-            existing = ProjectFile.query.filter_by(project_id=project.id, path=rf.path).first()
             if existing:
                 replaced.append(existing.oss_key)
                 existing.oss_key = target_key
                 existing.content_type = rf.content_type or ""
-                existing.media_type = rf.media_type or _media_type_for(rf.path, rf.content_type or "")
+                existing.media_type = _effective_media_type(rf.media_type, rf.path, rf.content_type or "")
                 existing.size_bytes = int(rf.size_bytes or 0)
+                if rf.sha256:
+                    existing.sha256 = rf.sha256
                 existing.updated_by_id = user.id
             else:
                 db.session.add(
@@ -870,7 +955,7 @@ def approve_push_request(push_request_id: int):
                         path=rf.path,
                         oss_key=target_key,
                         content_type=rf.content_type or "",
-                        media_type=rf.media_type or _media_type_for(rf.path, rf.content_type or ""),
+                        media_type=_effective_media_type(rf.media_type, rf.path, rf.content_type or ""),
                         size_bytes=int(rf.size_bytes or 0),
                         sha256=rf.sha256 or "",
                         created_by_id=user.id,

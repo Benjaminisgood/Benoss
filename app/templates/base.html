@@ -6,6 +6,7 @@
   <title>{{ title if title else "Benoss" }}</title>
   <link rel="icon" href="{{ url_for('static', filename='images/logo.svg') }}" type="image/svg+xml" />
   <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
   {% block extra_styles %}{% endblock %}
 </head>
@@ -34,14 +35,14 @@
       </button>
 
       <div class="nav-panel" id="nav-panel">
-        <div class="nav-links">
-          <a class="nav-link{% if page == 'home' %} is-active{% endif %}" href="{{ url_for('site.home') }}">首页</a>
-          <a class="nav-link{% if page == 'blog' %} is-active{% endif %}" href="{{ url_for('site.blog') }}">Blog</a>
-          <a class="nav-link{% if page == 'dailyreel' %} is-active{% endif %}" href="{{ url_for('site.dailyreel') }}">Dailyreel</a>
-          {% set echoes_active = page == 'echoes' %}
-          <a class="nav-link{% if echoes_active %} is-active{% endif %}" href="{{ url_for('site.echoes') }}">Echoes</a>
-          <a class="nav-link{% if page == 'note' %} is-active{% endif %}" href="{{ url_for('site.note') }}">Note</a>
-        </div>
+	        <div class="nav-links">
+	          <a class="nav-link{% if page == 'home' %} is-active{% endif %}" href="{{ url_for('site.home') }}">首页</a>
+	          <a class="nav-link{% if page == 'blog' %} is-active{% endif %}" href="{{ url_for('site.blog') }}">Blog</a>
+	          <a class="nav-link{% if page == 'dailyreel' %} is-active{% endif %}" href="{{ url_for('site.dailyreel') }}">Dailyreel</a>
+	          {% set echoes_active = page == 'echoes' %}
+	          <a class="nav-link{% if echoes_active %} is-active{% endif %}" href="{{ url_for('site.echoes') }}">Echoes</a>
+	          <a class="nav-link{% if page == 'note' %} is-active{% endif %}" href="{{ url_for('site.note') }}">Note</a>
+	        </div>
         <div class="nav-actions">
           {% if current_user %}
             <a class="nav-action" href="{{ url_for('site.control_room') }}">{{ current_user.username }}</a>
@@ -55,14 +56,16 @@
     {% block content %}{% endblock %}
   </main>
 
-  <footer class="global-footer">
-    <div class="footer-inner">
-      <span class="footer-brand">Benoss</span>
-      <span class="footer-meta">Blog / Dailyreel / Echoes / Note</span>
-    </div>
-  </footer>
+	  <footer class="global-footer">
+	    <div class="footer-inner">
+	      <span class="footer-brand">Benoss</span>
+	      <span class="footer-meta">Blog / Dailyreel / Echoes / Note</span>
+	    </div>
+	  </footer>
 
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/dompurify@3.0.11/dist/purify.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/highlight.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
   <script defer src="{{ url_for('static', filename='js/site.js') }}"></script>
