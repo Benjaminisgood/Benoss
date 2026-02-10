@@ -84,6 +84,8 @@
       .map((b) => b.toString(16).padStart(2, '0'))
       .join('');
 
+  const MAX_SUBTLE_SHA256_BYTES = 32 * 1024 * 1024;
+
   const sha256Hex = async (blob) => {
     try {
       if (window.DigestStream && blob && typeof blob.stream === 'function') {
@@ -93,6 +95,8 @@
         return hexFromArrayBuffer(digest);
       }
       if (window.crypto && crypto.subtle && typeof crypto.subtle.digest === 'function') {
+        const size = Number((blob && blob.size) || 0);
+        if (Number.isFinite(size) && size > MAX_SUBTLE_SHA256_BYTES) return '';
         const ab = await blob.arrayBuffer();
         const digest = await crypto.subtle.digest('SHA-256', ab);
         return hexFromArrayBuffer(digest);
@@ -101,6 +105,92 @@
       // Fall back to no-hash mode (we'll just upload).
     }
     return '';
+  };
+
+  const ossPut = async (url, headers, file) => {
+    try {
+      const resp = await fetch(url, { method: 'PUT', headers: headers || {}, body: file });
+      if (!resp.ok) throw new Error(`OSS upload failed: ${resp.status}`);
+    } catch (err) {
+      // Most CORS failures surface as a generic TypeError in fetch().
+      if (err && err.name === 'TypeError') throw new Error('OSS upload failed (network/CORS)');
+      throw err;
+    }
+  };
+
+  const directUploadProjectFile = async (projectId, path, file, shaHint = '') => {
+    const contentType = (file && file.type) || 'application/octet-stream';
+    const init = await apiFetch(`/api/projects/${projectId}/files/upload-direct/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, filename: file.name || 'file', content_type: contentType }),
+    });
+    const maxBytes = Number(init.max_bytes || 0);
+    if (maxBytes > 0 && Number(file.size || 0) > maxBytes) throw new Error('文件太大');
+    await ossPut(init.upload_url, init.upload_headers, file);
+    const sha256 = shaHint || (await sha256Hex(file));
+    return apiFetch(`/api/projects/${projectId}/files/upload-direct/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: init.path || path,
+        filename: file.name || 'file',
+        content_type: contentType,
+        oss_key: init.oss_key,
+        sha256,
+      }),
+    });
+  };
+
+  const directUploadPushRequestFile = async (pushRequestId, path, file, shaHint = '') => {
+    const contentType = (file && file.type) || 'application/octet-stream';
+    const init = await apiFetch(`/api/push-requests/${pushRequestId}/files/upload-direct/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, filename: file.name || 'file', content_type: contentType }),
+    });
+    const maxBytes = Number(init.max_bytes || 0);
+    if (maxBytes > 0 && Number(file.size || 0) > maxBytes) throw new Error('文件太大');
+    await ossPut(init.upload_url, init.upload_headers, file);
+    const sha256 = shaHint || (await sha256Hex(file));
+    return apiFetch(`/api/push-requests/${pushRequestId}/files/upload-direct/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: init.path || path,
+        filename: file.name || 'file',
+        content_type: contentType,
+        oss_key: init.oss_key,
+        sha256,
+      }),
+    });
+  };
+
+  const directUploadWhiteboardMedia = async (date, x, y, text, file, shaHint = '') => {
+    const contentType = (file && file.type) || 'application/octet-stream';
+    const init = await apiFetch('/api/whiteboard/cards/upload-direct/init', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date, filename: file.name || 'file', content_type: contentType }),
+    });
+    const maxBytes = Number(init.max_bytes || 0);
+    if (maxBytes > 0 && Number(file.size || 0) > maxBytes) throw new Error('文件太大');
+    await ossPut(init.upload_url, init.upload_headers, file);
+    const sha256 = shaHint || (await sha256Hex(file));
+    return apiFetch('/api/whiteboard/cards/upload-direct/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        date: init.date || date,
+        x,
+        y,
+        text,
+        filename: file.name || 'file',
+        content_type: contentType,
+        oss_key: init.oss_key,
+        sha256,
+      }),
+    });
   };
 
   const MEDIA_EXTS = {
@@ -822,17 +912,18 @@
               let skipped = 0;
               for (const [path, file] of entries) {
                 const remote = remoteMetaByPath.get(path);
+                let shaHint = '';
                 if (remote && remote.sha256) {
                   const remoteSize = Number(remote.sizeBytes || 0);
                   if (Number(file.size || 0) === remoteSize) {
-                    const localSha = await sha256Hex(file);
-                    if (localSha && localSha === remote.sha256) {
+                    shaHint = await sha256Hex(file);
+                    if (shaHint && shaHint === remote.sha256) {
                       skipped += 1;
                       continue;
                     }
                   }
                 }
-                toUpload.push([path, file]);
+                toUpload.push({ path, file, shaHint });
               }
 
               if (!toUpload.length) {
@@ -852,16 +943,15 @@
               }
 
               let uploaded = 0;
-              for (const [path, file] of toUpload) {
-                const fd = new FormData();
-                fd.append('path', path);
-                fd.append('file', file);
-                await apiFetch(`/api/push-requests/${prId}/files/upload`, { method: 'POST', body: fd });
-                uploaded += 1;
+              let serverSkipped = 0;
+              for (const item of toUpload) {
+                const resp = await directUploadPushRequestFile(prId, item.path, item.file, item.shaHint || '');
+                if (resp && resp.skipped) serverSkipped += 1;
+                else uploaded += 1;
               }
 
               window.alert(
-                `已发送 push 请求 #${prId}：上传 ${uploaded}，跳过 ${skipped}，忽略 ${ignored}。项目拥有者可在 Control Room 中同意。`
+                `已发送 push 请求 #${prId}：上传 ${uploaded}，跳过 ${skipped + serverSkipped}，忽略 ${ignored}。项目拥有者可在 Control Room 中同意。`
               );
             },
             { once: true }
@@ -967,12 +1057,13 @@
           for (let i = 0; i < entries.length; i += 1) {
             const [path, file] = entries[i];
             const remote = remoteMetaByPath.get(path);
+            let shaHint = '';
             if (remote && remote.sha256) {
               const remoteSize = Number(remote.sizeBytes || 0);
               if (Number(file.size || 0) === remoteSize) {
                 setUploadStatus(`校验 ${i + 1}/${entries.length}: ${path}`);
-                const localSha = await sha256Hex(file);
-                if (localSha && localSha === remote.sha256) {
+                shaHint = await sha256Hex(file);
+                if (shaHint && shaHint === remote.sha256) {
                   skipped += 1;
                   continue;
                 }
@@ -980,11 +1071,9 @@
             }
 
             setUploadStatus(`上传 ${i + 1}/${entries.length}: ${path}`);
-            const fd = new FormData();
-            fd.append('path', path);
-            fd.append('file', file);
-            await apiFetch(`/api/projects/${projectId}/files/upload`, { method: 'POST', body: fd });
-            uploaded += 1;
+            const resp = await directUploadProjectFile(projectId, path, file, shaHint || '');
+            if (resp && resp.skipped) skipped += 1;
+            else uploaded += 1;
           }
           setUploadStatus(`完成：上传 ${uploaded}，跳过 ${skipped}，忽略 ${ignored}`);
           if (uploadInput) uploadInput.value = '';
@@ -3062,14 +3151,8 @@
           const center = viewCenterWorld();
           const x = center.x - 40;
           const y = center.y - 40;
-          const fd = new FormData();
-          fd.append('date', date);
-          fd.append('x', String(x));
-          fd.append('y', String(y));
-          fd.append('text', '');
-          fd.append('file', file);
           try {
-            const resp = await apiFetch('/api/whiteboard/cards/upload', { method: 'POST', body: fd });
+            const resp = await directUploadWhiteboardMedia(date, x, y, '', file);
             if (resp && resp.card) upsertCard(resp.card);
           } catch (err) {
             window.alert(err.message);

@@ -11,7 +11,7 @@ from werkzeug.utils import secure_filename
 
 from ..extensions import db
 from ..models import WhiteboardAttachment, WhiteboardCard, WhiteboardEvent, WhiteboardLink
-from ..oss import copy_object, delete_object, public_url, put_object_bytes, put_object_from_file
+from ..oss import copy_object, delete_object, head_object, public_url, put_object_bytes, put_object_from_file, sign_put_url
 from ..utils.ids import new_uuid
 from ..utils.oss_paths import whiteboard_object_key, whiteboard_prefix
 from ..utils.session_auth import login_required
@@ -23,6 +23,7 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 _VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
 _AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
 _DOC_EXTS = {".pdf"}
+_HEX_DIGITS = set("0123456789abcdef")
 
 
 def _validate_date(date_str: str) -> str:
@@ -39,6 +40,11 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _is_valid_sha256(value: str) -> bool:
+    value = (value or "").strip().lower()
+    return len(value) == 64 and all(ch in _HEX_DIGITS for ch in value)
 
 
 def _media_type_for(filename: str, content_type: str = "") -> str:
@@ -315,6 +321,110 @@ def create_card():
 @login_required()
 def get_card(card_id: int):
     card = WhiteboardCard.query.options(joinedload(WhiteboardCard.attachments)).get_or_404(card_id)
+    return jsonify({"card": _card_payload(card)})
+
+
+@whiteboard_bp.route("/api/whiteboard/cards/upload-direct/init", methods=["POST"])
+@login_required()
+def init_direct_upload_media_card():
+    payload = request.get_json(silent=True) or {}
+    date_str = str(payload.get("date", "")).strip() or datetime.utcnow().strftime("%Y-%m-%d")
+    try:
+        date_str = _validate_date(date_str)
+    except ValueError:
+        return jsonify({"error": "invalid date"}), 400
+
+    content_type = str(payload.get("content_type") or "").strip() or "application/octet-stream"
+    if len(content_type) > 255:
+        return jsonify({"error": "invalid content_type"}), 400
+
+    filename = str(payload.get("filename") or "").replace("\\", "/").split("/")[-1].strip() or "file"
+    ext = Path(filename).suffix.lower()
+    if not ext:
+        cleaned = secure_filename(filename)
+        ext = Path(cleaned).suffix.lower()
+
+    file_uuid = new_uuid()
+    oss_key = whiteboard_object_key(date_str, f"objects/{file_uuid}{ext}")
+    expires = int(current_app.config.get("OSS_DIRECT_UPLOAD_EXPIRES", 15 * 60))
+    upload_url, headers = sign_put_url(oss_key, expires=expires, content_type=content_type)
+    max_bytes = int(current_app.config.get("WHITEBOARD_MAX_MEDIA_BYTES", 100 * 1024 * 1024))
+    return jsonify(
+        {
+            "date": date_str,
+            "oss_key": oss_key,
+            "upload_url": upload_url,
+            "upload_headers": headers,
+            "expires_in": expires,
+            "max_bytes": max_bytes,
+        }
+    )
+
+
+@whiteboard_bp.route("/api/whiteboard/cards/upload-direct/complete", methods=["POST"])
+@login_required()
+def complete_direct_upload_media_card():
+    user = g.get("user")
+    payload = request.get_json(silent=True) or {}
+
+    date_str = str(payload.get("date", "")).strip() or datetime.utcnow().strftime("%Y-%m-%d")
+    try:
+        date_str = _validate_date(date_str)
+    except ValueError:
+        return jsonify({"error": "invalid date"}), 400
+
+    text = str(payload.get("text", "")).strip()
+    try:
+        x = float(payload.get("x", 20))
+        y = float(payload.get("y", 20))
+    except Exception:
+        return jsonify({"error": "invalid position"}), 400
+
+    filename = str(payload.get("filename") or "").replace("\\", "/").split("/")[-1].strip() or "file"
+    oss_key = str(payload.get("oss_key") or "").strip()
+    if not oss_key:
+        return jsonify({"error": "missing oss_key"}), 400
+    allowed_prefix = whiteboard_object_key(date_str, "objects") + "/"
+    if not oss_key.startswith(allowed_prefix):
+        return jsonify({"error": "invalid oss_key"}), 400
+
+    sha256 = str(payload.get("sha256") or "").strip().lower()
+    if sha256 and not _is_valid_sha256(sha256):
+        return jsonify({"error": "invalid sha256"}), 400
+
+    try:
+        meta = head_object(oss_key)
+    except Exception:
+        return jsonify({"error": "missing object"}), 400
+
+    size_bytes = int(meta.content_length or 0)
+    content_type = (meta.content_type or str(payload.get("content_type") or "")).strip()
+    max_bytes = int(current_app.config.get("WHITEBOARD_MAX_MEDIA_BYTES", 100 * 1024 * 1024))
+    if max_bytes > 0 and size_bytes > max_bytes:
+        try:
+            delete_object(oss_key)
+        except Exception:
+            current_app.logger.exception("Failed to delete oversized direct-upload whiteboard object %s", oss_key)
+        return jsonify({"error": "file too large"}), 413
+
+    media_type = _media_type_for(filename, content_type)
+
+    card = WhiteboardCard(board_date=date_str, text=text, x=x, y=y, created_by_id=user.id if user else None)
+    att = WhiteboardAttachment(
+        card=card,
+        oss_key=oss_key,
+        filename=filename,
+        content_type=content_type,
+        media_type=media_type,
+        size_bytes=size_bytes,
+        sha256=sha256,
+    )
+    db.session.add(card)
+    db.session.add(att)
+    db.session.flush()
+    _emit_event(date_str, "create", card.id, user.id, {"card": _card_payload(card)})
+    db.session.commit()
+    _write_board_snapshot(date_str)
     return jsonify({"card": _card_payload(card)})
 
 

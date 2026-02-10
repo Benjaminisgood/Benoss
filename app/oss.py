@@ -43,6 +43,31 @@ def copy_object(source_key: str, target_key: str) -> None:
     bucket.copy_object(bucket.bucket_name, source_key, target_key)
 
 
+def head_object(key: str) -> oss2.models.HeadObjectResult:
+    bucket = _get_bucket()
+    return bucket.head_object(key)
+
+
+def sign_put_url(
+    key: str,
+    *,
+    expires: int = 15 * 60,
+    content_type: Optional[str] = None,
+) -> tuple[str, dict]:
+    """Return a signed PUT URL + the exact headers the client must send.
+
+    OSS signatures include some headers (e.g. Content-Type). If we sign it,
+    the client must send the same value, otherwise the request will be rejected.
+    """
+
+    bucket = _get_bucket()
+    signed_headers: dict[str, str] = {}
+    if content_type:
+        signed_headers["Content-Type"] = content_type
+    url = bucket.sign_url("PUT", key, int(expires), headers=signed_headers or None)
+    return url, signed_headers
+
+
 def _is_truthy(value: Optional[str]) -> bool:
     if value is None:
         return False

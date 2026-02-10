@@ -11,7 +11,7 @@ from werkzeug.utils import secure_filename
 
 from ..extensions import db
 from ..models import Project, ProjectActivity, ProjectFile, PushRequest, PushRequestFile, User, WhiteboardAttachment, WhiteboardCard
-from ..oss import copy_object, delete_object, get_object_bytes, public_url, put_object_from_file
+from ..oss import copy_object, delete_object, get_object_bytes, head_object, public_url, put_object_from_file, sign_put_url
 from ..utils.ids import new_uuid
 from ..utils.oss_paths import project_object_key
 from ..utils.session_auth import login_required
@@ -49,6 +49,7 @@ _TEXT_EXTS = {
     ".sql",
 }
 _VALID_MEDIA_TYPES = {"image", "video", "audio", "pdf", "text", "file"}
+_HEX_DIGITS = set("0123456789abcdef")
 
 
 def _sha256_file(path: Path) -> str:
@@ -112,6 +113,11 @@ def _safe_relpath(value: str, fallback: str = "file") -> str:
         raise ValueError("path too long")
     # Preserve case and unicode; key safety is handled by OSS key randomization.
     return raw
+
+
+def _is_valid_sha256(value: str) -> bool:
+    value = (value or "").strip().lower()
+    return len(value) == 64 and all(ch in _HEX_DIGITS for ch in value)
 
 
 def _require_project_view(project: Project, user: User) -> None:
@@ -447,6 +453,151 @@ def upload_project_file(project_id: int):
             path=rel_path,
             oss_key=oss_key,
             content_type=file_obj.mimetype or "",
+            media_type=media_type,
+            size_bytes=size_bytes,
+            sha256=sha256,
+            created_by_id=user.id,
+            updated_by_id=user.id,
+        )
+        db.session.add(existing)
+
+    project.updated_at = datetime.utcnow()
+    _activity_record(type_="push", project=project, actor_user_id=user.id, meta={"path": rel_path})
+    db.session.commit()
+
+    if replaced_key and replaced_key != oss_key:
+        try:
+            delete_object(replaced_key)
+        except Exception:
+            current_app.logger.exception("Failed to delete replaced object %s", replaced_key)
+
+    return jsonify({"uploaded": True, "file": _file_payload(existing)})
+
+
+@projects_bp.route("/api/projects/<int:project_id>/files/upload-direct/init", methods=["POST"])
+@login_required()
+def init_direct_upload_project_file(project_id: int):
+    user = g.get("user")
+    project = Project.query.get_or_404(project_id)
+    try:
+        _require_project_edit(project, user)
+    except PermissionError:
+        return jsonify({"error": "forbidden"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    requested_path = str(payload.get("path") or payload.get("relative_path") or "").strip()
+    filename = str(payload.get("filename") or "").replace("\\", "/").split("/")[-1].strip()
+    fallback = filename or "file"
+    try:
+        rel_path = _safe_relpath(requested_path, fallback=fallback)
+    except ValueError:
+        return jsonify({"error": "invalid path"}), 400
+
+    content_type = str(payload.get("content_type") or "").strip() or "application/octet-stream"
+    if len(content_type) > 255:
+        return jsonify({"error": "invalid content_type"}), 400
+
+    ext = Path(rel_path).suffix.lower()
+    if not ext:
+        cleaned = secure_filename(fallback)
+        ext = Path(cleaned).suffix.lower()
+
+    file_uuid = new_uuid()
+    oss_key = project_object_key(project.uuid, f"objects/{file_uuid}{ext}")
+    expires = int(current_app.config.get("OSS_DIRECT_UPLOAD_EXPIRES", 15 * 60))
+    upload_url, headers = sign_put_url(oss_key, expires=expires, content_type=content_type)
+    max_bytes = int(current_app.config.get("MAX_CONTENT_LENGTH") or 0)
+    return jsonify(
+        {
+            "path": rel_path,
+            "oss_key": oss_key,
+            "upload_url": upload_url,
+            "upload_headers": headers,
+            "expires_in": expires,
+            "max_bytes": max_bytes,
+        }
+    )
+
+
+@projects_bp.route("/api/projects/<int:project_id>/files/upload-direct/complete", methods=["POST"])
+@login_required()
+def complete_direct_upload_project_file(project_id: int):
+    user = g.get("user")
+    project = Project.query.get_or_404(project_id)
+    try:
+        _require_project_edit(project, user)
+    except PermissionError:
+        return jsonify({"error": "forbidden"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    requested_path = str(payload.get("path") or payload.get("relative_path") or "").strip()
+    filename = str(payload.get("filename") or "").replace("\\", "/").split("/")[-1].strip()
+    fallback = filename or "file"
+    try:
+        rel_path = _safe_relpath(requested_path, fallback=fallback)
+    except ValueError:
+        return jsonify({"error": "invalid path"}), 400
+
+    oss_key = str(payload.get("oss_key") or "").strip()
+    if not oss_key:
+        return jsonify({"error": "missing oss_key"}), 400
+    allowed_prefix = project_object_key(project.uuid, "objects") + "/"
+    if not oss_key.startswith(allowed_prefix):
+        return jsonify({"error": "invalid oss_key"}), 400
+
+    sha256 = str(payload.get("sha256") or "").strip().lower()
+    if sha256 and not _is_valid_sha256(sha256):
+        return jsonify({"error": "invalid sha256"}), 400
+
+    try:
+        meta = head_object(oss_key)
+    except Exception:
+        return jsonify({"error": "missing object"}), 400
+
+    size_bytes = int(meta.content_length or 0)
+    content_type = (meta.content_type or str(payload.get("content_type") or "")).strip()
+
+    max_bytes = int(current_app.config.get("MAX_CONTENT_LENGTH") or 0)
+    if max_bytes > 0 and size_bytes > max_bytes:
+        try:
+            delete_object(oss_key)
+        except Exception:
+            current_app.logger.exception("Failed to delete oversized direct-upload object %s", oss_key)
+        return jsonify({"error": "file too large"}), 413
+
+    existing = ProjectFile.query.filter_by(project_id=project.id, path=rel_path).first()
+    # Idempotency: if content is unchanged, delete the newly uploaded object and skip.
+    if (
+        existing
+        and sha256
+        and existing.sha256
+        and existing.sha256 == sha256
+        and int(existing.size_bytes or 0) == int(size_bytes or 0)
+    ):
+        try:
+            delete_object(oss_key)
+        except Exception:
+            current_app.logger.exception("Failed to delete skipped direct-upload object %s", oss_key)
+        return jsonify({"uploaded": True, "skipped": True, "file": _file_payload(existing)})
+
+    media_type = _media_type_for(rel_path, content_type)
+
+    replaced_key = None
+    if existing:
+        replaced_key = existing.oss_key
+        existing.oss_key = oss_key
+        existing.content_type = content_type
+        existing.media_type = media_type
+        existing.size_bytes = size_bytes
+        if sha256:
+            existing.sha256 = sha256
+        existing.updated_by_id = user.id
+    else:
+        existing = ProjectFile(
+            project_id=project.id,
+            path=rel_path,
+            oss_key=oss_key,
+            content_type=content_type,
             media_type=media_type,
             size_bytes=size_bytes,
             sha256=sha256,
@@ -863,6 +1014,170 @@ def upload_push_request_file(push_request_id: int):
             path=rel_path,
             oss_key=oss_key,
             content_type=file_obj.mimetype or "",
+            media_type=media_type,
+            size_bytes=size_bytes,
+            sha256=sha256,
+        )
+        db.session.add(record)
+
+    db.session.commit()
+
+    if replaced_key and replaced_key != oss_key:
+        try:
+            delete_object(replaced_key)
+        except Exception:
+            current_app.logger.exception("Failed to delete replaced push request object %s", replaced_key)
+
+    return jsonify({"uploaded": True, "file": {"id": record.id, "path": record.path}})
+
+
+@projects_bp.route("/api/push-requests/<int:push_request_id>/files/upload-direct/init", methods=["POST"])
+@login_required()
+def init_direct_upload_push_request_file(push_request_id: int):
+    user = g.get("user")
+    pr = PushRequest.query.get_or_404(push_request_id)
+    if pr.proposer_user_id != user.id:
+        return jsonify({"error": "forbidden"}), 403
+    if pr.status != "pending":
+        return jsonify({"error": "push request closed"}), 400
+    project = pr.project
+    if not project:
+        return jsonify({"error": "invalid project"}), 400
+
+    payload = request.get_json(silent=True) or {}
+    requested_path = str(payload.get("path") or payload.get("relative_path") or "").strip()
+    filename = str(payload.get("filename") or "").replace("\\", "/").split("/")[-1].strip()
+    fallback = filename or "file"
+    try:
+        rel_path = _safe_relpath(requested_path, fallback=fallback)
+    except ValueError:
+        return jsonify({"error": "invalid path"}), 400
+
+    content_type = str(payload.get("content_type") or "").strip() or "application/octet-stream"
+    if len(content_type) > 255:
+        return jsonify({"error": "invalid content_type"}), 400
+
+    ext = Path(rel_path).suffix.lower()
+    if not ext:
+        cleaned = secure_filename(fallback)
+        ext = Path(cleaned).suffix.lower()
+
+    file_uuid = new_uuid()
+    oss_key = project_object_key(project.uuid, f"push/{pr.id}/{file_uuid}{ext}")
+    expires = int(current_app.config.get("OSS_DIRECT_UPLOAD_EXPIRES", 15 * 60))
+    upload_url, headers = sign_put_url(oss_key, expires=expires, content_type=content_type)
+    max_bytes = int(current_app.config.get("MAX_CONTENT_LENGTH") or 0)
+    return jsonify(
+        {
+            "path": rel_path,
+            "oss_key": oss_key,
+            "upload_url": upload_url,
+            "upload_headers": headers,
+            "expires_in": expires,
+            "max_bytes": max_bytes,
+        }
+    )
+
+
+@projects_bp.route("/api/push-requests/<int:push_request_id>/files/upload-direct/complete", methods=["POST"])
+@login_required()
+def complete_direct_upload_push_request_file(push_request_id: int):
+    user = g.get("user")
+    pr = PushRequest.query.get_or_404(push_request_id)
+    if pr.proposer_user_id != user.id:
+        return jsonify({"error": "forbidden"}), 403
+    if pr.status != "pending":
+        return jsonify({"error": "push request closed"}), 400
+    project = pr.project
+    if not project:
+        return jsonify({"error": "invalid project"}), 400
+
+    payload = request.get_json(silent=True) or {}
+    requested_path = str(payload.get("path") or payload.get("relative_path") or "").strip()
+    filename = str(payload.get("filename") or "").replace("\\", "/").split("/")[-1].strip()
+    fallback = filename or "file"
+    try:
+        rel_path = _safe_relpath(requested_path, fallback=fallback)
+    except ValueError:
+        return jsonify({"error": "invalid path"}), 400
+
+    oss_key = str(payload.get("oss_key") or "").strip()
+    if not oss_key:
+        return jsonify({"error": "missing oss_key"}), 400
+    allowed_prefix = project_object_key(project.uuid, f"push/{pr.id}") + "/"
+    if not oss_key.startswith(allowed_prefix):
+        return jsonify({"error": "invalid oss_key"}), 400
+
+    sha256 = str(payload.get("sha256") or "").strip().lower()
+    if sha256 and not _is_valid_sha256(sha256):
+        return jsonify({"error": "invalid sha256"}), 400
+
+    try:
+        meta = head_object(oss_key)
+    except Exception:
+        return jsonify({"error": "missing object"}), 400
+
+    size_bytes = int(meta.content_length or 0)
+    content_type = (meta.content_type or str(payload.get("content_type") or "")).strip()
+
+    max_bytes = int(current_app.config.get("MAX_CONTENT_LENGTH") or 0)
+    if max_bytes > 0 and size_bytes > max_bytes:
+        try:
+            delete_object(oss_key)
+        except Exception:
+            current_app.logger.exception("Failed to delete oversized direct-upload push object %s", oss_key)
+        return jsonify({"error": "file too large"}), 413
+
+    existing_remote = ProjectFile.query.filter_by(project_id=project.id, path=rel_path).first()
+    # If the proposed content is identical to the current project file, treat as a no-op.
+    if (
+        existing_remote
+        and sha256
+        and existing_remote.sha256
+        and existing_remote.sha256 == sha256
+        and int(existing_remote.size_bytes or 0) == int(size_bytes or 0)
+    ):
+        try:
+            delete_object(oss_key)
+        except Exception:
+            current_app.logger.exception("Failed to delete skipped direct-upload push object %s", oss_key)
+        return jsonify({"uploaded": True, "skipped": True, "reason": "unchanged"})
+
+    existing_pr_file = (
+        PushRequestFile.query.filter_by(push_request_id=pr.id, path=rel_path).order_by(PushRequestFile.id.desc()).first()
+    )
+    # If the same path already exists in this push request with identical content, treat as a no-op.
+    if (
+        existing_pr_file
+        and sha256
+        and existing_pr_file.sha256
+        and existing_pr_file.sha256 == sha256
+        and int(existing_pr_file.size_bytes or 0) == int(size_bytes or 0)
+    ):
+        try:
+            delete_object(oss_key)
+        except Exception:
+            current_app.logger.exception("Failed to delete duplicate direct-upload push object %s", oss_key)
+        return jsonify({"uploaded": True, "skipped": True, "reason": "duplicate"})
+
+    media_type = _media_type_for(rel_path, content_type)
+
+    replaced_key = None
+    if existing_pr_file:
+        replaced_key = existing_pr_file.oss_key
+        existing_pr_file.oss_key = oss_key
+        existing_pr_file.content_type = content_type
+        existing_pr_file.media_type = media_type
+        existing_pr_file.size_bytes = size_bytes
+        if sha256:
+            existing_pr_file.sha256 = sha256
+        record = existing_pr_file
+    else:
+        record = PushRequestFile(
+            push_request_id=pr.id,
+            path=rel_path,
+            oss_key=oss_key,
+            content_type=content_type,
             media_type=media_type,
             size_bytes=size_bytes,
             sha256=sha256,
