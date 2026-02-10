@@ -504,19 +504,54 @@ def delete_project_file(project_id: int):
     return jsonify({"deleted": True, "path": rel_path})
 
 
-@projects_bp.route("/api/projects/<int:project_id>/file/text", methods=["GET"])
+@projects_bp.route("/api/projects/<int:project_id>/file/text", methods=["GET", "PUT"])
 @login_required()
 def get_project_file_text(project_id: int):
     user = g.get("user")
     project = Project.query.get_or_404(project_id)
+    if request.method == "GET":
+        try:
+            _require_project_view(project, user)
+        except PermissionError:
+            return jsonify({"error": "forbidden"}), 403
+
+        path = (request.args.get("path") or "").strip()
+        if not path:
+            return jsonify({"error": "missing path"}), 400
+        try:
+            rel_path = _safe_relpath(path, fallback="file")
+        except ValueError:
+            return jsonify({"error": "invalid path"}), 400
+
+        record = ProjectFile.query.filter_by(project_id=project.id, path=rel_path).first()
+        if not record:
+            return jsonify({"error": "not found"}), 404
+        if _effective_media_type(record.media_type, rel_path, record.content_type or "") != "text":
+            return jsonify({"error": "not a text file"}), 400
+        if record.size_bytes and record.size_bytes > 500_000:
+            return jsonify({"error": "file too large"}), 400
+        try:
+            data = get_object_bytes(record.oss_key).decode("utf-8")
+        except UnicodeDecodeError:
+            return jsonify({"error": "file not utf-8"}), 400
+        return jsonify({"path": rel_path, "text": data})
+
+    # PUT: save edited text back to OSS + update ProjectFile pointer.
     try:
-        _require_project_view(project, user)
+        _require_project_edit(project, user)
     except PermissionError:
         return jsonify({"error": "forbidden"}), 403
 
-    path = (request.args.get("path") or "").strip()
+    payload = request.get_json(silent=True) or {}
+    path = str(payload.get("path", "")).strip()
     if not path:
         return jsonify({"error": "missing path"}), 400
+    if "text" not in payload:
+        return jsonify({"error": "missing text"}), 400
+    text = payload.get("text")
+    if not isinstance(text, str):
+        return jsonify({"error": "invalid text"}), 400
+
     try:
         rel_path = _safe_relpath(path, fallback="file")
     except ValueError:
@@ -527,13 +562,54 @@ def get_project_file_text(project_id: int):
         return jsonify({"error": "not found"}), 404
     if _effective_media_type(record.media_type, rel_path, record.content_type or "") != "text":
         return jsonify({"error": "not a text file"}), 400
-    if record.size_bytes and record.size_bytes > 500_000:
+
+    data = text.encode("utf-8")
+    if len(data) > 500_000:
         return jsonify({"error": "file too large"}), 400
+
+    sha256 = hashlib.sha256(data).hexdigest()
+    size_bytes = int(len(data))
+    if sha256 and record.sha256 and record.sha256 == sha256 and int(record.size_bytes or 0) == int(size_bytes or 0):
+        return jsonify({"saved": True, "skipped": True, "file": _file_payload(record)})
+
+    ext = Path(rel_path).suffix.lower()
+    file_uuid = new_uuid()
+    oss_key = project_object_key(project.uuid, f"objects/{file_uuid}{ext}")
+
+    tmp_dir = Path(current_app.config["UPLOAD_TMP_DIR"])
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / f"{file_uuid}{ext}"
+    tmp_path.write_bytes(data)
+
+    # Preserve existing content_type if present, otherwise default to text/plain.
+    content_type = str((record.content_type or "")).strip()
+    if not content_type or content_type.lower() == "application/octet-stream":
+        content_type = "text/plain"
+
     try:
-        data = get_object_bytes(record.oss_key).decode("utf-8")
-    except UnicodeDecodeError:
-        return jsonify({"error": "file not utf-8"}), 400
-    return jsonify({"path": rel_path, "text": data})
+        put_object_from_file(oss_key, str(tmp_path), content_type=content_type or None)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    replaced_key = record.oss_key
+    record.oss_key = oss_key
+    record.content_type = content_type
+    record.media_type = "text"
+    record.size_bytes = size_bytes
+    record.sha256 = sha256
+    record.updated_by_id = user.id
+
+    project.updated_at = datetime.utcnow()
+    _activity_record(type_="push", project=project, actor_user_id=user.id, meta={"path": rel_path, "edit": True})
+    db.session.commit()
+
+    if replaced_key and replaced_key != oss_key:
+        try:
+            delete_object(replaced_key)
+        except Exception:
+            current_app.logger.exception("Failed to delete replaced object %s", replaced_key)
+
+    return jsonify({"saved": True, "file": _file_payload(record)})
 
 
 @projects_bp.route("/api/projects/<int:project_id>/clone", methods=["POST"])

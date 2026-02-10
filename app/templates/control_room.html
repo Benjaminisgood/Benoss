@@ -29,7 +29,13 @@
       <div class="form-stack">
         <label class="field">
           <span>个人简介</span>
-          <textarea class="textarea" id="account-description" rows="4" placeholder="写点关于你正在学什么..."></textarea>
+          <div class="bio-editor">
+            <textarea class="textarea textarea--bio" id="account-description" rows="6" placeholder="写点关于你正在学什么..."></textarea>
+            <div class="bio-editor__meta">
+              <span class="bio-editor__hint">公开可见 · Ctrl/Cmd + Enter 保存</span>
+              <span class="bio-editor__count" id="account-description-count">0 字</span>
+            </div>
+          </div>
         </label>
         <button class="pill-btn" id="account-save">保存简介</button>
       </div>

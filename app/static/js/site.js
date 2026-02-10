@@ -521,24 +521,171 @@
           previewEl.innerHTML = '';
           const lowerPath = String(path).toLowerCase();
           const isMarkdown = lowerPath.endsWith('.md') || lowerPath.endsWith('.markdown');
-          if (isMarkdown) {
-            const baseDir = normalizeProjectPath(path).split('/').slice(0, -1).join('/');
-            const rewritten = rewriteProjectMarkdown(text, fileUrlByPath, baseDir);
-            const wrap = document.createElement('div');
-            wrap.className = 'markdown-body';
-            previewEl.appendChild(wrap);
-            renderMarkdown(rewritten, wrap);
-          } else {
+
+          const baseDir = normalizeProjectPath(path).split('/').slice(0, -1).join('/');
+          const renderReadOnlyText = (container, sourceText) => {
+            if (!container) return;
+            container.innerHTML = '';
+            if (isMarkdown) {
+              const rewritten = rewriteProjectMarkdown(sourceText, fileUrlByPath, baseDir);
+              const wrap = document.createElement('div');
+              wrap.className = 'markdown-body';
+              container.appendChild(wrap);
+              renderMarkdown(rewritten, wrap);
+              return;
+            }
             const pre = document.createElement('pre');
             pre.className = 'code-block';
             const code = document.createElement('code');
             const lang = guessCodeLanguage(path);
             if (lang) code.className = `language-${lang}`;
-            code.textContent = text;
+            code.textContent = sourceText;
             pre.appendChild(code);
-            previewEl.appendChild(pre);
+            container.appendChild(pre);
             if (lang) highlightCodeBlocks(pre);
+          };
+
+          if (!canEdit) {
+            renderReadOnlyText(previewEl, text);
+            return;
           }
+
+          const toolbar = document.createElement('div');
+          toolbar.className = 'button-row text-editor-toolbar';
+
+          const editBtn = document.createElement('button');
+          editBtn.type = 'button';
+          editBtn.className = 'pill-btn ghost';
+          editBtn.textContent = '编辑';
+
+          toolbar.appendChild(editBtn);
+          previewEl.appendChild(toolbar);
+
+          const body = document.createElement('div');
+          body.className = 'text-editor-body';
+          previewEl.appendChild(body);
+          renderReadOnlyText(body, text);
+
+          const enterEditMode = (initial) => {
+            previewEl.innerHTML = '';
+
+            const editToolbar = document.createElement('div');
+            editToolbar.className = 'button-row text-editor-toolbar';
+
+            const saveBtn = document.createElement('button');
+            saveBtn.type = 'button';
+            saveBtn.className = 'pill-btn';
+            saveBtn.textContent = '保存';
+
+            const cancelBtn = document.createElement('button');
+            cancelBtn.type = 'button';
+            cancelBtn.className = 'pill-btn ghost';
+            cancelBtn.textContent = '取消';
+
+            editToolbar.appendChild(saveBtn);
+            editToolbar.appendChild(cancelBtn);
+            previewEl.appendChild(editToolbar);
+
+            const status = document.createElement('div');
+            status.className = 'muted text-editor-status';
+            status.textContent = '编辑中...';
+            previewEl.appendChild(status);
+
+            const textarea = document.createElement('textarea');
+            textarea.className = 'textarea text-editor-input';
+            textarea.spellcheck = false;
+            textarea.value = String(initial || '');
+
+            const setStatus = (msg) => {
+              status.textContent = msg || '';
+            };
+
+            const renderMarkdownPreview = (previewContainer, sourceText) => {
+              if (!previewContainer) return;
+              const rewritten = rewriteProjectMarkdown(sourceText, fileUrlByPath, baseDir);
+              renderMarkdown(rewritten, previewContainer);
+            };
+
+            let previewWrap = null;
+            let previewInner = null;
+            let previewTimer = null;
+
+            const mount = document.createElement('div');
+            if (isMarkdown) {
+              mount.className = 'text-editor-split';
+              const left = document.createElement('div');
+              left.appendChild(textarea);
+
+              previewWrap = document.createElement('div');
+              previewWrap.className = 'text-editor-preview';
+              previewInner = document.createElement('div');
+              previewInner.className = 'markdown-body';
+              previewWrap.appendChild(previewInner);
+
+              mount.appendChild(left);
+              mount.appendChild(previewWrap);
+              previewEl.appendChild(mount);
+
+              const schedulePreview = () => {
+                if (!previewInner) return;
+                if (previewTimer) window.clearTimeout(previewTimer);
+                previewTimer = window.setTimeout(() => {
+                  previewTimer = null;
+                  renderMarkdownPreview(previewInner, textarea.value);
+                }, 180);
+              };
+              textarea.addEventListener('input', schedulePreview);
+              renderMarkdownPreview(previewInner, textarea.value);
+            } else {
+              mount.appendChild(textarea);
+              previewEl.appendChild(mount);
+            }
+
+            const save = async () => {
+              setStatus('保存中...');
+              saveBtn.disabled = true;
+              cancelBtn.disabled = true;
+              try {
+                await apiFetch(`/api/projects/${projectId}/file/text`, {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ path: file.path || '', text: textarea.value }),
+                });
+                setStatus('已保存，刷新中...');
+                await renderProjectWindow(projectId, prefix, scope, {
+                  ...(opts || {}),
+                  preselectPath: file.path || '',
+                });
+              } catch (err) {
+                setStatus(err.message || '保存失败');
+                saveBtn.disabled = false;
+                cancelBtn.disabled = false;
+              }
+            };
+
+            const cancel = () => {
+              if (textarea.value !== String(initial || '') && !window.confirm('放弃未保存的修改？')) return;
+              previewEl.innerHTML = '';
+              previewEl.appendChild(toolbar);
+              previewEl.appendChild(body);
+              renderReadOnlyText(body, initial);
+            };
+
+            saveBtn.addEventListener('click', save);
+            cancelBtn.addEventListener('click', cancel);
+
+            textarea.addEventListener('keydown', (event) => {
+              const key = String(event.key || '').toLowerCase();
+              if ((event.ctrlKey || event.metaKey) && key === 's') {
+                event.preventDefault();
+                save();
+              }
+            });
+
+            textarea.focus();
+          };
+
+          editBtn.addEventListener('click', () => enterEditMode(text));
         } catch (err) {
           previewEl.innerHTML = `<div class="card placeholder">${err.message}</div>`;
         }

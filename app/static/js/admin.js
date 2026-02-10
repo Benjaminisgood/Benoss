@@ -25,6 +25,63 @@
     return resp.json();
   };
 
+  const countChars = (text) => Array.from(String(text || '')).length;
+
+  const autosizeTextarea = (ta, { min = 120, max = 360 } = {}) => {
+    if (!ta || ta.hidden) return;
+    // Let the textarea shrink when text is deleted.
+    ta.style.height = 'auto';
+    const next = Math.min(max, ta.scrollHeight || 0);
+    ta.style.height = `${Math.max(min, next)}px`;
+    ta.style.overflowY = ta.scrollHeight > max ? 'auto' : 'hidden';
+  };
+
+  const bindAccountDescriptionEditor = () => {
+    const descriptionEl = qs('#account-description');
+    const countEl = qs('#account-description-count');
+    if (!descriptionEl) return;
+
+    const sync = () => {
+      if (countEl) countEl.textContent = `${countChars(descriptionEl.value)} 字`;
+      window.requestAnimationFrame(() => autosizeTextarea(descriptionEl));
+    };
+
+    descriptionEl.addEventListener('input', sync);
+    descriptionEl.addEventListener('keydown', (ev) => {
+      if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') {
+        ev.preventDefault();
+        saveAccountDescription();
+      }
+    });
+
+    window.addEventListener('resize', () => window.requestAnimationFrame(() => autosizeTextarea(descriptionEl)));
+    sync();
+  };
+
+  let savingDescription = false;
+  const saveAccountDescription = async () => {
+    const descriptionEl = qs('#account-description');
+    const button = qs('#account-save');
+    if (!descriptionEl) return;
+    if (savingDescription) return;
+    savingDescription = true;
+    if (button) button.disabled = true;
+    setStatus('保存中...');
+    try {
+      await apiFetch('/api/account/description', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: descriptionEl.value || '' }),
+      });
+      setStatus('已保存');
+    } catch (err) {
+      setStatus(err.message);
+    } finally {
+      savingDescription = false;
+      if (button) button.disabled = false;
+    }
+  };
+
   const loadAccounts = async () => {
     const descriptionEl = qs('#account-description');
     const listEl = qs('#account-list');
@@ -62,19 +119,7 @@
     const button = qs('#account-save');
     const descriptionEl = qs('#account-description');
     if (!button || !descriptionEl) return;
-    button.addEventListener('click', async () => {
-      setStatus('保存中...');
-      try {
-        await apiFetch('/api/account/description', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ description: descriptionEl.value || '' }),
-        });
-        setStatus('已保存');
-      } catch (err) {
-        setStatus(err.message);
-      }
-    });
+    button.addEventListener('click', saveAccountDescription);
   };
 
   const loadCollab = async () => {
@@ -324,6 +369,7 @@
       setStatus(err.message);
     }
     bindAccountSave();
+    bindAccountDescriptionEditor();
     bindUserAdd();
   };
 
