@@ -1090,13 +1090,18 @@
     }
 
     const preselect = opts && opts.preselectPath ? normalizeProjectPath(opts.preselectPath) : '';
+    let previewShown = false;
     if (preselect) {
       const target = files.find((f) => normalizeProjectPath(f.path) === preselect);
-      if (target) showPreview(target);
-    } else if (files.length) {
-      showPreview(files[0]);
-    } else if (previewEl) {
-      previewEl.innerHTML = '<p class="muted">No files to preview.</p>';
+      if (target) {
+        previewShown = true;
+        showPreview(target);
+      }
+    }
+    if (!previewShown && previewEl) {
+      if (previewTitle) previewTitle.textContent = '预览';
+      if (previewMeta) previewMeta.textContent = '';
+      previewEl.innerHTML = files.length ? '<p class="muted">选择文件进行预览。</p>' : '<p class="muted">No files to preview.</p>';
     }
 
     return { project, files };
