@@ -124,6 +124,12 @@ class WhiteboardCard(db.Model, TimestampMixin):
     x = db.Column(db.Float, default=20.0)
     y = db.Column(db.Float, default=20.0)
     text = db.Column(db.Text, default="")
+    version = db.Column(db.Integer, nullable=False, default=1)
+    idempotency_key = db.Column(db.String(96), nullable=True, index=True)
+    entry_date = db.Column(db.String(16), nullable=False, default="")
+    entry_tags_json = db.Column(db.Text, default="[]")
+    entry_mood = db.Column(db.String(24), default="")
+    entry_type = db.Column(db.String(24), default="note")
     created_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     created_by = db.relationship("User", foreign_keys=[created_by_id])
     attachments = db.relationship(

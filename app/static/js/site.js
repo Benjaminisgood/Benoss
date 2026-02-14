@@ -13,13 +13,18 @@
         throw new Error('需要登录');
       }
       let message = `Request failed: ${resp.status}`;
+      let payload = null;
       try {
         const data = await resp.json();
+        payload = data;
         if (data && data.error) message = data.error;
       } catch (err) {
         // ignore
       }
-      throw new Error(message);
+      const error = new Error(message);
+      error.status = resp.status;
+      error.payload = payload;
+      throw error;
     }
     return resp.json();
   };
@@ -107,15 +112,57 @@
     return '';
   };
 
-  const ossPut = async (url, headers, file) => {
-    try {
-      const resp = await fetch(url, { method: 'PUT', headers: headers || {}, body: file });
-      if (!resp.ok) throw new Error(`OSS upload failed: ${resp.status}`);
-    } catch (err) {
-      // Most CORS failures surface as a generic TypeError in fetch().
-      if (err && err.name === 'TypeError') throw new Error('OSS upload failed (network/CORS)');
-      throw err;
+  const ossPut = (url, headers, file, opts = {}) =>
+    new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', url, true);
+      Object.entries(headers || {}).forEach(([k, v]) => {
+        if (k && v != null) xhr.setRequestHeader(k, v);
+      });
+      xhr.upload.onprogress = (event) => {
+        if (!opts || typeof opts.onProgress !== 'function') return;
+        const total = Number(event.total || file.size || 0);
+        const loaded = Number(event.loaded || 0);
+        const progress = total > 0 ? loaded / total : 0;
+        opts.onProgress(Math.max(0, Math.min(1, progress)));
+      };
+      xhr.onerror = () => reject(new Error('OSS upload failed (network/CORS)'));
+      xhr.onabort = () => reject(new Error('OSS upload aborted'));
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          if (opts && typeof opts.onProgress === 'function') opts.onProgress(1);
+          resolve();
+          return;
+        }
+        reject(new Error(`OSS upload failed: ${xhr.status}`));
+      };
+      xhr.send(file);
+    });
+
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms || 0))));
+
+  const retryAsync = async (fn, retries = 2, baseDelay = 600) => {
+    let lastErr = null;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        return await fn(attempt);
+      } catch (err) {
+        lastErr = err;
+        if (attempt >= retries) break;
+        // eslint-disable-next-line no-await-in-loop
+        await wait(baseDelay * 2 ** attempt);
+      }
     }
+    throw lastErr || new Error('retry failed');
+  };
+
+  const newIdempotencyKey = (prefix = 'wb') => {
+    const rnd =
+      window.crypto && typeof window.crypto.randomUUID === 'function'
+        ? window.crypto.randomUUID().replace(/-/g, '')
+        : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 11)}`;
+    return `${prefix}:${rnd}`;
   };
 
   const directUploadProjectFile = async (projectId, path, file, shaHint = '') => {
@@ -166,7 +213,16 @@
     });
   };
 
-  const directUploadWhiteboardMedia = async (date, x, y, text, file, shaHint = '') => {
+  const directUploadWhiteboardMedia = async (options) => {
+    const opts = options || {};
+    const date = opts.date;
+    const x = Number(opts.x || 0);
+    const y = Number(opts.y || 0);
+    const text = String(opts.text || '');
+    const file = opts.file;
+    const shaHint = opts.shaHint || '';
+    const idempotencyKey = String(opts.idempotencyKey || '');
+    const entry = opts.entry || {};
     const contentType = (file && file.type) || 'application/octet-stream';
     const init = await apiFetch('/api/whiteboard/cards/upload-direct/init', {
       method: 'POST',
@@ -175,7 +231,7 @@
     });
     const maxBytes = Number(init.max_bytes || 0);
     if (maxBytes > 0 && Number(file.size || 0) > maxBytes) throw new Error('文件太大');
-    await ossPut(init.upload_url, init.upload_headers, file);
+    await ossPut(init.upload_url, init.upload_headers, file, { onProgress: opts.onProgress });
     const sha256 = shaHint || (await sha256Hex(file));
     return apiFetch('/api/whiteboard/cards/upload-direct/complete', {
       method: 'POST',
@@ -185,6 +241,11 @@
         x,
         y,
         text,
+        idempotency_key: idempotencyKey,
+        entry_date: entry.date || '',
+        entry_tags: entry.tags || [],
+        entry_mood: entry.mood || '',
+        entry_type: entry.type || '',
         filename: file.name || 'file',
         content_type: contentType,
         oss_key: init.oss_key,
@@ -1980,6 +2041,10 @@
 
   const initDailyreal = () => {
     const refreshBtn = qs('[data-dailyreal-refresh]');
+    const summaryBtn = qs('[data-dailyreal-summary]');
+    const summaryGenerateBtn = qs('[data-dailyreal-summary-generate]');
+    const summaryCopyBtn = qs('[data-dailyreal-summary-copy]');
+    const summaryEl = qs('#dailyreal-summary');
     const dateEl = qs('#dailyreal-date');
     const tableBody = qs('#dailyreal-scoreboard tbody');
     const feed = qs('#dailyreal-feed');
@@ -2011,6 +2076,17 @@
     let monthCursor = clampDay(new Date());
     monthCursor.setDate(1);
     let monthCounts = new Map();
+
+    const loadSummary = async (date) => {
+      if (!summaryEl || !isValidDate(date)) return;
+      summaryEl.textContent = '生成中...';
+      try {
+        const data = await apiFetch(`/api/dailyreal/summary?date=${date}&tz_offset=${tzOffset()}`);
+        summaryEl.textContent = String((data && data.summary) || '').trim() || '今天还没有可汇总的数据。';
+      } catch (err) {
+        summaryEl.textContent = err.message || '生成失败';
+      }
+    };
 
     const syncUrl = () => {
       const params = new URLSearchParams(window.location.search);
@@ -2218,6 +2294,24 @@
     };
 
     if (refreshBtn) refreshBtn.addEventListener('click', () => loadDay(selectedDate));
+    if (summaryBtn) summaryBtn.addEventListener('click', () => loadSummary(selectedDate));
+    if (summaryGenerateBtn) summaryGenerateBtn.addEventListener('click', () => loadSummary(selectedDate));
+    if (summaryCopyBtn) {
+      summaryCopyBtn.addEventListener('click', async () => {
+        if (!summaryEl) return;
+        const text = String(summaryEl.textContent || '').trim();
+        if (!text) return;
+        try {
+          await navigator.clipboard.writeText(text);
+          summaryCopyBtn.textContent = '已复制';
+          setTimeout(() => {
+            summaryCopyBtn.textContent = '复制';
+          }, 1400);
+        } catch (err) {
+          window.alert('复制失败，请手动复制。');
+        }
+      });
+    }
     if (prevBtn) {
       prevBtn.addEventListener('click', () => {
         monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth() - 1, 1);
@@ -2244,6 +2338,7 @@
     applyInitialDate();
     loadMonth();
     loadDay(selectedDate);
+    loadSummary(selectedDate);
   };
 
   const initHome = () => {
@@ -2260,6 +2355,7 @@
     const whiteboardDateEl = qs('#whiteboard-date');
     const whiteboardAddBtn = qs('[data-whiteboard-add]');
     const whiteboardMediaBtn = qs('[data-whiteboard-media]');
+    const whiteboardSummaryBtn = qs('[data-whiteboard-summary]');
     const whiteboardImportBtn = qs('[data-whiteboard-import]');
     const whiteboardExportBtn = qs('[data-whiteboard-export]');
     const whiteboardResetBtn = qs('[data-whiteboard-reset]');
@@ -2386,6 +2482,20 @@
     const initWhiteboard = () => {
       if (!whiteboardEl || !whiteboardWorldEl) return;
 
+      const whiteboardShell = whiteboardEl.closest('.whiteboard-shell');
+      const whiteboardSyncStateEl = qs('#whiteboard-sync-state');
+      const quickTextEl = qs('#whiteboard-quick-text');
+      const quickTagsEl = qs('#whiteboard-quick-tags');
+      const quickMoodEl = qs('#whiteboard-quick-mood');
+      const quickTypeEl = qs('#whiteboard-quick-type');
+      const quickSendBtn = qs('[data-whiteboard-quick-send]');
+      const queueStatusEl = qs('#whiteboard-queue-status');
+      const filterTagEl = qs('#whiteboard-filter-tag');
+      const filterMoodEl = qs('#whiteboard-filter-mood');
+      const filterTypeEl = qs('#whiteboard-filter-type');
+      const filterClearBtn = qs('[data-whiteboard-filter-clear]');
+      const mobileQuickBtn = qs('[data-whiteboard-mobile-quick]');
+
       const isValidDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
       const params = new URLSearchParams(window.location.search);
       let date = formatDate(new Date());
@@ -2397,15 +2507,83 @@
       const stateById = new Map();
       const linksById = new Map();
       let linkingFromId = 0;
-      let lastEventId = 0;
+      let syncCursor = '';
       let polling = false;
+      let queueBusy = false;
+      let uploadProgress = 0;
+      let uploadMessage = '';
+      const filterState = { tag: '', mood: '', type: '' };
 
       const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
+      const textQueueKey = `benoss:whiteboard:text-queue:${date}`;
+      const readQueue = () => {
+        try {
+          const raw = window.localStorage.getItem(textQueueKey);
+          const data = raw ? JSON.parse(raw) : [];
+          return Array.isArray(data) ? data : [];
+        } catch (err) {
+          return [];
+        }
+      };
+      const saveQueue = (items) => {
+        try {
+          window.localStorage.setItem(textQueueKey, JSON.stringify(Array.isArray(items) ? items : []));
+        } catch (err) {
+          // ignore
+        }
+      };
+      let textQueue = readQueue();
 
       const camera = { x: 0, y: 0, scale: 1 };
       let linksCanvas = null;
       let linksCtx = null;
       let drawPending = false;
+
+      const setSyncState = (text) => {
+        if (!whiteboardSyncStateEl) return;
+        whiteboardSyncStateEl.textContent = text;
+      };
+
+      const updateQueueStatus = () => {
+        if (!queueStatusEl) return;
+        const parts = [];
+        if (!navigator.onLine) parts.push('离线模式');
+        if (textQueue.length) parts.push(`待同步 ${textQueue.length} 条`);
+        if (queueBusy) parts.push('同步中...');
+        if (uploadMessage) parts.push(uploadMessage);
+        queueStatusEl.textContent = parts.join(' · ') || '在线';
+      };
+
+      const parseTags = (value) =>
+        String(value || '')
+          .split(/[,\n，;；]/g)
+          .map((v) => v.trim().replace(/^#/, ''))
+          .filter(Boolean)
+          .slice(0, 12);
+
+      const quickEntry = (defaultType = 'note') => ({
+        date,
+        tags: parseTags(quickTagsEl ? quickTagsEl.value : ''),
+        mood: quickMoodEl ? String(quickMoodEl.value || '').trim() : '',
+        type: (quickTypeEl ? String(quickTypeEl.value || '').trim() : '') || defaultType,
+      });
+
+      const formatClock = (value) => {
+        if (!value) return '';
+        const dt = new Date(value);
+        if (Number.isNaN(dt.getTime())) return '';
+        return dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      };
+
+      const withTimePrefix = (text) => {
+        const raw = String(text || '').trim();
+        if (!raw) return '';
+        if (/^\[\d{2}:\d{2}\]\s*/.test(raw)) return raw;
+        const now = new Date();
+        const hh = String(now.getHours()).padStart(2, '0');
+        const mm = String(now.getMinutes()).padStart(2, '0');
+        return `[${hh}:${mm}] ${raw}`;
+      };
 
       const getAccent = () => {
         const value = window.getComputedStyle(document.documentElement).getPropertyValue('--accent');
@@ -2502,9 +2680,10 @@
           if (!fromId || !toId) return;
           const fromEl = cardsById.get(fromId);
           const toEl = cardsById.get(toId);
-          if (!fromEl || !toEl) return;
+          if (!fromEl || !toEl || fromEl.hidden || toEl.hidden) return;
           const fr = fromEl.getBoundingClientRect();
           const tr = toEl.getBoundingClientRect();
+          if (!fr.width || !fr.height || !tr.width || !tr.height) return;
 
           const fromRect = { x: fr.left - boardRect.left, y: fr.top - boardRect.top, w: fr.width, h: fr.height };
           const toRect = { x: tr.left - boardRect.left, y: tr.top - boardRect.top, w: tr.width, h: tr.height };
@@ -2523,7 +2702,6 @@
 
       const autosizeTextarea = (ta) => {
         if (!ta || ta.hidden) return;
-        // Let the textarea shrink when text is deleted.
         ta.style.height = 'auto';
         const max = 420;
         const next = Math.min(max, ta.scrollHeight || 0);
@@ -2591,20 +2769,16 @@
           const y = Number(c.y || 0);
           minX = Math.min(minX, x);
           minY = Math.min(minY, y);
-          maxX = Math.max(maxX, x + 260);
-          maxY = Math.max(maxY, y + 220);
+          maxX = Math.max(maxX, x + 300);
+          maxY = Math.max(maxY, y + 240);
         });
         const cx = (minX + maxX) / 2;
         const cy = (minY + maxY) / 2;
         centerOnWorld(cx, cy, 1);
       };
 
-      // Support both:
-      // - Drag to pan (mouse/touch, single pointer)
-      // - Pinch to zoom (touch, two pointers)
-      const pointers = new Map(); // pointerId -> { cx, cy }
-      let gesture = 'none'; // 'none' | 'pan' | 'pinch'
-
+      const pointers = new Map();
+      let gesture = 'none';
       let panPointerId = 0;
       let panStartX = 0;
       let panStartY = 0;
@@ -2695,8 +2869,6 @@
       whiteboardEl.addEventListener('pointerdown', (ev) => {
         if (ev.button != null && ev.button !== 0) return;
         if (ev.target && ev.target.closest && ev.target.closest('.whiteboard-card')) return;
-
-        // Cap to 2 pointers for pinch; ignore extra touches.
         if (pointers.size >= 2 && !pointers.has(ev.pointerId)) return;
 
         pointers.set(ev.pointerId, { cx: ev.clientX, cy: ev.clientY });
@@ -2733,7 +2905,6 @@
       whiteboardEl.addEventListener(
         'wheel',
         (ev) => {
-          // Trackpad: pan; pinch: ctrlKey zoom.
           const overCard = ev.target && ev.target.closest && ev.target.closest('.whiteboard-card');
           const rect = whiteboardEl.getBoundingClientRect();
           const sx = ev.clientX - rect.left;
@@ -2759,32 +2930,56 @@
         { passive: false }
       );
 
-	      const renderAttachments = (container, atts) => {
-	        if (!container) return;
-	        container.innerHTML = '';
-	        const list = Array.isArray(atts) ? atts : [];
-	        if (!list.length) return;
-	        list.forEach((att) => {
-	          const media = createMediaNode(att.media_type, att.url || '', {
-	            title: att.filename || '',
-	            alt: att.filename || '',
-	            preview: att.preview_url || '',
-	          });
-	          if (media) {
-	            const scheduleOnce = () => scheduleDraw();
-	            const tag = String(media.tagName || '').toLowerCase();
-	            if (tag === 'img') media.addEventListener('load', scheduleOnce, { once: true });
-	            if (tag === 'video' || tag === 'audio') media.addEventListener('loadedmetadata', scheduleOnce, { once: true });
-	            if (media.querySelector) {
-	              const innerImg = media.querySelector('img');
-	              if (innerImg) innerImg.addEventListener('load', scheduleOnce, { once: true });
-	              const innerMedia = media.querySelector('video,audio');
-	              if (innerMedia) innerMedia.addEventListener('loadedmetadata', scheduleOnce, { once: true });
-	            }
-	            if (att.url && att.media_type === 'image') {
-	              const a = document.createElement('a');
-	              a.href = att.url;
-	              a.target = '_blank';
+      const cardMatchFilter = (card) => {
+        if (!card) return false;
+        const entry = card.entry || {};
+        const tags = Array.isArray(card.entry_tags) ? card.entry_tags : Array.isArray(entry.tags) ? entry.tags : [];
+        const mood = String(card.entry_mood || entry.mood || '').trim().toLowerCase();
+        const type = String(card.entry_type || entry.type || '').trim().toLowerCase();
+        if (filterState.tag) {
+          const tagNeedle = filterState.tag.toLowerCase();
+          const ok = tags.some((tag) => String(tag || '').toLowerCase().includes(tagNeedle));
+          if (!ok) return false;
+        }
+        if (filterState.mood && mood !== filterState.mood) return false;
+        if (filterState.type && type !== filterState.type) return false;
+        return true;
+      };
+
+      const applyFilters = () => {
+        cardsById.forEach((el, id) => {
+          const st = stateById.get(Number(id));
+          el.hidden = !cardMatchFilter(st);
+        });
+        scheduleDraw();
+      };
+
+      const renderAttachments = (container, atts) => {
+        if (!container) return;
+        container.innerHTML = '';
+        const list = Array.isArray(atts) ? atts : [];
+        if (!list.length) return;
+        list.forEach((att) => {
+          const media = createMediaNode(att.media_type, att.url || '', {
+            title: att.filename || '',
+            alt: att.filename || '',
+            preview: att.preview_url || '',
+          });
+          if (media) {
+            const scheduleOnce = () => scheduleDraw();
+            const tag = String(media.tagName || '').toLowerCase();
+            if (tag === 'img') media.addEventListener('load', scheduleOnce, { once: true });
+            if (tag === 'video' || tag === 'audio') media.addEventListener('loadedmetadata', scheduleOnce, { once: true });
+            if (media.querySelector) {
+              const innerImg = media.querySelector('img');
+              if (innerImg) innerImg.addEventListener('load', scheduleOnce, { once: true });
+              const innerMedia = media.querySelector('video,audio');
+              if (innerMedia) innerMedia.addEventListener('loadedmetadata', scheduleOnce, { once: true });
+            }
+            if (att.url && att.media_type === 'image') {
+              const a = document.createElement('a');
+              a.href = att.url;
+              a.target = '_blank';
               a.rel = 'noopener';
               a.appendChild(media);
               container.appendChild(a);
@@ -2808,20 +3003,32 @@
         });
       };
 
+      const renderMeta = (container, card) => {
+        if (!container) return;
+        container.innerHTML = '';
+        const entry = card.entry || {};
+        const tags = Array.isArray(card.entry_tags) ? card.entry_tags : Array.isArray(entry.tags) ? entry.tags : [];
+        const mood = String(card.entry_mood || entry.mood || '').trim();
+        const type = String(card.entry_type || entry.type || '').trim();
+        const t = formatClock(card.created_at || card.updated_at);
+        const chips = [];
+        if (t) chips.push(`⏱ ${t}`);
+        if (type) chips.push(`type:${type}`);
+        if (mood) chips.push(`mood:${mood}`);
+        tags.slice(0, 4).forEach((tag) => chips.push(`#${tag}`));
+        chips.forEach((text) => {
+          const chip = document.createElement('span');
+          chip.className = 'whiteboard-card__chip';
+          chip.textContent = text;
+          container.appendChild(chip);
+        });
+      };
+
       const updateLinkingUI = () => {
         cardsById.forEach((el, id) => {
           el.classList.toggle('is-linking', linkingFromId && Number(id) === Number(linkingFromId));
         });
       };
-
-      document.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Escape' && linkingFromId) {
-          linkingFromId = 0;
-          updateLinkingUI();
-        }
-      });
-
-      window.addEventListener('resize', () => scheduleDraw());
 
       const upsertLink = (link) => {
         if (!link || !link.id) return;
@@ -2862,7 +3069,6 @@
           .map((l) => Number(l.id || 0))
           .filter(Boolean);
         if (!ids.length) return;
-        // Best-effort, continue even if one delete fails.
         for (const id of ids) {
           try {
             // eslint-disable-next-line no-await-in-loop
@@ -2873,12 +3079,22 @@
         }
       };
 
+      const handlePatchConflict = (err) => {
+        if (err && err.status === 409 && err.payload && err.payload.card) {
+          upsertCard(err.payload.card);
+          setSyncState('发现并合并了冲突更新');
+          return true;
+        }
+        return false;
+      };
+
       const upsertCard = (card) => {
         if (!card || !card.id) return;
         const id = Number(card.id);
         const existing = stateById.get(id) || {};
         const next = { ...existing, ...card };
         if (card.attachments) next.attachments = card.attachments;
+        if (card.entry) next.entry = card.entry;
         stateById.set(id, next);
 
         let el = cardsById.get(id);
@@ -2950,6 +3166,9 @@
           const body = document.createElement('div');
           body.className = 'whiteboard-card__body';
 
+          const meta = document.createElement('div');
+          meta.className = 'whiteboard-card__meta';
+
           const attachments = document.createElement('div');
           attachments.className = 'whiteboard-attachments';
 
@@ -2971,13 +3190,15 @@
             clearTimeout(el._saveTimer);
             el._saveTimer = setTimeout(async () => {
               try {
-                await apiFetch(`/api/whiteboard/cards/${id}`, {
+                const state = stateById.get(id) || {};
+                const resp = await apiFetch(`/api/whiteboard/cards/${id}`, {
                   method: 'PATCH',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ text: ta.value }),
+                  body: JSON.stringify({ text: ta.value, expected_version: Number(state.version || 1) }),
                 });
+                if (resp && resp.card) upsertCard(resp.card);
               } catch (err) {
-                // ignore
+                if (handlePatchConflict(err)) return;
               }
             }, 350);
           });
@@ -2996,6 +3217,7 @@
             }
           });
 
+          body.appendChild(meta);
           body.appendChild(attachments);
           body.appendChild(noteBtn);
           body.appendChild(ta);
@@ -3003,6 +3225,9 @@
           el.appendChild(body);
           whiteboardWorldEl.appendChild(el);
           cardsById.set(id, el);
+          el._headEl = head;
+          el._titleEl = title;
+          el._metaEl = meta;
           el._attachmentsEl = attachments;
           el._textareaEl = ta;
           el._noteBtnEl = noteBtn;
@@ -3054,13 +3279,15 @@
               const pos = el._pendingPos;
               el._pendingPos = null;
               try {
-                await apiFetch(`/api/whiteboard/cards/${id}`, {
+                const state = stateById.get(id) || {};
+                const resp = await apiFetch(`/api/whiteboard/cards/${id}`, {
                   method: 'PATCH',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ x: pos.x, y: pos.y }),
+                  body: JSON.stringify({ x: pos.x, y: pos.y, expected_version: Number(state.version || 1) }),
                 });
+                if (resp && resp.card) upsertCard(resp.card);
               } catch (err) {
-                // ignore
+                if (handlePatchConflict(err)) return;
               }
             }
           };
@@ -3079,25 +3306,34 @@
 
         const x = Number(next.x || 0);
         const y = Number(next.y || 0);
+        const hasAttachments = Array.isArray(next.attachments) && next.attachments.length > 0;
+        const hasText = String(next.text || '').trim().length > 0;
+        const isMediaOnly = hasAttachments && !hasText;
+
         el.style.transform = `translate(${x}px, ${y}px)`;
+        el.classList.toggle('whiteboard-card--media', isMediaOnly);
         if (el._attachmentsEl) renderAttachments(el._attachmentsEl, next.attachments || []);
+        if (el._metaEl) renderMeta(el._metaEl, next);
+        if (el._titleEl) {
+          const clock = formatClock(next.created_at || next.updated_at);
+          el._titleEl.textContent = clock ? `#${id} · ${clock}` : `#${id}`;
+        }
+
         const ta = el._textareaEl || qs('textarea', el);
         if (ta && document.activeElement !== ta) {
           ta.value = next.text || '';
         }
         const noteBtn = el._noteBtnEl;
-        const hasAttachments = Array.isArray(next.attachments) && next.attachments.length > 0;
-        const hasText = String(next.text || '').trim().length > 0;
-        if (noteBtn) {
-          noteBtn.hidden = !hasAttachments;
-        }
+        if (noteBtn) noteBtn.hidden = !hasAttachments || isMediaOnly;
         if (ta) {
           const collapsedFlag = String(el.dataset.textCollapsed || '');
-          const desiredCollapsed = hasAttachments
-            ? hasText
-              ? collapsedFlag === '1'
-              : collapsedFlag !== '0'
-            : false;
+          const desiredCollapsed = isMediaOnly
+            ? true
+            : hasAttachments
+              ? hasText
+                ? collapsedFlag === '1'
+                : collapsedFlag !== '0'
+              : false;
           if (document.activeElement !== ta) {
             ta.hidden = desiredCollapsed;
           }
@@ -3107,6 +3343,7 @@
           if (!ta.hidden) scheduleAutosize(ta);
         }
         updateLinkingUI();
+        applyFilters();
         scheduleDraw();
       };
 
@@ -3137,43 +3374,156 @@
 
       const loadBoard = async () => {
         const data = await apiFetch(`/api/whiteboard/board?date=${encodeURIComponent(date)}`);
-        lastEventId = Number(data.last_event_id || 0);
+        syncCursor = String(data.sync_cursor || '').trim();
         const cards = Array.isArray(data.cards) ? data.cards : [];
         const links = Array.isArray(data.links) ? data.links : [];
         replaceBoard(cards);
         replaceLinks(links);
+        setSyncState(navigator.onLine ? '已同步' : '离线');
+        updateQueueStatus();
       };
 
       const poll = async () => {
-        if (polling) return;
+        if (polling || !navigator.onLine) return;
         polling = true;
         try {
-          const data = await apiFetch(`/api/whiteboard/events?date=${encodeURIComponent(date)}&after_id=${lastEventId}`);
-          const events = Array.isArray(data.events) ? data.events : [];
-          let sawReset = false;
-          events.forEach((ev) => {
-            lastEventId = Math.max(lastEventId, Number(ev.id || 0));
-            if (ev.type === 'reset') sawReset = true;
-            const id = Number(ev.card_id || 0);
-            if (ev.type === 'create' && ev.payload && ev.payload.card) {
-              upsertCard(ev.payload.card);
-            } else if (ev.type === 'update' && id) {
-              const changes = (ev.payload && ev.payload.changes) || {};
-              upsertCard({ id, ...changes });
-            } else if (ev.type === 'delete' && id) {
-              removeCard(id);
-            } else if (ev.type === 'link_create' && ev.payload && ev.payload.link) {
-              upsertLink(ev.payload.link);
-            } else if (ev.type === 'link_delete' && ev.payload && ev.payload.link) {
-              const link = ev.payload.link;
-              if (link && link.id) removeLink(link.id);
-            }
-          });
-          if (sawReset) await loadBoard();
+          const data = await apiFetch(
+            `/api/whiteboard/changes?date=${encodeURIComponent(date)}&cursor=${encodeURIComponent(syncCursor || '')}`
+          );
+          syncCursor = String(data.next_cursor || syncCursor || '').trim();
+          if (data.reset) {
+            replaceBoard(Array.isArray(data.cards) ? data.cards : []);
+            replaceLinks(Array.isArray(data.links) ? data.links : []);
+            return;
+          }
+          (Array.isArray(data.cards) ? data.cards : []).forEach((card) => upsertCard(card));
+          (Array.isArray(data.deleted_card_ids) ? data.deleted_card_ids : []).forEach((id) => removeCard(Number(id)));
+          if (data.links_changed) {
+            replaceLinks(Array.isArray(data.links) ? data.links : []);
+          }
+          setSyncState('已同步');
         } catch (err) {
-          // ignore
+          if (!navigator.onLine) setSyncState('离线');
         } finally {
           polling = false;
+        }
+      };
+
+      const processTextQueue = async () => {
+        if (queueBusy || !navigator.onLine || !textQueue.length) {
+          updateQueueStatus();
+          return;
+        }
+        queueBusy = true;
+        setSyncState('同步中...');
+        updateQueueStatus();
+        while (textQueue.length && navigator.onLine) {
+          const item = textQueue[0];
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            const resp = await apiFetch('/api/whiteboard/cards', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(item.payload || {}),
+            });
+            if (resp && resp.card) upsertCard(resp.card);
+            textQueue.shift();
+            saveQueue(textQueue);
+          } catch (err) {
+            if (err && err.status >= 400 && err.status < 500 && err.status !== 409) {
+              textQueue.shift();
+              saveQueue(textQueue);
+              continue;
+            }
+            break;
+          }
+        }
+        queueBusy = false;
+        setSyncState(navigator.onLine ? '已同步' : '离线');
+        updateQueueStatus();
+      };
+
+      const buildTextPayload = (rawText, opts = {}) => {
+        const baseText = opts.skipTimestamp ? String(rawText || '').trim() : withTimePrefix(rawText);
+        if (!baseText) return null;
+        const normalizedText = baseText.length > 5000 ? baseText.slice(0, 5000) : baseText;
+        const center = viewCenterWorld();
+        const x = center.x - 42;
+        const y = center.y - 42;
+        const entry = { ...quickEntry('note'), ...(opts.entry || {}) };
+        return {
+          date,
+          x,
+          y,
+          text: normalizedText,
+          idempotency_key: opts.idempotencyKey || newIdempotencyKey('wbtxt'),
+          entry_date: entry.date || date,
+          entry_tags: Array.isArray(entry.tags) ? entry.tags : [],
+          entry_mood: entry.mood || '',
+          entry_type: entry.type || 'note',
+        };
+      };
+
+      const enqueueTextPayload = async (payload, clearQuick = true) => {
+        if (!payload) return;
+        textQueue.push({ id: payload.idempotency_key, payload, created_at: Date.now() });
+        saveQueue(textQueue);
+        updateQueueStatus();
+        if (clearQuick && quickTextEl) quickTextEl.value = '';
+        if (whiteboardShell) whiteboardShell.classList.remove('is-quick-open');
+        await processTextQueue();
+      };
+
+      const queueTextRecord = async (rawText) => {
+        const payload = buildTextPayload(rawText);
+        await enqueueTextPayload(payload, true);
+      };
+
+      const uploadMediaFile = async (file, extraText = '') => {
+        if (!file) return;
+        const center = viewCenterWorld();
+        const x = center.x - 42;
+        const y = center.y - 42;
+        const entry = quickEntry('media');
+        const payloadText = String(extraText || '').trim();
+        const mediaIdempotencyKey = newIdempotencyKey('wbmedia');
+        uploadProgress = 0;
+        uploadMessage = '媒体上传 0%';
+        updateQueueStatus();
+        try {
+          const response = await retryAsync(
+            (attempt) =>
+              directUploadWhiteboardMedia({
+                date,
+                x,
+                y,
+                text: payloadText,
+                file,
+                idempotencyKey: mediaIdempotencyKey,
+                entry: {
+                  date: entry.date,
+                  tags: entry.tags,
+                  mood: entry.mood,
+                  type: payloadText ? entry.type || 'note' : entry.type || 'media',
+                },
+                onProgress: (p) => {
+                  uploadProgress = p;
+                  const pct = Math.round(Math.max(0, Math.min(1, p || 0)) * 100);
+                  uploadMessage = `媒体上传 ${pct}%${attempt > 0 ? ` (重试 ${attempt})` : ''}`;
+                  updateQueueStatus();
+                },
+              }),
+            2,
+            800
+          );
+          if (response && response.card) upsertCard(response.card);
+          if (quickTextEl && payloadText) quickTextEl.value = '';
+        } catch (err) {
+          window.alert(err.message || '媒体上传失败');
+        } finally {
+          uploadProgress = 0;
+          uploadMessage = '';
+          updateQueueStatus();
         }
       };
 
@@ -3185,15 +3535,49 @@
           const resp = await apiFetch('/api/whiteboard/cards', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ date, x, y, text: '' }),
+            body: JSON.stringify({
+              date,
+              x,
+              y,
+              text: withTimePrefix(''),
+              entry_date: date,
+              entry_tags: [],
+              entry_mood: '',
+              entry_type: 'note',
+              idempotency_key: newIdempotencyKey('wbblank'),
+            }),
           });
           if (resp && resp.card) upsertCard(resp.card);
         });
       }
 
-      if (whiteboardResetBtn) {
-        whiteboardResetBtn.addEventListener('click', () => resetView());
+      if (whiteboardSummaryBtn) {
+        whiteboardSummaryBtn.addEventListener('click', async () => {
+          try {
+            const data = await apiFetch(`/api/dailyreal/summary?date=${date}&tz_offset=${new Date().getTimezoneOffset()}`);
+            const summary = String((data && data.summary) || '').trim();
+            if (!summary) {
+              window.alert('今天暂无可汇总内容');
+              return;
+            }
+            const payload = buildTextPayload(summary, {
+              skipTimestamp: true,
+              idempotencyKey: newIdempotencyKey('wbsummary'),
+              entry: {
+                date,
+                tags: ['dailyreal', 'summary'],
+                mood: '',
+                type: 'summary',
+              },
+            });
+            await enqueueTextPayload(payload, false);
+          } catch (err) {
+            window.alert(err.message || '生成总结失败');
+          }
+        });
       }
+
+      if (whiteboardResetBtn) whiteboardResetBtn.addEventListener('click', () => resetView());
 
       if (whiteboardExportBtn) {
         whiteboardExportBtn.addEventListener('click', async () => {
@@ -3252,27 +3636,101 @@
         whiteboardMediaFile.addEventListener('change', async () => {
           const file = (whiteboardMediaFile.files && whiteboardMediaFile.files[0]) || null;
           if (!file) return;
-          const center = viewCenterWorld();
-          const x = center.x - 40;
-          const y = center.y - 40;
-          try {
-            const resp = await directUploadWhiteboardMedia(date, x, y, '', file);
-            if (resp && resp.card) upsertCard(resp.card);
-          } catch (err) {
-            window.alert(err.message);
-          } finally {
-            whiteboardMediaFile.value = '';
-          }
+          await uploadMediaFile(file, quickTextEl ? quickTextEl.value : '');
+          whiteboardMediaFile.value = '';
         });
       }
 
-      applyCamera();
-      loadBoard().then(() => {
-        if (!focusFromHash()) resetView();
-        setInterval(poll, 1000);
+      if (quickSendBtn && quickTextEl) {
+        quickSendBtn.addEventListener('click', async () => {
+          await queueTextRecord(quickTextEl.value);
+        });
+        quickTextEl.addEventListener('keydown', async (ev) => {
+          if (ev.key !== 'Enter' || ev.shiftKey) return;
+          ev.preventDefault();
+          await queueTextRecord(quickTextEl.value);
+        });
+      }
+
+      if (mobileQuickBtn && whiteboardShell && quickTextEl) {
+        mobileQuickBtn.addEventListener('click', () => {
+          whiteboardShell.classList.toggle('is-quick-open');
+          if (whiteboardShell.classList.contains('is-quick-open')) quickTextEl.focus();
+        });
+      }
+
+      const pasteHandler = async (ev) => {
+        const cd = ev.clipboardData;
+        if (!cd || !cd.items) return;
+        const files = [];
+        for (const item of cd.items) {
+          if (!item || !item.type || !item.type.startsWith('image/')) continue;
+          const file = item.getAsFile();
+          if (file) files.push(file);
+        }
+        if (!files.length) return;
+        ev.preventDefault();
+        for (const file of files) {
+          // eslint-disable-next-line no-await-in-loop
+          await uploadMediaFile(file, quickTextEl ? quickTextEl.value : '');
+        }
+      };
+      whiteboardEl.addEventListener('paste', pasteHandler);
+      if (quickTextEl) quickTextEl.addEventListener('paste', pasteHandler);
+
+      if (filterTagEl) {
+        filterTagEl.addEventListener('input', () => {
+          filterState.tag = String(filterTagEl.value || '').trim();
+          applyFilters();
+        });
+      }
+      if (filterMoodEl) {
+        filterMoodEl.addEventListener('change', () => {
+          filterState.mood = String(filterMoodEl.value || '').trim().toLowerCase();
+          applyFilters();
+        });
+      }
+      if (filterTypeEl) {
+        filterTypeEl.addEventListener('change', () => {
+          filterState.type = String(filterTypeEl.value || '').trim().toLowerCase();
+          applyFilters();
+        });
+      }
+      if (filterClearBtn) {
+        filterClearBtn.addEventListener('click', () => {
+          filterState.tag = '';
+          filterState.mood = '';
+          filterState.type = '';
+          if (filterTagEl) filterTagEl.value = '';
+          if (filterMoodEl) filterMoodEl.value = '';
+          if (filterTypeEl) filterTypeEl.value = '';
+          applyFilters();
+        });
+      }
+
+      document.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Escape' && linkingFromId) {
+          linkingFromId = 0;
+          updateLinkingUI();
+        }
       });
 
+      window.addEventListener('resize', () => scheduleDraw());
       window.addEventListener('hashchange', () => focusFromHash());
+      window.addEventListener('online', () => {
+        setSyncState('在线');
+        processTextQueue();
+      });
+      window.addEventListener('offline', () => setSyncState('离线'));
+
+      updateQueueStatus();
+      setSyncState(navigator.onLine ? '在线' : '离线');
+      applyCamera();
+      loadBoard().then(async () => {
+        if (!focusFromHash()) resetView();
+        await processTextQueue();
+        setInterval(poll, 1200);
+      });
     };
 
     if (todayBtn) todayBtn.addEventListener('click', loadToday);

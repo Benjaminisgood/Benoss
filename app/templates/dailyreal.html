@@ -8,6 +8,7 @@
   </div>
   <div class="hero-actions">
     <button class="pill-btn ghost" data-dailyreal-refresh>刷新</button>
+    <button class="pill-btn" data-dailyreal-summary>今日总结</button>
   </div>
 </section>
 
@@ -53,6 +54,20 @@
             <tr><td class="muted" colspan="7">Loading...</td></tr>
           </tbody>
         </table>
+      </div>
+    </section>
+
+    <section class="section-block">
+      <header class="section-head">
+        <h2>今日总结</h2>
+        <p class="muted">聚合当天项目活动 + 白板记录，一键生成可复制的总结文本。</p>
+      </header>
+      <div class="panel">
+        <div class="button-row">
+          <button class="pill-btn" type="button" data-dailyreal-summary-generate>生成总结</button>
+          <button class="pill-btn ghost" type="button" data-dailyreal-summary-copy>复制</button>
+        </div>
+        <pre class="dailyreal-summary muted" id="dailyreal-summary">点击“生成总结”。</pre>
       </div>
     </section>
 

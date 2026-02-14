@@ -1,7 +1,8 @@
 import hashlib
 import json
+import re
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Blueprint, current_app, g, jsonify, request
@@ -24,6 +25,8 @@ _VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
 _AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
 _DOC_EXTS = {".pdf"}
 _HEX_DIGITS = set("0123456789abcdef")
+_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9:_-]{8,96}$")
+_TAG_SPLIT_RE = re.compile(r"[,\n，;；]+")
 
 
 def _validate_date(date_str: str) -> str:
@@ -32,6 +35,179 @@ def _validate_date(date_str: str) -> str:
     except ValueError as exc:
         raise ValueError("invalid date") from exc
     return date_str
+
+
+def _parse_sync_cursor(value: str | None) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError("invalid cursor") from exc
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _cursor_payload(dt: datetime | None) -> str:
+    if not dt:
+        return ""
+    return dt.replace(tzinfo=timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _board_cursor(date_str: str) -> str:
+    card_max = (
+        db.session.query(func.max(WhiteboardCard.updated_at))
+        .filter(WhiteboardCard.board_date == date_str)
+        .scalar()
+    )
+    event_max = (
+        db.session.query(func.max(WhiteboardEvent.created_at))
+        .filter(WhiteboardEvent.board_date == date_str)
+        .scalar()
+    )
+    values = [v for v in [card_max, event_max] if isinstance(v, datetime)]
+    return _cursor_payload(max(values) if values else None)
+
+
+def _normalize_idempotency_key(value: str | None) -> str:
+    key = str(value or "").strip()
+    if not key:
+        return ""
+    if not _IDEMPOTENCY_KEY_RE.match(key):
+        raise ValueError("invalid idempotency_key")
+    return key
+
+
+def _extract_entry(payload: dict | None) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+    entry = payload.get("entry")
+    if isinstance(entry, dict):
+        return entry
+    return {}
+
+
+def _normalize_tags(value) -> list[str]:
+    parts: list[str] = []
+    if isinstance(value, (list, tuple, set)):
+        parts = [str(v or "") for v in value]
+    elif isinstance(value, str):
+        parts = _TAG_SPLIT_RE.split(value)
+    elif value is not None:
+        parts = [str(value)]
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in parts:
+        item = str(raw or "").strip()
+        if item.startswith("#"):
+            item = item[1:]
+        item = re.sub(r"\s+", " ", item).strip()
+        if not item:
+            continue
+        if len(item) > 24:
+            item = item[:24]
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+        if len(out) >= 12:
+            break
+    return out
+
+
+def _parse_entry_meta(payload: dict, board_date: str, default_type: str = "note") -> dict:
+    entry = _extract_entry(payload)
+    raw_entry_date = entry.get("date", payload.get("entry_date", ""))
+    entry_date = str(raw_entry_date or "").strip() or board_date
+    entry_date = _validate_date(entry_date)
+
+    raw_tags = entry.get("tags", payload.get("entry_tags", payload.get("tags")))
+    tags = _normalize_tags(raw_tags)
+
+    raw_mood = entry.get("mood", payload.get("entry_mood", payload.get("mood")))
+    mood = str(raw_mood or "").strip()
+    if len(mood) > 24:
+        mood = mood[:24]
+
+    raw_type = entry.get("type", payload.get("entry_type", payload.get("type")))
+    entry_type = str(raw_type or "").strip().lower() or default_type
+    if len(entry_type) > 24:
+        entry_type = entry_type[:24]
+
+    return {
+        "entry_date": entry_date,
+        "entry_tags_json": json.dumps(tags, ensure_ascii=False),
+        "entry_mood": mood,
+        "entry_type": entry_type,
+    }
+
+
+def _parse_entry_meta_updates(payload: dict, board_date: str) -> dict:
+    entry = _extract_entry(payload)
+    out = {}
+
+    if "entry_date" in payload or "date" in entry:
+        entry_date = str(entry.get("date", payload.get("entry_date", "")) or "").strip() or board_date
+        out["entry_date"] = _validate_date(entry_date)
+
+    if "entry_tags" in payload or "tags" in payload or "tags" in entry:
+        tags = _normalize_tags(entry.get("tags", payload.get("entry_tags", payload.get("tags"))))
+        out["entry_tags_json"] = json.dumps(tags, ensure_ascii=False)
+
+    if "entry_mood" in payload or "mood" in payload or "mood" in entry:
+        mood = str(entry.get("mood", payload.get("entry_mood", payload.get("mood"))) or "").strip()
+        if len(mood) > 24:
+            mood = mood[:24]
+        out["entry_mood"] = mood
+
+    if "entry_type" in payload or "type" in payload or "type" in entry:
+        entry_type = str(entry.get("type", payload.get("entry_type", payload.get("type"))) or "").strip().lower()
+        if len(entry_type) > 24:
+            entry_type = entry_type[:24]
+        out["entry_type"] = entry_type or "note"
+
+    return out
+
+
+def _entry_tags(card: WhiteboardCard) -> list[str]:
+    raw = card.entry_tags_json or "[]"
+    try:
+        data = json.loads(raw)
+    except Exception:
+        data = []
+    if not isinstance(data, list):
+        return []
+    return _normalize_tags(data)
+
+
+def _entry_payload(card: WhiteboardCard) -> dict:
+    return {
+        "date": (card.entry_date or card.board_date or "").strip(),
+        "tags": _entry_tags(card),
+        "mood": (card.entry_mood or "").strip(),
+        "type": (card.entry_type or "note").strip() or "note",
+    }
+
+
+def _find_idempotent_card(date_str: str, user_id: int | None, key: str) -> WhiteboardCard | None:
+    if not key or not user_id:
+        return None
+    return (
+        WhiteboardCard.query.options(joinedload(WhiteboardCard.attachments))
+        .filter(
+            WhiteboardCard.board_date == date_str,
+            WhiteboardCard.created_by_id == int(user_id),
+            WhiteboardCard.idempotency_key == key,
+        )
+        .order_by(WhiteboardCard.id.asc())
+        .first()
+    )
 
 
 def _sha256_file(path: Path) -> str:
@@ -89,13 +265,25 @@ def _attachment_payload(att: WhiteboardAttachment) -> dict:
 
 
 def _card_payload(card: WhiteboardCard) -> dict:
+    entry = _entry_payload(card)
+    text = card.text or ""
+    attachments = [_attachment_payload(a) for a in (card.attachments or [])]
     return {
         "id": card.id,
         "date": card.board_date,
         "x": float(card.x or 0),
         "y": float(card.y or 0),
-        "text": card.text or "",
-        "attachments": [_attachment_payload(a) for a in (card.attachments or [])],
+        "text": text,
+        "version": int(card.version or 1),
+        "idempotency_key": card.idempotency_key or "",
+        "entry": entry,
+        "entry_date": entry["date"],
+        "entry_tags": entry["tags"],
+        "entry_mood": entry["mood"],
+        "entry_type": entry["type"],
+        "is_media_only": bool(attachments and not text.strip()),
+        "attachments": attachments,
+        "created_at": card.created_at.isoformat() + "Z" if card.created_at else None,
         "updated_at": card.updated_at.isoformat() + "Z" if card.updated_at else None,
     }
 
@@ -118,6 +306,7 @@ def _card_export_payload(card: WhiteboardCard) -> dict:
         "x": float(card.x or 0),
         "y": float(card.y or 0),
         "text": card.text or "",
+        "entry": _entry_payload(card),
         "attachments": [_attachment_export_payload(a) for a in (card.attachments or [])],
         "updated_at": card.updated_at.isoformat() + "Z" if card.updated_at else None,
     }
@@ -177,12 +366,12 @@ def _build_board_export(date_str: str) -> dict:
     cards = (
         WhiteboardCard.query.options(joinedload(WhiteboardCard.attachments))
         .filter_by(board_date=date_str)
-        .order_by(WhiteboardCard.updated_at.asc())
+        .order_by(WhiteboardCard.updated_at.asc(), WhiteboardCard.id.asc())
         .all()
     )
     links = WhiteboardLink.query.filter_by(board_date=date_str).order_by(WhiteboardLink.id.asc()).all()
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "exported_at": datetime.utcnow().isoformat() + "Z",
         "date": date_str,
         "cards": [_card_export_payload(card) for card in cards],
@@ -254,7 +443,7 @@ def get_board():
     cards = (
         WhiteboardCard.query.options(joinedload(WhiteboardCard.attachments))
         .filter_by(board_date=date_str)
-        .order_by(WhiteboardCard.updated_at.asc())
+        .order_by(WhiteboardCard.updated_at.asc(), WhiteboardCard.id.asc())
         .all()
     )
     links = WhiteboardLink.query.filter_by(board_date=date_str).order_by(WhiteboardLink.id.asc()).all()
@@ -267,6 +456,7 @@ def get_board():
             "cards": [_card_payload(card) for card in cards],
             "links": [_link_payload(link) for link in links],
             "last_event_id": int(last_event_id),
+            "sync_cursor": _board_cursor(date_str),
         }
     )
 
@@ -293,6 +483,114 @@ def get_events():
     return jsonify({"date": date_str, "events": [_event_payload(ev) for ev in events]})
 
 
+@whiteboard_bp.route("/api/whiteboard/changes", methods=["GET"])
+@login_required()
+def get_changes():
+    date_str = (request.args.get("date") or "").strip()
+    if not date_str:
+        date_str = datetime.utcnow().strftime("%Y-%m-%d")
+    try:
+        date_str = _validate_date(date_str)
+    except ValueError:
+        return jsonify({"error": "invalid date"}), 400
+
+    try:
+        cursor_dt = _parse_sync_cursor(request.args.get("cursor"))
+    except ValueError:
+        return jsonify({"error": "invalid cursor"}), 400
+
+    # First sync or invalid caller state -> return full board snapshot once.
+    if cursor_dt is None:
+        cards = (
+            WhiteboardCard.query.options(joinedload(WhiteboardCard.attachments))
+            .filter_by(board_date=date_str)
+            .order_by(WhiteboardCard.updated_at.asc(), WhiteboardCard.id.asc())
+            .all()
+        )
+        links = WhiteboardLink.query.filter_by(board_date=date_str).order_by(WhiteboardLink.id.asc()).all()
+        return jsonify(
+            {
+                "date": date_str,
+                "reset": True,
+                "cards": [_card_payload(card) for card in cards],
+                "deleted_card_ids": [],
+                "links_changed": True,
+                "links": [_link_payload(link) for link in links],
+                "next_cursor": _board_cursor(date_str),
+            }
+        )
+
+    changed_cards = (
+        WhiteboardCard.query.options(joinedload(WhiteboardCard.attachments))
+        .filter(
+            WhiteboardCard.board_date == date_str,
+            WhiteboardCard.updated_at > cursor_dt,
+        )
+        .order_by(WhiteboardCard.updated_at.asc(), WhiteboardCard.id.asc())
+        .limit(400)
+        .all()
+    )
+
+    events = (
+        WhiteboardEvent.query.filter(
+            WhiteboardEvent.board_date == date_str,
+            WhiteboardEvent.created_at > cursor_dt,
+        )
+        .order_by(WhiteboardEvent.id.asc())
+        .limit(1200)
+        .all()
+    )
+
+    deleted_card_ids: set[int] = set()
+    links_changed = False
+    reset = False
+    for ev in events:
+        event_type = (ev.event_type or "").strip().lower()
+        if event_type == "delete" and int(ev.card_id or 0) > 0:
+            deleted_card_ids.add(int(ev.card_id))
+        if event_type in {"link_create", "link_delete"}:
+            links_changed = True
+        if event_type == "reset":
+            reset = True
+            links_changed = True
+
+    links_payload = []
+    if links_changed:
+        links = WhiteboardLink.query.filter_by(board_date=date_str).order_by(WhiteboardLink.id.asc()).all()
+        links_payload = [_link_payload(link) for link in links]
+
+    if reset:
+        all_cards = (
+            WhiteboardCard.query.options(joinedload(WhiteboardCard.attachments))
+            .filter_by(board_date=date_str)
+            .order_by(WhiteboardCard.updated_at.asc(), WhiteboardCard.id.asc())
+            .all()
+        )
+        return jsonify(
+            {
+                "date": date_str,
+                "reset": True,
+                "cards": [_card_payload(card) for card in all_cards],
+                "deleted_card_ids": [],
+                "links_changed": True,
+                "links": links_payload,
+                "next_cursor": _board_cursor(date_str),
+            }
+        )
+
+    return jsonify(
+        {
+            "date": date_str,
+            "reset": False,
+            "cards": [_card_payload(card) for card in changed_cards],
+            "deleted_card_ids": sorted(deleted_card_ids),
+            "links_changed": links_changed,
+            "links": links_payload,
+            "next_cursor": _board_cursor(date_str),
+        }
+    )
+
+
 @whiteboard_bp.route("/api/whiteboard/cards", methods=["POST"])
 @login_required()
 def create_card():
@@ -304,11 +602,42 @@ def create_card():
     except ValueError:
         return jsonify({"error": "invalid date"}), 400
 
-    text = str(payload.get("text", "")).strip()
-    x = float(payload.get("x", 20))
-    y = float(payload.get("y", 20))
+    text = str(payload.get("text", ""))
+    if len(text) > 5000:
+        return jsonify({"error": "text too long"}), 400
+    try:
+        x = float(payload.get("x", 20))
+        y = float(payload.get("y", 20))
+    except Exception:
+        return jsonify({"error": "invalid position"}), 400
 
-    card = WhiteboardCard(board_date=date_str, text=text, x=x, y=y, created_by_id=user.id if user else None)
+    try:
+        idempotency_key = _normalize_idempotency_key(payload.get("idempotency_key"))
+    except ValueError:
+        return jsonify({"error": "invalid idempotency_key"}), 400
+
+    existing = _find_idempotent_card(date_str, user.id if user else None, idempotency_key)
+    if existing:
+        return jsonify({"card": _card_payload(existing), "idempotent_replay": True})
+
+    try:
+        meta = _parse_entry_meta(payload, date_str, default_type="note")
+    except ValueError:
+        return jsonify({"error": "invalid entry_date"}), 400
+
+    card = WhiteboardCard(
+        board_date=date_str,
+        text=text,
+        x=x,
+        y=y,
+        version=1,
+        idempotency_key=idempotency_key or None,
+        entry_date=meta["entry_date"],
+        entry_tags_json=meta["entry_tags_json"],
+        entry_mood=meta["entry_mood"],
+        entry_type=meta["entry_type"],
+        created_by_id=user.id if user else None,
+    )
     db.session.add(card)
     db.session.flush()
     _emit_event(date_str, "create", card.id, user.id, {"card": _card_payload(card)})
@@ -373,12 +702,22 @@ def complete_direct_upload_media_card():
     except ValueError:
         return jsonify({"error": "invalid date"}), 400
 
-    text = str(payload.get("text", "")).strip()
+    text = str(payload.get("text", ""))
+    if len(text) > 5000:
+        return jsonify({"error": "text too long"}), 400
     try:
         x = float(payload.get("x", 20))
         y = float(payload.get("y", 20))
     except Exception:
         return jsonify({"error": "invalid position"}), 400
+
+    try:
+        idempotency_key = _normalize_idempotency_key(payload.get("idempotency_key"))
+    except ValueError:
+        return jsonify({"error": "invalid idempotency_key"}), 400
+    existing = _find_idempotent_card(date_str, user.id if user else None, idempotency_key)
+    if existing:
+        return jsonify({"card": _card_payload(existing), "idempotent_replay": True})
 
     filename = str(payload.get("filename") or "").replace("\\", "/").split("/")[-1].strip() or "file"
     oss_key = str(payload.get("oss_key") or "").strip()
@@ -408,8 +747,25 @@ def complete_direct_upload_media_card():
         return jsonify({"error": "file too large"}), 413
 
     media_type = _media_type_for(filename, content_type)
+    default_type = "media" if not text.strip() else "note"
+    try:
+        meta = _parse_entry_meta(payload, date_str, default_type=default_type)
+    except ValueError:
+        return jsonify({"error": "invalid entry_date"}), 400
 
-    card = WhiteboardCard(board_date=date_str, text=text, x=x, y=y, created_by_id=user.id if user else None)
+    card = WhiteboardCard(
+        board_date=date_str,
+        text=text,
+        x=x,
+        y=y,
+        version=1,
+        idempotency_key=idempotency_key or None,
+        entry_date=meta["entry_date"],
+        entry_tags_json=meta["entry_tags_json"],
+        entry_mood=meta["entry_mood"],
+        entry_type=meta["entry_type"],
+        created_by_id=user.id if user else None,
+    )
     att = WhiteboardAttachment(
         card=card,
         oss_key=oss_key,
@@ -444,12 +800,22 @@ def upload_media_card():
     except ValueError:
         return jsonify({"error": "invalid date"}), 400
 
-    text = str(request.form.get("text", "")).strip()
+    text = str(request.form.get("text", ""))
+    if len(text) > 5000:
+        return jsonify({"error": "text too long"}), 400
     try:
         x = float(request.form.get("x", 20))
         y = float(request.form.get("y", 20))
     except Exception:
         return jsonify({"error": "invalid position"}), 400
+
+    try:
+        idempotency_key = _normalize_idempotency_key(request.form.get("idempotency_key"))
+    except ValueError:
+        return jsonify({"error": "invalid idempotency_key"}), 400
+    existing = _find_idempotent_card(date_str, user.id if user else None, idempotency_key)
+    if existing:
+        return jsonify({"card": _card_payload(existing), "idempotent_replay": True})
 
     max_bytes = int(current_app.config.get("WHITEBOARD_MAX_MEDIA_BYTES", 100 * 1024 * 1024))
 
@@ -488,7 +854,31 @@ def upload_media_card():
 
     media_type = _media_type_for(filename, file_obj.mimetype or "")
 
-    card = WhiteboardCard(board_date=date_str, text=text, x=x, y=y, created_by_id=user.id if user else None)
+    default_type = "media" if not text.strip() else "note"
+    payload_for_meta = {
+        "entry_date": request.form.get("entry_date"),
+        "entry_tags": request.form.get("entry_tags"),
+        "entry_mood": request.form.get("entry_mood"),
+        "entry_type": request.form.get("entry_type"),
+    }
+    try:
+        meta = _parse_entry_meta(payload_for_meta, date_str, default_type=default_type)
+    except ValueError:
+        return jsonify({"error": "invalid entry_date"}), 400
+
+    card = WhiteboardCard(
+        board_date=date_str,
+        text=text,
+        x=x,
+        y=y,
+        version=1,
+        idempotency_key=idempotency_key or None,
+        entry_date=meta["entry_date"],
+        entry_tags_json=meta["entry_tags_json"],
+        entry_mood=meta["entry_mood"],
+        entry_type=meta["entry_type"],
+        created_by_id=user.id if user else None,
+    )
     att = WhiteboardAttachment(
         card=card,
         oss_key=oss_key,
@@ -513,6 +903,15 @@ def update_card(card_id: int):
     user = g.get("user")
     card = WhiteboardCard.query.get_or_404(card_id)
     payload = request.get_json(silent=True) or {}
+    if "expected_version" in payload:
+        try:
+            expected_version = int(payload.get("expected_version") or 0)
+        except Exception:
+            return jsonify({"error": "invalid expected_version"}), 400
+        current_version = int(card.version or 1)
+        if expected_version != current_version:
+            return jsonify({"error": "version conflict", "card": _card_payload(card)}), 409
+
     changed = {}
     if "text" in payload:
         text = str(payload.get("text", ""))
@@ -521,15 +920,39 @@ def update_card(card_id: int):
         card.text = text
         changed["text"] = text
     if "x" in payload:
-        card.x = float(payload.get("x", card.x or 0))
+        try:
+            card.x = float(payload.get("x", card.x or 0))
+        except Exception:
+            return jsonify({"error": "invalid x"}), 400
         changed["x"] = float(card.x or 0)
     if "y" in payload:
-        card.y = float(payload.get("y", card.y or 0))
+        try:
+            card.y = float(payload.get("y", card.y or 0))
+        except Exception:
+            return jsonify({"error": "invalid y"}), 400
         changed["y"] = float(card.y or 0)
+    try:
+        meta_updates = _parse_entry_meta_updates(payload, card.board_date)
+    except ValueError:
+        return jsonify({"error": "invalid entry_date"}), 400
+    if "entry_date" in meta_updates:
+        card.entry_date = meta_updates["entry_date"]
+        changed["entry_date"] = card.entry_date
+    if "entry_tags_json" in meta_updates:
+        card.entry_tags_json = meta_updates["entry_tags_json"]
+        changed["entry_tags"] = _entry_tags(card)
+    if "entry_mood" in meta_updates:
+        card.entry_mood = meta_updates["entry_mood"]
+        changed["entry_mood"] = card.entry_mood
+    if "entry_type" in meta_updates:
+        card.entry_type = meta_updates["entry_type"]
+        changed["entry_type"] = card.entry_type
 
     if not changed:
         return jsonify({"card": _card_payload(card)})
 
+    card.version = int(card.version or 1) + 1
+    changed["version"] = int(card.version)
     db.session.add(card)
     db.session.flush()
     _emit_event(card.board_date, "update", card.id, user.id, {"changes": changed})
@@ -677,7 +1100,7 @@ def import_board():
     if not isinstance(board, dict):
         return jsonify({"error": "invalid board"}), 400
     schema_version = int(board.get("schema_version") or 0)
-    if schema_version not in {1, 2}:
+    if schema_version not in {1, 2, 3}:
         return jsonify({"error": "unsupported schema"}), 400
 
     raw_cards = board.get("cards") or []
@@ -721,7 +1144,30 @@ def import_board():
         if len(text) > 5000:
             text = text[:5000]
 
-        card = WhiteboardCard(board_date=date_str, x=x, y=y, text=text, created_by_id=user.id if user else None)
+        meta_payload = {
+            "entry": raw.get("entry") if isinstance(raw.get("entry"), dict) else {},
+            "entry_date": raw.get("entry_date"),
+            "entry_tags": raw.get("entry_tags"),
+            "entry_mood": raw.get("entry_mood"),
+            "entry_type": raw.get("entry_type"),
+        }
+        try:
+            meta = _parse_entry_meta(meta_payload, date_str, default_type="note")
+        except ValueError:
+            meta = _parse_entry_meta({}, date_str, default_type="note")
+
+        card = WhiteboardCard(
+            board_date=date_str,
+            x=x,
+            y=y,
+            text=text,
+            version=1,
+            entry_date=meta["entry_date"],
+            entry_tags_json=meta["entry_tags_json"],
+            entry_mood=meta["entry_mood"],
+            entry_type=meta["entry_type"],
+            created_by_id=user.id if user else None,
+        )
         db.session.add(card)
         db.session.flush()
         created_cards += 1

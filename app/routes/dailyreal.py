@@ -1,11 +1,13 @@
 import calendar
+import json
+from collections import Counter
 from datetime import datetime, timedelta
 
 from flask import Blueprint, g, jsonify, request
 from sqlalchemy import func
 
 from ..extensions import db
-from ..models import Project, ProjectActivity, User, WhiteboardEvent
+from ..models import Project, ProjectActivity, User, WhiteboardCard, WhiteboardEvent
 from ..utils.session_auth import login_required
 
 
@@ -37,6 +39,38 @@ def _tz_offset_delta(value: str | None) -> timedelta:
     return timedelta(minutes=minutes)
 
 
+def _day_window(date_str: str, offset: timedelta) -> tuple[datetime, datetime]:
+    local_start = datetime.strptime(date_str, "%Y-%m-%d")
+    start = local_start + offset
+    end = start + timedelta(days=1)
+    return start, end
+
+
+def _entry_tags(raw: str | None) -> list[str]:
+    try:
+        value = json.loads(raw or "[]")
+    except Exception:
+        return []
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        tag = str(item or "").strip()
+        if not tag:
+            continue
+        out.append(tag[:24])
+        if len(out) >= 12:
+            break
+    return out
+
+
+def _counter_payload(counter: Counter, limit: int = 8) -> list[dict]:
+    rows = []
+    for key, count in counter.most_common(limit):
+        rows.append({"name": key, "count": int(count)})
+    return rows
+
+
 @dailyreal_bp.route("/api/dailyreal/today", methods=["GET"])
 @login_required()
 def dailyreal_today():
@@ -49,9 +83,7 @@ def dailyreal_today():
         return jsonify({"error": "invalid date"}), 400
 
     offset = _tz_offset_delta(request.args.get("tz_offset"))
-    local_start = datetime.strptime(date_str, "%Y-%m-%d")
-    start = local_start + offset
-    end = start + timedelta(days=1)
+    start, end = _day_window(date_str, offset)
 
     users = User.query.filter_by(is_active=True).order_by(User.username.asc()).all()
     counts = {
@@ -220,11 +252,34 @@ def dailyreal_today():
         )
     )
 
+    type_counter: Counter = Counter()
+    mood_counter: Counter = Counter()
+    tag_counter: Counter = Counter()
+    cards_for_day = (
+        WhiteboardCard.query.filter(WhiteboardCard.board_date == date_str)
+        .order_by(WhiteboardCard.id.asc())
+        .all()
+    )
+    for card in cards_for_day:
+        entry_type = str(card.entry_type or "").strip().lower() or "note"
+        type_counter[entry_type] += 1
+        mood = str(card.entry_mood or "").strip()
+        if mood:
+            mood_counter[mood] += 1
+        for tag in _entry_tags(card.entry_tags_json):
+            tag_counter[tag] += 1
+
     return jsonify(
         {
             "date": date_str,
             "scoreboard": scoreboard,
             "events": events,
+            "whiteboard_meta": {
+                "cards": len(cards_for_day),
+                "types": _counter_payload(type_counter, limit=10),
+                "moods": _counter_payload(mood_counter, limit=10),
+                "tags": _counter_payload(tag_counter, limit=20),
+            },
         }
     )
 
@@ -345,3 +400,148 @@ def dailyreal_month():
         )
 
     return jsonify({"month": month_str, "days": days})
+
+
+@dailyreal_bp.route("/api/dailyreal/summary", methods=["GET"])
+@login_required()
+def dailyreal_summary():
+    date_str = (request.args.get("date") or "").strip()
+    if not date_str:
+        date_str = datetime.utcnow().strftime("%Y-%m-%d")
+    try:
+        date_str = _validate_date(date_str)
+    except ValueError:
+        return jsonify({"error": "invalid date"}), 400
+
+    offset = _tz_offset_delta(request.args.get("tz_offset"))
+    start, end = _day_window(date_str, offset)
+
+    scoreboard = {}
+    user_ids: set[int] = set()
+    totals = {"git_blog": 0, "git_note": 0, "push": 0, "clone": 0, "whiteboard": 0}
+
+    project_rows = (
+        db.session.query(
+            ProjectActivity.actor_user_id,
+            ProjectActivity.type,
+            ProjectActivity.module,
+            func.count(ProjectActivity.id),
+        )
+        .filter(
+            ProjectActivity.created_at >= start,
+            ProjectActivity.created_at < end,
+            ProjectActivity.type.in_(["git", "clone", "push"]),
+        )
+        .group_by(ProjectActivity.actor_user_id, ProjectActivity.type, ProjectActivity.module)
+        .all()
+    )
+    for actor_user_id, type_, module, n in project_rows:
+        uid = int(actor_user_id or 0)
+        if uid <= 0:
+            continue
+        user_ids.add(uid)
+        row = scoreboard.setdefault(uid, 0)
+        count = int(n or 0)
+        scoreboard[uid] = int(row) + count
+        if type_ == "git":
+            if module == "blog":
+                totals["git_blog"] += count
+            elif module == "note":
+                totals["git_note"] += count
+        elif type_ == "clone":
+            totals["clone"] += count
+        elif type_ == "push":
+            totals["push"] += count
+
+    wb_rows = (
+        db.session.query(
+            WhiteboardEvent.actor_user_id,
+            WhiteboardEvent.event_type,
+            func.count(WhiteboardEvent.id),
+        )
+        .filter(
+            WhiteboardEvent.created_at >= start,
+            WhiteboardEvent.created_at < end,
+            WhiteboardEvent.event_type.in_(["create", "update", "delete", "reset", "link_create", "link_delete"]),
+        )
+        .group_by(WhiteboardEvent.actor_user_id, WhiteboardEvent.event_type)
+        .all()
+    )
+    for actor_user_id, _event_type, n in wb_rows:
+        uid = int(actor_user_id or 0)
+        if uid <= 0:
+            continue
+        user_ids.add(uid)
+        count = int(n or 0)
+        scoreboard[uid] = int(scoreboard.get(uid) or 0) + count
+        totals["whiteboard"] += count
+
+    type_counter: Counter = Counter()
+    mood_counter: Counter = Counter()
+    tag_counter: Counter = Counter()
+    cards_for_day = (
+        WhiteboardCard.query.filter(WhiteboardCard.board_date == date_str)
+        .order_by(WhiteboardCard.id.asc())
+        .all()
+    )
+    for card in cards_for_day:
+        type_counter[str(card.entry_type or "").strip().lower() or "note"] += 1
+        mood = str(card.entry_mood or "").strip()
+        if mood:
+            mood_counter[mood] += 1
+        for tag in _entry_tags(card.entry_tags_json):
+            tag_counter[tag] += 1
+
+    users = {
+        user.id: user.username
+        for user in User.query.filter(User.id.in_(list(user_ids))).all()
+        if user and user.id
+    }
+    top_user_id = None
+    top_user_score = 0
+    for uid, score in scoreboard.items():
+        if score > top_user_score:
+            top_user_id = uid
+            top_user_score = int(score)
+
+    lines = [f"{date_str} 今日总结"]
+    lines.append(
+        "项目活动："
+        f"Blog git {totals['git_blog']}，Note git {totals['git_note']}，push {totals['push']}，clone {totals['clone']}"
+    )
+    lines.append(
+        "白板记录："
+        f"{len(cards_for_day)} 条卡片，事件 {totals['whiteboard']} 次"
+    )
+    if type_counter:
+        parts = [f"{name} {count}" for name, count in type_counter.most_common(4)]
+        lines.append(f"记录类型：{' / '.join(parts)}")
+    if tag_counter:
+        parts = [f"#{name}({count})" for name, count in tag_counter.most_common(5)]
+        lines.append(f"高频标签：{' '.join(parts)}")
+    if mood_counter:
+        parts = [f"{name}({count})" for name, count in mood_counter.most_common(4)]
+        lines.append(f"情绪分布：{' / '.join(parts)}")
+    if top_user_id and top_user_id in users:
+        lines.append(f"今日最活跃：@{users[top_user_id]}（{top_user_score}）")
+    else:
+        lines.append("今日最活跃：暂无")
+
+    return jsonify(
+        {
+            "date": date_str,
+            "summary": "\n".join(lines),
+            "totals": totals,
+            "whiteboard_meta": {
+                "cards": len(cards_for_day),
+                "types": _counter_payload(type_counter, limit=10),
+                "moods": _counter_payload(mood_counter, limit=10),
+                "tags": _counter_payload(tag_counter, limit=20),
+            },
+            "top_user": {
+                "id": int(top_user_id or 0) if top_user_id else None,
+                "username": users.get(top_user_id or 0, "") if top_user_id else "",
+                "score": int(top_user_score or 0),
+            },
+        }
+    )

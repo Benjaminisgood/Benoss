@@ -4,7 +4,7 @@
   <div>
     <p class="hero-kicker">Whiteboard</p>
     <h1>公共白板。</h1>
-    <p class="hero-sub">拖动空白处平移 · 滚轮平移 · Ctrl/触控板捏合缩放 · 卡片头部 “-&gt;” 连接箭头。</p>
+    <p class="hero-sub">随时记录 · 弱网自动重试 · 手机端快速输入。拖动空白平移，Ctrl/触控板捏合缩放，卡片头部 “-&gt;” 可连线。</p>
   </div>
   <div class="hero-actions">
     <a class="pill-btn ghost" href="{{ url_for('site.home') }}">返回首页</a>
@@ -14,14 +14,63 @@
 <section class="section-block">
   <div class="whiteboard-shell whiteboard-shell--page">
     <div class="whiteboard-head">
-      <div class="muted" id="whiteboard-date"></div>
+      <div class="whiteboard-head__meta">
+        <div class="muted" id="whiteboard-date"></div>
+        <div class="muted" id="whiteboard-sync-state"></div>
+      </div>
       <div class="button-row">
         <button class="pill-btn" type="button" data-whiteboard-add>新增卡片</button>
         <button class="pill-btn" type="button" data-whiteboard-media>插入媒体</button>
+        <button class="pill-btn ghost" type="button" data-whiteboard-summary>今日总结</button>
         <button class="pill-btn" type="button" data-whiteboard-import>导入</button>
         <button class="pill-btn" type="button" data-whiteboard-export>导出</button>
         <button class="pill-btn" type="button" data-whiteboard-reset>重置视图</button>
       </div>
+    </div>
+    <div class="whiteboard-quick" id="whiteboard-quick">
+      <textarea class="whiteboard-quick__input" id="whiteboard-quick-text" placeholder="快速记录：回车直接发送，Shift+Enter 换行"></textarea>
+      <div class="whiteboard-quick__meta">
+        <input class="input" id="whiteboard-quick-tags" type="text" placeholder="标签（逗号分隔）" />
+        <select class="input" id="whiteboard-quick-mood">
+          <option value="">情绪</option>
+          <option value="focused">focused</option>
+          <option value="calm">calm</option>
+          <option value="excited">excited</option>
+          <option value="tired">tired</option>
+          <option value="stressed">stressed</option>
+        </select>
+        <select class="input" id="whiteboard-quick-type">
+          <option value="note">note</option>
+          <option value="todo">todo</option>
+          <option value="idea">idea</option>
+          <option value="checkin">checkin</option>
+          <option value="summary">summary</option>
+          <option value="media">media</option>
+        </select>
+        <button class="pill-btn" type="button" data-whiteboard-quick-send>记录</button>
+      </div>
+      <div class="whiteboard-quick__status muted" id="whiteboard-queue-status"></div>
+    </div>
+    <div class="whiteboard-filters">
+      <input class="input" id="whiteboard-filter-tag" type="text" placeholder="筛选标签" />
+      <select class="input" id="whiteboard-filter-mood">
+        <option value="">全部情绪</option>
+        <option value="focused">focused</option>
+        <option value="calm">calm</option>
+        <option value="excited">excited</option>
+        <option value="tired">tired</option>
+        <option value="stressed">stressed</option>
+      </select>
+      <select class="input" id="whiteboard-filter-type">
+        <option value="">全部类型</option>
+        <option value="note">note</option>
+        <option value="todo">todo</option>
+        <option value="idea">idea</option>
+        <option value="checkin">checkin</option>
+        <option value="summary">summary</option>
+        <option value="media">media</option>
+      </select>
+      <button class="pill-btn ghost" type="button" data-whiteboard-filter-clear>清空筛选</button>
     </div>
     <div class="whiteboard-hint muted">拖动空白处平移 · 滚轮平移 · Ctrl/触控板捏合缩放 · 卡片头部 “-&gt;” 连接箭头</div>
     <div class="whiteboard" id="whiteboard">
@@ -31,5 +80,5 @@
     <input type="file" id="whiteboard-media-file" accept="image/*,video/*,audio/*,application/pdf" hidden />
   </div>
 </section>
+<button class="pill-btn whiteboard-mobile-quick-btn" type="button" data-whiteboard-mobile-quick>快速记录</button>
 {% endblock %}
-
