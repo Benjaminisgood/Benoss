@@ -186,6 +186,38 @@
     container.innerHTML = records.map((record) => recordCardHtml(record, opts)).join("");
   }
 
+  function boardRecordCardHtml(record) {
+    const meta = [
+      `用户: ${escapeHtml(record.user?.username || "")}`,
+      `时间: ${escapeHtml(formatTime(record.created_at))}`,
+      record.visibility === "public" ? "公开" : "私密",
+    ];
+
+    return `
+      <article class="record-item" data-record-id="${record.id}">
+        <div class="record-head">
+          <strong>#${record.record_no} ${escapeHtml(record.format || "record")}</strong>
+          <span class="muted">${meta.join(" | ")}</span>
+        </div>
+        <div class="tag-line">${tagHtml(record.tags)}</div>
+        <div class="action-line">
+          <button class="bubble" type="button" data-action="view-record" data-record-id="${record.id}">查看内容</button>
+        </div>
+      </article>
+    `;
+  }
+
+  function renderBoardRecordList(container, records, opts = {}) {
+    if (!container) {
+      return;
+    }
+    if (!records || !records.length) {
+      container.innerHTML = `<p class="muted">${escapeHtml(opts.emptyText || "暂无记录")}</p>`;
+      return;
+    }
+    container.innerHTML = records.map((record) => boardRecordCardHtml(record)).join("");
+  }
+
   async function openRecordDialog(recordId) {
     try {
       const data = await api(`/api/records/${recordId}?include_comments=1`);
@@ -303,10 +335,8 @@
   }
 
   async function loadHome() {
-    const feedEl = qs("#home-feed");
     const dateEl = qs("#today-date");
     const aiStatusEl = qs("#ai-status");
-    const stitchedEl = qs("#home-stitched-html");
     const metricPublicEl = qs("#metric-public-count");
     const metricUserEl = qs("#metric-user-count");
     const metricTagsEl = qs("#metric-top-tags");
@@ -314,19 +344,11 @@
     const data = await api("/api/home/today");
     const records = data.public_records || [];
 
-    renderRecordList(feedEl, records, {
-      emptyText: "今天还没有公开记录",
-      showUser: true,
-    });
-
     if (dateEl) {
       dateEl.textContent = `日期: ${data.date || ""}`;
     }
     if (aiStatusEl) {
       aiStatusEl.textContent = data.ai?.message || "未启用";
-    }
-    if (stitchedEl) {
-      stitchedEl.innerHTML = data.stitched_html || "";
     }
 
     const userSet = new Set();
@@ -475,13 +497,6 @@
       });
     }
 
-    const refreshBtn = qs("#refresh-home-feed");
-    if (refreshBtn) {
-      refreshBtn.addEventListener("click", () => {
-        loadHome().catch((error) => window.alert(error.message));
-      });
-    }
-
     await loadHome();
   }
 
@@ -547,7 +562,7 @@
     }
 
     const data = await api(path);
-    renderRecordList(listEl, data.items || [], { emptyText: "无匹配记录" });
+    renderBoardRecordList(listEl, data.items || [], { emptyText: "无匹配记录" });
   }
 
   async function loadBoard() {
@@ -623,15 +638,15 @@
     } else if (src) {
       mediaHtml = `<p><a href="${escapeHtml(src)}" target="_blank" rel="noreferrer">${escapeHtml(content.filename || "查看文件")}</a></p>`;
     }
+    if (!mediaHtml) {
+      mediaHtml = `<p class="muted">内容不可用</p>`;
+    }
 
     return `
       <article class="echo-card">
-        <p class="muted">${escapeHtml(record.user?.username || "")} · ${escapeHtml(formatTime(record.created_at))}</p>
-        <p>${escapeHtml(record.preview || "")}</p>
         ${mediaHtml}
-        <div class="tag-line">${tagHtml(record.tags)}</div>
         <div class="action-line">
-          <button class="bubble" type="button" data-action="view-record" data-record-id="${record.id}">查看详情</button>
+          <button class="bubble" type="button" data-action="view-record" data-record-id="${record.id}">查看完整记录</button>
         </div>
       </article>
     `;

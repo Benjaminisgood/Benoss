@@ -40,13 +40,7 @@
     {% block content %}{% endblock %}
   </main>
 
-  <dialog id="record-dialog" class="record-dialog">
-    <div class="dialog-head">
-      <h3 id="record-dialog-title">记录详情</h3>
-      <button type="button" data-close-dialog>关闭</button>
-    </div>
-    <div id="record-dialog-body" class="dialog-body"></div>
-  </dialog>
+  {% include "components/record_dialog.html" %}
 
   <script src="{{ url_for('static', filename='js/site.js') }}" defer></script>
   <script src="{{ url_for('static', filename='js/admin.js') }}" defer></script>

@@ -1371,7 +1371,6 @@ def home_today():
         .all()
     )
 
-    stitched_html = _render_notice_html(records, day=today.isoformat(), user_id="", tag="")
     ai_settings = _ai_provider_settings()
 
     return jsonify(
@@ -1381,7 +1380,6 @@ def home_today():
                 _record_payload(item, viewer=user, include_content=False, include_comments=False)
                 for item in records
             ],
-            "stitched_html": stitched_html,
             "ai": {
                 "enabled": bool(ai_settings),
                 "message": (
