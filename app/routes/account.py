@@ -12,18 +12,11 @@ account_bp = Blueprint("account", __name__)
 @login_required()
 def get_account():
     current = g.get("user")
-    if current is None:
-        return jsonify({"error": "login required"}), 401
-    users = User.query.filter_by(is_active=True).order_by(User.created_at.desc()).all()
-    others = [
-        {
-            "id": user.id,
-            "username": user.username,
-            "description": user.description or "",
-        }
-        for user in users
-        if user.id != current.id
-    ]
+    users = (
+        User.query.filter_by(is_active=True)
+        .order_by(User.username.asc(), User.id.asc())
+        .all()
+    )
     return jsonify(
         {
             "current_user": {
@@ -32,7 +25,14 @@ def get_account():
                 "role": current.role,
                 "description": current.description or "",
             },
-            "accounts": others,
+            "users": [
+                {
+                    "id": user.id,
+                    "username": user.username,
+                    "description": user.description or "",
+                }
+                for user in users
+            ],
         }
     )
 
@@ -41,12 +41,27 @@ def get_account():
 @login_required()
 def update_description():
     current = g.get("user")
-    if current is None:
-        return jsonify({"error": "login required"}), 401
     payload = request.get_json(silent=True) or {}
-    description = str(payload.get("description", "")).strip()
+    description = str(payload.get("description") or "").strip()
     if len(description) > 500:
         return jsonify({"error": "description too long"}), 400
     current.description = description
     db.session.commit()
-    return jsonify({"description": current.description or ""})
+    return jsonify({"description": current.description})
+
+
+@account_bp.route("/api/users", methods=["GET"])
+@login_required()
+def list_users():
+    users = User.query.filter_by(is_active=True).order_by(User.username.asc()).all()
+    return jsonify(
+        {
+            "items": [
+                {
+                    "id": user.id,
+                    "username": user.username,
+                }
+                for user in users
+            ]
+        }
+    )

@@ -1,33 +1,26 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="hero hero--page">
-  <div>
-    <p class="hero-kicker">Benoss access</p>
-    <h1>Sign in to continue.</h1>
-    <p class="hero-sub">Your site is private. Use your account to unlock the archive.</p>
-  </div>
-</section>
-
-<section class="panel panel--form login-panel">
-  <form method="post" action="{{ url_for('site.login', next=next_url) }}">
-    <label class="field">
-      <span>Username</span>
-      <input class="input" type="text" name="username" autocomplete="username" required />
-    </label>
-    <label class="field">
-      <span>Password</span>
-      <input class="input" type="password" name="password" autocomplete="current-password" required />
-    </label>
-    <label class="field field--inline">
-      <input class="input input--checkbox" type="checkbox" name="remember" {% if remember_default %}checked{% endif %} />
-      <span>Remember me</span>
-    </label>
-    <div class="button-row">
-      <button class="pill-btn" type="submit">Sign in</button>
-    </div>
-    {% if error %}
-      <div class="status-pill">{{ error }}</div>
-    {% endif %}
-  </form>
+<section class="auth-wrap">
+  <article class="auth-card">
+    <h1>登录 Benoss</h1>
+    <p>记录你和朋友每一天的学习与创作。</p>
+    <form method="post" class="auth-form">
+      <input type="hidden" name="next" value="{{ next_url or '' }}">
+      <label>
+        用户名
+        <input type="text" name="username" required autocomplete="username">
+      </label>
+      <label>
+        密码
+        <input type="password" name="password" required autocomplete="current-password">
+      </label>
+      <label class="inline-check">
+        <input type="checkbox" name="remember" checked>
+        记住登录状态
+      </label>
+      <button type="submit">登录</button>
+    </form>
+    <p class="muted">没有账号？<a href="{{ url_for('site.register') }}">去注册</a></p>
+  </article>
 </section>
 {% endblock %}

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h2>Notice 筛选与整页渲染</h2>
+  <form id="notice-filter-form" class="notice-filter-grid">
+    <label>
+      日期
+      <input type="date" name="day">
+    </label>
+    <label>
+      用户
+      <select name="user_id" id="notice-user">
+        <option value="">全部用户</option>
+      </select>
+    </label>
+    <label>
+      标签
+      <input type="text" name="tag" placeholder="tag">
+    </label>
+    <label>
+      顺序
+      <select name="order">
+        <option value="asc">从早到晚</option>
+        <option value="desc">从晚到早</option>
+      </select>
+    </label>
+    <button type="submit">直接渲染完整内容页</button>
+  </form>
+
+  <p class="muted" id="notice-render-meta" hidden></p>
+  <div class="notice-actions" id="notice-actions" hidden>
+    <button type="button" data-ai-action="optimize">AI 优化当前内容</button>
+    <button type="button" data-ai-action="podcast">AI 生成播客音频</button>
+    <button type="button" data-ai-action="poster">AI 生成海报图片</button>
+  </div>
+  <pre id="notice-ai-output" class="ai-output" hidden></pre>
+</section>
+
+<section class="card" id="notice-render-panel" hidden>
+  <article id="notice-render-html" class="optimized-html"></article>
+</section>
+{% endblock %}

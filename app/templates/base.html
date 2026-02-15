@@ -1,74 +1,54 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{{ title if title else "Benoss" }}</title>
-  <link rel="icon" href="{{ url_for('static', filename='images/logo.svg') }}" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
-  {% block extra_styles %}{% endblock %}
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or "Benoss" }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
 </head>
-<body data-page="{{ page if page else '' }}">
-  <a class="skip-link" href="#content">跳到正文</a>
-  <div class="background-shell" aria-hidden="true">
-    <span class="bg-orb bg-orb--one"></span>
-    <span class="bg-orb bg-orb--two"></span>
-    <span class="bg-grid"></span>
-  </div>
-
-  <header class="global-header">
-    <nav class="global-nav">
-      <div class="nav-brand">
-        <a class="brand-link" href="{{ url_for('site.home') }}">
-          <img src="{{ url_for('static', filename='images/logo.svg') }}" alt="Benoss logo" class="brand-mark" />
-          <span class="brand-title">Benoss</span>
-        </a>
-      </div>
-
-      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-panel" data-nav-toggle>
-        <span></span>
-        <span></span>
-        <span></span>
-        <span class="sr-only">Toggle navigation</span>
-      </button>
-
-      <div class="nav-panel" id="nav-panel">
-        <div class="nav-links">
-          <a class="nav-link{% if page == 'home' %} is-active{% endif %}" href="{{ url_for('site.home') }}">首页</a>
-          <a class="nav-link{% if page == 'dailyreal' %} is-active{% endif %}" href="{{ url_for('site.dailyreal') }}">Dailyreal</a>
-          <a class="nav-link{% if page == 'blog' %} is-active{% endif %}" href="{{ url_for('site.blog') }}">Blog</a>
-          {% set echoes_active = page == 'echoes' %}
-          <a class="nav-link{% if echoes_active %} is-active{% endif %}" href="{{ url_for('site.echoes') }}">Echoes</a>
-          <a class="nav-link{% if page == 'note' %} is-active{% endif %}" href="{{ url_for('site.note') }}">Note</a>
-        </div>
-        <div class="nav-actions">
-          {% if current_user %}
-            <a class="nav-action" href="{{ url_for('site.control_room') }}">{{ current_user.username }}</a>
-          {% endif %}
-        </div>
-      </div>
+<body data-page="{{ page or '' }}">
+  <header class="site-header">
+    <div class="brand">
+      <a href="{{ url_for('site.home') }}">Benoss</a>
+      <span class="subtitle">Study Group Records</span>
+    </div>
+    {% if current_user %}
+    <nav class="site-nav">
+      <a class="{% if page == 'home' %}active{% endif %}" href="{{ url_for('site.home') }}">Home</a>
+      <a class="{% if page == 'board' %}active{% endif %}" href="{{ url_for('site.board') }}">Board</a>
+      <a class="{% if page == 'echoes' %}active{% endif %}" href="{{ url_for('site.echoes') }}">Echoes</a>
+      <a class="{% if page == 'notice' %}active{% endif %}" href="{{ url_for('site.notice') }}">Notice</a>
     </nav>
+    <div class="account-nav">
+      <span class="user-chip">{{ current_user.username }}</span>
+      <a href="{{ url_for('site.logout') }}">退出</a>
+    </div>
+    {% endif %}
   </header>
 
-  <main id="content" class="page">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <section class="flash-stack">
+        {% for category, message in messages %}
+          <article class="flash-item {{ category }}">{{ message }}</article>
+        {% endfor %}
+      </section>
+    {% endif %}
+  {% endwith %}
+
+  <main class="page-main">
     {% block content %}{% endblock %}
   </main>
 
-	  <footer class="global-footer">
-	    <div class="footer-inner">
-	      <span class="footer-brand">Benoss</span>
-	      <span class="footer-meta">Blog / Dailyreal / Echoes / Note</span>
-	    </div>
-	  </footer>
+  <dialog id="record-dialog" class="record-dialog">
+    <div class="dialog-head">
+      <h3 id="record-dialog-title">记录详情</h3>
+      <button type="button" data-close-dialog>关闭</button>
+    </div>
+    <div id="record-dialog-body" class="dialog-body"></div>
+  </dialog>
 
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/dompurify@3.0.11/dist/purify.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/highlight.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
-  <script defer src="{{ url_for('static', filename='js/site.js') }}"></script>
-  {% block extra_scripts %}{% endblock %}
+  <script src="{{ url_for('static', filename='js/site.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/admin.js') }}" defer></script>
 </body>
 </html>

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card board-controls">
+  <h2>学习记录 Board</h2>
+  <form id="board-filter-form" class="inline-form">
+    <label>
+      天数
+      <input type="number" name="days" value="7" min="1" max="30">
+    </label>
+    <label>
+      标签
+      <input type="text" name="tag" placeholder="可选，按标签筛选">
+    </label>
+    <button type="submit">刷新 Board</button>
+  </form>
+</section>
+
+<section class="board-layout">
+  <article class="card board-card">
+    <div id="board-table-wrap" class="board-table-wrap"></div>
+  </article>
+
+  <article class="card board-side">
+    <h3 id="board-side-title">点击行/列/格子查看记录</h3>
+    <div id="board-side-list" class="record-list"></div>
+  </article>
+</section>
+{% endblock %}

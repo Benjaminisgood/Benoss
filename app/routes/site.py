@@ -1,7 +1,6 @@
-import re
+from flask import Blueprint, flash, g, redirect, render_template, request, session, url_for
 
-from flask import Blueprint, g, redirect, render_template, request, session, url_for
-
+from ..extensions import db
 from ..models import User
 from ..utils.session_auth import login_required, login_user, logout_user, safe_next_url
 
@@ -12,23 +11,13 @@ site_bp = Blueprint("site", __name__)
 @site_bp.route("/")
 @login_required()
 def home():
-    date_str = (request.args.get("date") or "").strip()
-    if date_str and re.match(r"^\\d{4}-\\d{2}-\\d{2}$", date_str):
-        # Backward-compatible: whiteboard used to live on home with ?date=...
-        return redirect(url_for("site.whiteboard", date=date_str))
-    return render_template("index.html", page="home", title="Benoss")
+    return render_template("home.html", page="home", title="Benoss Home")
 
 
-@site_bp.route("/blog")
+@site_bp.route("/board")
 @login_required()
-def blog():
-    return render_template("blog.html", page="blog", title="Blog")
-
-
-@site_bp.route("/note")
-@login_required()
-def note():
-    return render_template("note.html", page="note", title="Note")
+def board():
+    return render_template("board.html", page="board", title="Board")
 
 
 @site_bp.route("/echoes")
@@ -37,53 +26,63 @@ def echoes():
     return render_template("echoes.html", page="echoes", title="Echoes")
 
 
-@site_bp.route("/dailyreal")
+@site_bp.route("/notice")
 @login_required()
-def dailyreal():
-    return render_template("dailyreal.html", page="dailyreal", title="Dailyreal")
-
-
-@site_bp.route("/whiteboard")
-@login_required()
-def whiteboard():
-    return render_template("whiteboard.html", page="whiteboard", title="Whiteboard")
-
-
-@site_bp.route("/control-room")
-@login_required()
-def control_room():
-    return render_template("control_room.html", page="control-room", title="Control Room")
+def notice():
+    return render_template("notice.html", page="notice", title="Notice")
 
 
 @site_bp.route("/login", methods=["GET", "POST"])
 def login():
-    next_url = safe_next_url(request.args.get("next", ""))
-    error = None
-    remember_default = True
     if g.get("user"):
-        return redirect(next_url or url_for("site.home"))
+        return redirect(url_for("site.home"))
+
+    next_url = safe_next_url(request.args.get("next", ""))
     if request.method == "POST":
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "")
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
         remember = request.form.get("remember") == "on"
-        remember_default = remember
-        if not username or not password:
-            error = "Missing credentials"
+
+        user = User.query.filter_by(username=username, is_active=True).first()
+        if user and user.check_password(password):
+            login_user(user)
+            session.permanent = remember
+            return redirect(next_url or url_for("site.home"))
+
+        flash("用户名或密码错误", "error")
+
+    return render_template("login.html", page="login", title="Login", next_url=next_url)
+
+
+@site_bp.route("/register", methods=["GET", "POST"])
+def register():
+    if g.get("user"):
+        return redirect(url_for("site.home"))
+
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        password_confirm = request.form.get("password_confirm") or ""
+
+        if not username:
+            flash("用户名不能为空", "error")
+        elif len(username) < 3 or len(username) > 40:
+            flash("用户名长度需在 3-40 之间", "error")
+        elif password != password_confirm:
+            flash("两次输入的密码不一致", "error")
+        elif len(password) < 6:
+            flash("密码至少 6 位", "error")
+        elif User.query.filter_by(username=username).first():
+            flash("用户名已存在", "error")
         else:
-            user = User.query.filter_by(username=username, is_active=True).first()
-            if user and user.check_password(password):
-                login_user(user)
-                session.permanent = remember
-                return redirect(next_url or url_for("site.home"))
-            error = "Invalid username or password"
-    return render_template(
-        "login.html",
-        page="login",
-        title="Login",
-        error=error,
-        next_url=next_url,
-        remember_default=remember_default,
-    )
+            user = User(username=username, role="user", is_active=True)
+            user.set_password(password)
+            db.session.add(user)
+            db.session.commit()
+            flash("注册成功，请登录", "success")
+            return redirect(url_for("site.login"))
+
+    return render_template("register.html", page="register", title="Register")
 
 
 @site_bp.route("/logout")

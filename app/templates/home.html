@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero-card">
+  <div>
+    <p class="muted">Learning Feed</p>
+    <h1>今天的学习流</h1>
+    <p class="muted">发布、评论、回顾都在同一条记录流里完成。</p>
+  </div>
+  <div class="hero-metrics">
+    <article>
+      <span>公开记录</span>
+      <strong id="metric-public-count">0</strong>
+    </article>
+    <article>
+      <span>活跃用户</span>
+      <strong id="metric-user-count">0</strong>
+    </article>
+    <article>
+      <span>高频标签</span>
+      <strong id="metric-top-tags">-</strong>
+    </article>
+  </div>
+</section>
+
+<section class="home-grid">
+  <article class="card quick-publish-card">
+    <h2>快速发布</h2>
+    <form id="quick-publish-form" class="stack-form" enctype="multipart/form-data">
+      <div class="inline-fields">
+        <label>
+          可见性
+          <select name="visibility">
+            <option value="private">私密</option>
+            <option value="public">公开</option>
+          </select>
+        </label>
+        <label>
+          发布格式
+          <select name="format" id="quick-publish-format">
+            <option value="text" selected>文本</option>
+            <option value="image">图片</option>
+            <option value="audio">音频</option>
+            <option value="video">视频</option>
+            <option value="document">文档</option>
+            <option value="file">通用文件</option>
+          </select>
+        </label>
+      </div>
+      <label>
+        标签（逗号分隔）
+        <input type="text" name="tags" placeholder="math,python,reading">
+      </label>
+      <div id="quick-publish-text-wrap">
+        <label>
+          文本内容
+          <textarea name="text" rows="5" placeholder="写下这次学习内容或想法..."></textarea>
+        </label>
+      </div>
+      <div id="quick-publish-file-wrap" hidden>
+        <label>
+          <span id="quick-publish-file-label">上传文件</span>
+          <input id="quick-publish-file-input" type="file" name="file" disabled>
+        </label>
+        <p id="quick-publish-file-hint" class="muted"></p>
+      </div>
+      <button type="submit">Push 一条记录</button>
+      <p id="quick-publish-msg" class="muted"></p>
+    </form>
+  </article>
+
+  <article class="card ai-card">
+    <h2>AI 生成状态</h2>
+    <p class="muted" id="today-date"></p>
+    <pre id="ai-status"></pre>
+    <p class="muted">AI 配置可用时，Notice 页可直接生成播客稿、海报文案或优化版内容。</p>
+  </article>
+</section>
+
+<section class="card">
+  <div class="section-head">
+    <h2>今日公开记录</h2>
+    <button id="refresh-home-feed" type="button">刷新</button>
+  </div>
+  <div id="home-feed" class="record-list"></div>
+</section>
+
+<section class="card">
+  <h2>今日公开内容拼接渲染</h2>
+  <article id="home-stitched-html" class="optimized-html"></article>
+</section>
+{% endblock %}

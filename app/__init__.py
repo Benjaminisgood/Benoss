@@ -14,7 +14,7 @@ from .utils.session_auth import load_current_user
 load_dotenv()
 
 
-def create_app():
+def create_app() -> Flask:
     app = Flask(__name__)
     app.config.from_object(Config)
 
@@ -23,7 +23,7 @@ def create_app():
 
     with app.app_context():
         db.create_all()
-        _ensure_schema_compat(app)
+        _ensure_schema_shape()
         _seed_admin()
 
     @app.before_request
@@ -31,7 +31,7 @@ def create_app():
         load_current_user()
 
     @app.context_processor
-    def inject_user():
+    def _inject_user():
         return {"current_user": getattr(g, "user", None)}
 
     @app.route("/health", methods=["GET"])
@@ -39,91 +39,79 @@ def create_app():
         return jsonify({"status": "ok"})
 
     @app.cli.command("init-db")
-    def init_db():
+    def init_db_command():
         with app.app_context():
+            db.drop_all()
             db.create_all()
-            _ensure_schema_compat(app)
             _seed_admin()
 
     return app
 
 
-def _ensure_schema_compat(app: Flask) -> None:
-    # This project keeps schema migration lightweight; add missing columns/indexes in-place.
-    insp = inspect(db.engine)
-    try:
-        columns = {c["name"] for c in insp.get_columns("whiteboard_card")}
-    except Exception:
-        return
-
-    statements: list[str] = []
-    if "version" not in columns:
-        statements.append("ALTER TABLE whiteboard_card ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
-    if "idempotency_key" not in columns:
-        statements.append("ALTER TABLE whiteboard_card ADD COLUMN idempotency_key VARCHAR(96)")
-    if "entry_date" not in columns:
-        statements.append("ALTER TABLE whiteboard_card ADD COLUMN entry_date VARCHAR(16) NOT NULL DEFAULT ''")
-    if "entry_tags_json" not in columns:
-        statements.append("ALTER TABLE whiteboard_card ADD COLUMN entry_tags_json TEXT NOT NULL DEFAULT '[]'")
-    if "entry_mood" not in columns:
-        statements.append("ALTER TABLE whiteboard_card ADD COLUMN entry_mood VARCHAR(24) NOT NULL DEFAULT ''")
-    if "entry_type" not in columns:
-        statements.append("ALTER TABLE whiteboard_card ADD COLUMN entry_type VARCHAR(24) NOT NULL DEFAULT 'note'")
-
-    index_statements = [
-        "CREATE INDEX IF NOT EXISTS idx_wb_card_board_updated ON whiteboard_card (board_date, updated_at)",
-        "CREATE INDEX IF NOT EXISTS idx_wb_card_board_user_idem ON whiteboard_card (board_date, created_by_id, idempotency_key)",
-        "CREATE INDEX IF NOT EXISTS idx_wb_event_board_created ON whiteboard_event (board_date, created_at)",
-    ]
-
-    try:
-        with db.engine.begin() as conn:
-            for sql in statements:
-                conn.execute(text(sql))
-            conn.execute(
-                text(
-                    "UPDATE whiteboard_card "
-                    "SET version = CASE WHEN version IS NULL OR version < 1 THEN 1 ELSE version END"
-                )
-            )
-            conn.execute(
-                text(
-                    "UPDATE whiteboard_card "
-                    "SET entry_date = board_date "
-                    "WHERE entry_date IS NULL OR entry_date = ''"
-                )
-            )
-            conn.execute(
-                text(
-                    "UPDATE whiteboard_card "
-                    "SET entry_tags_json = '[]' "
-                    "WHERE entry_tags_json IS NULL OR TRIM(entry_tags_json) = ''"
-                )
-            )
-            conn.execute(
-                text(
-                    "UPDATE whiteboard_card "
-                    "SET entry_type = 'note' "
-                    "WHERE entry_type IS NULL OR TRIM(entry_type) = ''"
-                )
-            )
-            for sql in index_statements:
-                conn.execute(text(sql))
-    except Exception:
-        app.logger.exception("Failed to run schema compatibility checks")
-
-
-def _seed_admin():
-    username = os.environ.get("ADMIN_USERNAME")
+def _seed_admin() -> None:
+    username = (os.environ.get("ADMIN_USERNAME") or "").strip()
     password = os.environ.get("ADMIN_PASSWORD")
     if not username or not password:
         return
-    username = username.strip()
-    if not username:
+    existing = User.query.filter_by(username=username).first()
+    if existing:
+        if existing.role != "admin":
+            existing.role = "admin"
+            db.session.commit()
         return
-    if User.query.filter_by(username=username).first():
-        return
-    user = User(username=username, role="admin", is_active=True)
-    user.set_password(password)
-    db.session.add(user)
+
+    admin = User(username=username, role="admin", is_active=True)
+    admin.set_password(password)
+    db.session.add(admin)
     db.session.commit()
+
+
+def _ensure_schema_shape() -> None:
+    """Reset old incompatible schemas from pre-refactor versions.
+
+    This project intentionally rebuilt table shapes. If legacy tables exist,
+    SQLAlchemy `create_all` will not alter them. We detect the mismatch and
+    rebuild once so the new app can run immediately.
+    """
+
+    required: dict[str, set[str]] = {
+        "user": {"id", "username", "password_hash", "role", "is_active"},
+        "content": {"id", "kind", "text_content", "oss_key"},
+        "record": {"id", "user_id", "content_id", "visibility", "tags_json"},
+        "comment": {"id", "record_id", "user_id", "body"},
+        "generated_asset": {"id", "user_id", "kind", "content_type", "oss_key"},
+    }
+    forbidden_tables = {"project"}
+    forbidden_columns: dict[str, set[str]] = {
+        "record": {"project_id"},
+    }
+
+    inspector = inspect(db.engine)
+    all_tables = set(inspector.get_table_names())
+    legacy_tables = all_tables.intersection(forbidden_tables)
+    if legacy_tables:
+        # Legacy tables are no longer in SQLAlchemy metadata; drop them manually.
+        with db.engine.begin() as conn:
+            for table in legacy_tables:
+                conn.execute(text(f'DROP TABLE IF EXISTS "{table}"'))
+        inspector = inspect(db.engine)
+
+    def _has_shape() -> bool:
+        all_tables_local = set(inspector.get_table_names())
+
+        for table, columns in required.items():
+            if table not in all_tables_local:
+                return False
+            existing = {col["name"] for col in inspector.get_columns(table)}
+            if not columns.issubset(existing):
+                return False
+            blocked = forbidden_columns.get(table) or set()
+            if existing.intersection(blocked):
+                return False
+        return True
+
+    if _has_shape():
+        return
+
+    db.drop_all()
+    db.create_all()

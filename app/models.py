@@ -1,23 +1,29 @@
+import json
 from datetime import datetime
 
+from sqlalchemy import Index
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from .extensions import db
-from .utils.ids import new_uuid
 
 
 class TimestampMixin:
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
 
 
 class User(db.Model, TimestampMixin):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.String(32), default="user")
-    is_active = db.Column(db.Boolean, default=True)
-    description = db.Column(db.Text, default="")
+    role = db.Column(db.String(32), nullable=False, default="user")
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+    description = db.Column(db.Text, nullable=False, default="")
 
     def set_password(self, password: str) -> None:
         self.password_hash = generate_password_hash(password, method="pbkdf2:sha256")
@@ -26,147 +32,95 @@ class User(db.Model, TimestampMixin):
         return check_password_hash(self.password_hash, password)
 
 
-class QuickLink(db.Model, TimestampMixin):
+class Content(db.Model, TimestampMixin):
     id = db.Column(db.Integer, primary_key=True)
-    title = db.Column(db.String(120), nullable=False)
-    url = db.Column(db.String(512), nullable=False)
-    sort_order = db.Column(db.Integer, default=0)
-    is_active = db.Column(db.Boolean, default=True)
+
+    kind = db.Column(db.String(16), nullable=False)  # text | file
+    text_content = db.Column(db.Text, nullable=False, default="")
+
+    oss_key = db.Column(db.String(512), nullable=False, default="")
+    filename = db.Column(db.String(255), nullable=False, default="")
+    content_type = db.Column(db.String(255), nullable=False, default="")
+    size_bytes = db.Column(db.Integer, nullable=False, default=0)
+    sha256 = db.Column(db.String(64), nullable=False, default="")
 
 
-class Project(db.Model, TimestampMixin):
+class Record(db.Model, TimestampMixin):
     id = db.Column(db.Integer, primary_key=True)
-    uuid = db.Column(db.String(64), unique=True, nullable=False, default=new_uuid)
-    module = db.Column(db.String(16), nullable=False)  # blog | note
 
-    owner_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
-    owner = db.relationship("User", backref=db.backref("projects", lazy=True))
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    user = db.relationship("User", backref=db.backref("records", lazy=True))
 
-    title = db.Column(db.String(160), nullable=False)
-    description = db.Column(db.Text, default="")
-    visibility = db.Column(db.String(16), default="private")  # public | private
-    is_archived = db.Column(db.Boolean, default=False)
+    content_id = db.Column(db.Integer, db.ForeignKey("content.id"), nullable=False, unique=True, index=True)
+    content = db.relationship("Content", backref=db.backref("record", uselist=False))
 
-    cloned_from_id = db.Column(db.Integer, db.ForeignKey("project.id"), nullable=True)
-    cloned_from = db.relationship("Project", remote_side=[id], backref=db.backref("clones", lazy=True))
+    format = db.Column(db.String(32), nullable=False, default="text")
+    visibility = db.Column(db.String(16), nullable=False, default="private")  # public | private
+    tags_json = db.Column(db.Text, nullable=False, default="[]")
+    preview = db.Column(db.Text, nullable=False, default="")
+
+    def get_tags(self) -> list[str]:
+        try:
+            raw = json.loads(self.tags_json or "[]")
+        except Exception:
+            return []
+        if not isinstance(raw, list):
+            return []
+        output: list[str] = []
+        for item in raw:
+            text = str(item or "").strip()
+            if text:
+                output.append(text)
+        return output
+
+    def set_tags(self, tags: list[str]) -> None:
+        cleaned: list[str] = []
+        seen = set()
+        for item in tags:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            lowered = text.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            cleaned.append(text)
+        self.tags_json = json.dumps(cleaned, ensure_ascii=False)
 
 
-class ProjectFile(db.Model, TimestampMixin):
+class Comment(db.Model, TimestampMixin):
     id = db.Column(db.Integer, primary_key=True)
-    project_id = db.Column(db.Integer, db.ForeignKey("project.id"), nullable=False, index=True)
-    project = db.relationship("Project", backref=db.backref("files", lazy=True, cascade="all, delete-orphan"))
 
-    path = db.Column(db.String(512), nullable=False)
-    oss_key = db.Column(db.String(512), nullable=False)
-    content_type = db.Column(db.String(255), default="")
-    media_type = db.Column(db.String(16), default="file")  # image | video | audio | pdf | text | file
-    size_bytes = db.Column(db.Integer, default=0)
-    sha256 = db.Column(db.String(64), default="")
+    record_id = db.Column(db.Integer, db.ForeignKey("record.id"), nullable=False, index=True)
+    record = db.relationship("Record", backref=db.backref("comments", lazy=True, cascade="all, delete-orphan"))
 
-    created_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
-    updated_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    user = db.relationship("User", backref=db.backref("comments", lazy=True))
 
-    __table_args__ = (db.UniqueConstraint("project_id", "path", name="uq_project_file_path"),)
+    body = db.Column(db.Text, nullable=False)
 
 
-class ProjectActivity(db.Model, TimestampMixin):
+class GeneratedAsset(db.Model, TimestampMixin):
     id = db.Column(db.Integer, primary_key=True)
-    type = db.Column(db.String(32), nullable=False)  # git | clone | push | push_request | push_approve | ...
-    module = db.Column(db.String(16), nullable=False)  # blog | note
 
-    project_id = db.Column(db.Integer, db.ForeignKey("project.id"), nullable=False, index=True)
-    project = db.relationship("Project", backref=db.backref("activity", lazy=True, cascade="all, delete-orphan"))
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    user = db.relationship("User", backref=db.backref("generated_assets", lazy=True))
 
-    actor_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
-    actor_user = db.relationship("User", foreign_keys=[actor_user_id])
+    kind = db.Column(db.String(32), nullable=False)  # podcast_audio | poster_image | poster_pdf
+    title = db.Column(db.String(255), nullable=False, default="")
+    provider = db.Column(db.String(64), nullable=False, default="")
+    model = db.Column(db.String(128), nullable=False, default="")
 
-    initiator_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
-    initiator_user = db.relationship("User", foreign_keys=[initiator_user_id])
+    content_type = db.Column(db.String(255), nullable=False, default="")
+    ext = db.Column(db.String(16), nullable=False, default="")
+    size_bytes = db.Column(db.Integer, nullable=False, default=0)
+    oss_key = db.Column(db.String(512), nullable=False, default="")
+    sha256 = db.Column(db.String(64), nullable=False, default="")
 
-    meta_json = db.Column(db.Text, default="{}")
-
-
-class PushRequest(db.Model, TimestampMixin):
-    id = db.Column(db.Integer, primary_key=True)
-    project_id = db.Column(db.Integer, db.ForeignKey("project.id"), nullable=False, index=True)
-    project = db.relationship("Project", backref=db.backref("push_requests", lazy=True, cascade="all, delete-orphan"))
-
-    proposer_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
-    proposer_user = db.relationship("User", foreign_keys=[proposer_user_id])
-
-    status = db.Column(db.String(16), default="pending")  # pending | approved | rejected | cancelled
-    message = db.Column(db.Text, default="")
-
-    decided_at = db.Column(db.DateTime, nullable=True)
-    decided_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
-    decided_by_user = db.relationship("User", foreign_keys=[decided_by_user_id])
+    source_filters_json = db.Column(db.Text, nullable=False, default="{}")
 
 
-class PushRequestFile(db.Model, TimestampMixin):
-    id = db.Column(db.Integer, primary_key=True)
-    push_request_id = db.Column(db.Integer, db.ForeignKey("push_request.id"), nullable=False, index=True)
-    push_request = db.relationship(
-        "PushRequest",
-        backref=db.backref("files", lazy=True, cascade="all, delete-orphan"),
-    )
-
-    path = db.Column(db.String(512), nullable=False)
-    oss_key = db.Column(db.String(512), nullable=False)
-    content_type = db.Column(db.String(255), default="")
-    media_type = db.Column(db.String(16), default="file")
-    size_bytes = db.Column(db.Integer, default=0)
-    sha256 = db.Column(db.String(64), default="")
-
-
-class WhiteboardCard(db.Model, TimestampMixin):
-    id = db.Column(db.Integer, primary_key=True)
-    board_date = db.Column(db.String(16), nullable=False, index=True)  # YYYY-MM-DD
-    x = db.Column(db.Float, default=20.0)
-    y = db.Column(db.Float, default=20.0)
-    text = db.Column(db.Text, default="")
-    version = db.Column(db.Integer, nullable=False, default=1)
-    idempotency_key = db.Column(db.String(96), nullable=True, index=True)
-    entry_date = db.Column(db.String(16), nullable=False, default="")
-    entry_tags_json = db.Column(db.Text, default="[]")
-    entry_mood = db.Column(db.String(24), default="")
-    entry_type = db.Column(db.String(24), default="note")
-    created_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
-    created_by = db.relationship("User", foreign_keys=[created_by_id])
-    attachments = db.relationship(
-        "WhiteboardAttachment",
-        backref=db.backref("card", lazy=True),
-        lazy=True,
-        cascade="all, delete-orphan",
-    )
-
-
-class WhiteboardAttachment(db.Model, TimestampMixin):
-    id = db.Column(db.Integer, primary_key=True)
-    card_id = db.Column(db.Integer, db.ForeignKey("whiteboard_card.id"), nullable=False, index=True)
-    oss_key = db.Column(db.String(512), nullable=False)
-    filename = db.Column(db.String(255), default="")
-    content_type = db.Column(db.String(255), default="")
-    media_type = db.Column(db.String(16), default="file")  # image | video | audio | pdf | file
-    size_bytes = db.Column(db.Integer, default=0)
-    sha256 = db.Column(db.String(64), default="")
-
-
-class WhiteboardEvent(db.Model, TimestampMixin):
-    id = db.Column(db.Integer, primary_key=True)
-    board_date = db.Column(db.String(16), nullable=False, index=True)
-    event_type = db.Column(db.String(16), nullable=False)  # create | update | delete | reset
-    card_id = db.Column(db.Integer, nullable=False, index=True)
-    actor_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
-    actor_user = db.relationship("User", foreign_keys=[actor_user_id])
-    payload_json = db.Column(db.Text, default="{}")
-
-
-class WhiteboardLink(db.Model, TimestampMixin):
-    id = db.Column(db.Integer, primary_key=True)
-    board_date = db.Column(db.String(16), nullable=False, index=True)  # YYYY-MM-DD
-    from_card_id = db.Column(db.Integer, db.ForeignKey("whiteboard_card.id"), nullable=False, index=True)
-    to_card_id = db.Column(db.Integer, db.ForeignKey("whiteboard_card.id"), nullable=False, index=True)
-    created_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
-    created_by = db.relationship("User", foreign_keys=[created_by_id])
-
-    __table_args__ = (db.UniqueConstraint("board_date", "from_card_id", "to_card_id", name="uq_whiteboard_link"),)
+Index("ix_record_user_created", Record.user_id, Record.created_at)
+Index("ix_record_visibility_created", Record.visibility, Record.created_at)
+Index("ix_comment_record_created", Comment.record_id, Comment.created_at)
+Index("ix_generated_asset_user_created", GeneratedAsset.user_id, GeneratedAsset.created_at)

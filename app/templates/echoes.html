@@ -1,57 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="hero hero--page">
-  <div>
-    <p class="hero-kicker">Echoes</p>
-    <h1>所有公开项目的文件流。</h1>
-    <p class="hero-sub">这里汇总大家公开分享的一切，也包括公共白板插入的媒体。点击任意文件可快捷预览。</p>
+<section class="card">
+  <div class="section-head">
+    <h2>Echoes</h2>
   </div>
-  <div class="hero-actions filter-row">
-    <div class="filter-shell">
-      <label class="filter-group">
-        <span>模块</span>
-        <select class="filter-select" id="album-module">
-          <option value="">All</option>
-          <option value="blog">Blog</option>
-          <option value="note">Note</option>
-          <option value="whiteboard">Whiteboard</option>
-        </select>
-      </label>
-      <label class="filter-group">
-        <span>类型</span>
-        <select class="filter-select" id="album-type">
-          <option value="">All</option>
-          <option value="image">Image</option>
-          <option value="video">Video</option>
-          <option value="audio">Audio</option>
-          <option value="pdf">PDF</option>
-          <option value="text">Text</option>
-          <option value="file">File</option>
-        </select>
-      </label>
-      <button class="pill-btn" data-album-load>刷新</button>
-    </div>
-  </div>
+  <div id="echoes-grid" class="echoes-grid"></div>
 </section>
-
-<section class="album-stream" id="album-grid" data-album-stream>
-  <div class="album-empty">点击刷新以加载文件流。</div>
-</section>
-<div class="album-stream-footer" data-album-sentinel>
-  <span class="album-stream-status" data-album-status>Loading...</span>
-  <button class="pill-btn ghost" type="button" data-album-more hidden>Load more</button>
-</div>
-
-<div class="modal" id="resource-modal" hidden>
-  <div class="modal-backdrop" data-modal-close></div>
-  <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Resource preview">
-    <button class="modal-close" type="button" data-modal-close>Close</button>
-    <div class="modal-content" id="resource-modal-content"></div>
-  </div>
-</div>
-
-<template id="modal-project-template">
-  {% set window_prefix = 'modal-project' %}
-  {% include "project_window.html" %}
-</template>
 {% endblock %}

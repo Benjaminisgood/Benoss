@@ -12,14 +12,18 @@ def load_current_user():
         g.user = None
         return None
     user = User.query.get(user_id)
+    if not user or not user.is_active:
+        session.clear()
+        g.user = None
+        return None
     g.user = user
     return user
 
 
 def login_user(user: User) -> None:
     session["user_id"] = user.id
-    session["role"] = user.role
     session["username"] = user.username
+    session["role"] = user.role
 
 
 def logout_user() -> None:
@@ -30,12 +34,12 @@ def safe_next_url(value: str) -> str:
     if not value:
         return url_for("site.home")
     parsed = urlparse(value)
-    if parsed.netloc or parsed.scheme:
+    if parsed.scheme or parsed.netloc:
         return url_for("site.home")
     return value
 
 
-def login_required(role: str = None):
+def login_required(role: str | None = None):
     def decorator(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
@@ -48,7 +52,7 @@ def login_required(role: str = None):
             if role and user.role != role:
                 if request.path.startswith("/api/"):
                     return jsonify({"error": "forbidden"}), 403
-                return redirect(url_for("site.login"))
+                return redirect(url_for("site.home"))
             return fn(*args, **kwargs)
 
         return wrapper

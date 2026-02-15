@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="auth-wrap">
+  <article class="auth-card">
+    <h1>注册账号</h1>
+    <p>创建后即可参与学习小组的记录、评论与协作。</p>
+    <form method="post" class="auth-form">
+      <label>
+        用户名
+        <input type="text" name="username" required autocomplete="username">
+      </label>
+      <label>
+        密码
+        <input type="password" name="password" required autocomplete="new-password">
+      </label>
+      <label>
+        确认密码
+        <input type="password" name="password_confirm" required autocomplete="new-password">
+      </label>
+      <button type="submit">注册</button>
+    </form>
+    <p class="muted">已有账号？<a href="{{ url_for('site.login') }}">去登录</a></p>
+  </article>
+</section>
+{% endblock %}
