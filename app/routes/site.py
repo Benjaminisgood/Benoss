@@ -32,6 +32,12 @@ def notice():
     return render_template("notice.html", page="notice", title="Notice")
 
 
+@site_bp.route("/admin")
+@login_required(role="admin")
+def admin():
+    return render_template("admin.html", page="admin", title="Admin")
+
+
 @site_bp.route("/login", methods=["GET", "POST"])
 def login():
     if g.get("user"):

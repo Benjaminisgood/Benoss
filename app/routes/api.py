@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import html
 import json
 import mimetypes
 import re
+import tempfile
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +24,20 @@ from ..models import Comment, Content, DailyDigestJob, GeneratedAsset, Record, U
 from ..oss import delete_object, get_object_bytes, put_object_bytes, put_object_from_file, sign_get_url
 from ..utils.ids import new_uuid
 from ..utils.oss_paths import generated_asset_key, record_content_key
+from ..utils.runtime_settings import (
+    DEFAULT_NOTEBOOKLM_AUDIO_INSTRUCTIONS,
+    DEFAULT_NOTEBOOKLM_SCRIPT_PROMPT,
+    DEFAULT_NOTICE_BLOG_TASK,
+    DEFAULT_NOTICE_PODCAST_TASK,
+    DEFAULT_NOTICE_POSTER_TASK,
+    DEFAULT_NOTICE_SYSTEM_PROMPT,
+    DEFAULT_POSTER_SYSTEM_PROMPT,
+    DEFAULT_POSTER_USER_TEMPLATE,
+    format_prompt_template,
+    get_setting_bool,
+    get_setting_int,
+    get_setting_str,
+)
 from ..utils.session_auth import login_required
 
 
@@ -92,7 +108,7 @@ def _day_bounds(day_value: date) -> tuple[datetime, datetime]:
 
 
 def _digest_timezone() -> str:
-    raw = str(current_app.config.get("DIGEST_TIMEZONE") or "Asia/Shanghai").strip()
+    raw = get_setting_str("DIGEST_TIMEZONE", default="Asia/Shanghai").strip()
     return raw or "Asia/Shanghai"
 
 
@@ -446,7 +462,7 @@ def _render_notice_html(records: list[Record], *, day: str, user_id: str, tag: s
 
 
 def _ai_provider_settings() -> dict | None:
-    raw = str(current_app.config.get("AI_AUTOFILL_PROVIDER") or "").strip().lower()
+    raw = get_setting_str("AI_AUTOFILL_PROVIDER", default="").strip().lower()
     aliases = {
         "chat_anywhere": "chatanywhere",
         "chat-anywhere": "chatanywhere",
@@ -458,19 +474,19 @@ def _ai_provider_settings() -> dict | None:
 
     choices = {
         "chatanywhere": {
-            "api_key": current_app.config.get("CHAT_ANYWHERE_API_KEY"),
-            "base_url": current_app.config.get("CHAT_ANYWHERE_API_BASE_URL"),
-            "model": current_app.config.get("CHAT_ANYWHERE_MODEL"),
+            "api_key": get_setting_str("CHAT_ANYWHERE_API_KEY", default=""),
+            "base_url": get_setting_str("CHAT_ANYWHERE_API_BASE_URL", default="https://api.chatanywhere.tech/v1"),
+            "model": get_setting_str("CHAT_ANYWHERE_MODEL", default="gpt-4o-mini"),
         },
         "deepseek": {
-            "api_key": current_app.config.get("DEEPSEEK_API_KEY"),
-            "base_url": current_app.config.get("DEEPSEEK_API_BASE_URL"),
-            "model": current_app.config.get("DEEPSEEK_MODEL"),
+            "api_key": get_setting_str("DEEPSEEK_API_KEY", default=""),
+            "base_url": get_setting_str("DEEPSEEK_API_BASE_URL", default="https://api.deepseek.com/v1"),
+            "model": get_setting_str("DEEPSEEK_MODEL", default="deepseek-chat"),
         },
         "aliyun": {
-            "api_key": current_app.config.get("ALIYUN_AI_API_KEY"),
-            "base_url": current_app.config.get("ALIYUN_AI_API_BASE_URL"),
-            "model": current_app.config.get("ALIYUN_AI_MODEL"),
+            "api_key": get_setting_str("ALIYUN_AI_API_KEY", default=""),
+            "base_url": get_setting_str("ALIYUN_AI_API_BASE_URL", default="https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            "model": get_setting_str("ALIYUN_AI_MODEL", default="qwen-plus"),
         },
     }
     selected = choices.get(provider)
@@ -497,7 +513,7 @@ def _ai_chat(*, messages: list[dict], temperature: float = 0.2, max_tokens: int 
         raise RuntimeError("AI provider not configured")
 
     endpoint = settings["base_url"] + "/chat/completions"
-    timeout = int(current_app.config.get("AI_REQUEST_TIMEOUT_SECONDS") or 45)
+    timeout = get_setting_int("AI_REQUEST_TIMEOUT_SECONDS", default=45)
     payload = {
         "model": settings["model"],
         "messages": messages,
@@ -551,22 +567,19 @@ def _records_for_ai_prompt(records: list[Record], *, max_chars: int = 18000) -> 
 
 def _build_notice_ai_prompt(action: str, records_text: str) -> list[dict]:
     if action == "blog":
-        task = (
-            "把输入记录整理成一篇中文博客 HTML，输出必须是纯 HTML（不要 markdown 代码块）。"
-            "结构包含：标题、导语、按主题分节的小标题、结语。"
-            "保留关键事实和时间线，语言自然可读，避免空泛。"
-        )
+        task = get_setting_str("PROMPT_NOTICE_BLOG_TASK", default=DEFAULT_NOTICE_BLOG_TASK)
     elif action == "podcast":
-        task = "把输入记录整理成一个 3-5 分钟中文播客稿，分段清晰，有开场、主体、结尾。"
+        task = get_setting_str("PROMPT_NOTICE_PODCAST_TASK", default=DEFAULT_NOTICE_PODCAST_TASK)
     elif action == "poster":
-        task = "把输入记录提炼成一份中文海报文案，包含标题、3-6 个重点、结语。"
+        task = get_setting_str("PROMPT_NOTICE_POSTER_TASK", default=DEFAULT_NOTICE_POSTER_TASK)
     else:
         task = "把输入记录整理成结构清晰的中文总结，准确且可读。"
 
+    system_prompt = get_setting_str("PROMPT_NOTICE_SYSTEM", default=DEFAULT_NOTICE_SYSTEM_PROMPT)
     return [
         {
             "role": "system",
-            "content": "你是学习小组内容编辑助手，要求输出准确、紧凑、可读。",
+            "content": system_prompt,
         },
         {
             "role": "user",
@@ -581,7 +594,7 @@ def _ai_request_json(path: str, payload: dict, *, timeout: int | None = None) ->
         raise RuntimeError("AI provider not configured")
 
     endpoint = settings["base_url"] + path
-    timeout_seconds = int(timeout or current_app.config.get("AI_REQUEST_TIMEOUT_SECONDS") or 45)
+    timeout_seconds = int(timeout or get_setting_int("AI_REQUEST_TIMEOUT_SECONDS", default=45))
     headers = {
         "Authorization": f"Bearer {settings['api_key']}",
         "Content-Type": "application/json",
@@ -604,53 +617,169 @@ def _ai_request_json(path: str, payload: dict, *, timeout: int | None = None) ->
     return data, settings
 
 
-def _ai_tts_audio(script_text: str) -> tuple[bytes, str, dict]:
-    settings = _ai_provider_settings()
-    if not settings:
-        raise RuntimeError("AI provider not configured")
+def _notebooklm_podcast_settings() -> dict:
+    storage_path_raw = get_setting_str("NOTEBOOKLM_STORAGE_PATH", default="").strip()
+    storage_path = str(Path(storage_path_raw).expanduser()) if storage_path_raw else None
+    language = get_setting_str("NOTEBOOKLM_AUDIO_LANGUAGE", default="zh-CN").strip() or "zh-CN"
+    generation_timeout = max(60, get_setting_int("NOTEBOOKLM_AUDIO_TIMEOUT_SECONDS", default=900))
+    source_wait_timeout = max(30, get_setting_int("NOTEBOOKLM_SOURCE_WAIT_TIMEOUT_SECONDS", default=240))
+    cleanup_notebook = get_setting_bool("NOTEBOOKLM_AUTO_DELETE_NOTEBOOK", default=True)
 
-    tts_model = str(current_app.config.get("AI_TTS_MODEL") or "").strip()
-    if not tts_model:
-        raise RuntimeError("AI_TTS_MODEL not configured")
-    tts_voice = str(current_app.config.get("AI_TTS_VOICE") or "alloy").strip() or "alloy"
+    instructions = get_setting_str("NOTEBOOKLM_AUDIO_INSTRUCTIONS", default="")
+    if not instructions:
+        instructions = DEFAULT_NOTEBOOKLM_AUDIO_INSTRUCTIONS
 
-    endpoint = settings["base_url"] + "/audio/speech"
-    timeout_seconds = int(current_app.config.get("AI_REQUEST_TIMEOUT_SECONDS") or 45)
-    payload = {
-        "model": tts_model,
-        "input": script_text,
-        "voice": tts_voice,
-        "format": "mp3",
+    return {
+        "storage_path": storage_path,
+        "language": language,
+        "generation_timeout": generation_timeout,
+        "source_wait_timeout": source_wait_timeout,
+        "cleanup_notebook": cleanup_notebook,
+        "instructions": instructions,
     }
-    headers = {
-        "Authorization": f"Bearer {settings['api_key']}",
-        "Content-Type": "application/json",
-    }
+
+
+async def _notebooklm_generate_podcast_audio_async(
+    *,
+    notebook_client_class,
+    records_text: str,
+    notebook_title: str,
+    source_title: str,
+    settings: dict,
+) -> tuple[bytes, str, str, dict, str]:
+    storage_path = settings["storage_path"]
+    language = settings["language"]
+    generation_timeout = settings["generation_timeout"]
+    source_wait_timeout = settings["source_wait_timeout"]
+    cleanup_notebook = settings["cleanup_notebook"]
+    instructions = settings["instructions"]
+
+    if storage_path:
+        client = await notebook_client_class.from_storage(storage_path)
+    else:
+        client = await notebook_client_class.from_storage()
+
+    notebook_id = ""
+    transcript = ""
+    audio_bytes = b""
+
+    async with client as notebook_client:
+        notebook = await notebook_client.notebooks.create(notebook_title[:120])
+        notebook_id = notebook.id
+
+        try:
+            await notebook_client.sources.add_text(
+                notebook_id,
+                source_title[:120],
+                records_text,
+                wait=True,
+                wait_timeout=float(source_wait_timeout),
+            )
+
+            try:
+                prompt = get_setting_str(
+                    "PROMPT_NOTEBOOKLM_SCRIPT_TASK",
+                    default=DEFAULT_NOTEBOOKLM_SCRIPT_PROMPT,
+                )
+                chat_result = await notebook_client.chat.ask(notebook_id, prompt)
+                transcript = str(chat_result.answer or "").strip()
+            except Exception:
+                transcript = ""
+
+            status = await notebook_client.artifacts.generate_audio(
+                notebook_id,
+                language=language,
+                instructions=instructions,
+            )
+            final_status = await notebook_client.artifacts.wait_for_completion(
+                notebook_id,
+                status.task_id,
+                timeout=float(generation_timeout),
+            )
+            if final_status.is_failed:
+                error_text = str(final_status.error or final_status.status or "unknown").strip()
+                raise RuntimeError(f"notebooklm audio generation failed: {error_text}")
+
+            with tempfile.TemporaryDirectory(prefix="benoss-notebooklm-") as temp_dir:
+                output_path = Path(temp_dir) / "podcast.mp4"
+                await notebook_client.artifacts.download_audio(
+                    notebook_id,
+                    str(output_path),
+                    artifact_id=status.task_id,
+                )
+                audio_bytes = output_path.read_bytes()
+        finally:
+            if cleanup_notebook and notebook_id:
+                try:
+                    await notebook_client.notebooks.delete(notebook_id)
+                except Exception:
+                    current_app.logger.warning(
+                        "failed to cleanup temporary notebooklm notebook: %s",
+                        notebook_id,
+                    )
+
+    if not audio_bytes:
+        raise RuntimeError("notebooklm returned empty audio")
+
+    if not transcript:
+        transcript = "NotebookLM 已生成音频，暂未返回可用文本稿。"
+
+    return (
+        audio_bytes,
+        "audio/mp4",
+        ".mp4",
+        {"provider": "notebooklm", "model": "audio_overview"},
+        transcript,
+    )
+
+
+def _notebooklm_generate_podcast_audio(records_text: str, *, title: str) -> tuple[bytes, str, str, dict, str]:
+    try:
+        from notebooklm import NotebookLMClient
+    except Exception as exc:
+        raise RuntimeError(
+            "NotebookLM not configured: install notebooklm-py and run `notebooklm login` first."
+        ) from exc
 
     try:
-        response = requests.post(endpoint, headers=headers, json=payload, timeout=timeout_seconds)
-    except requests.RequestException as exc:
-        raise RuntimeError(f"tts request error: {exc}") from exc
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError("notebooklm audio generation failed: current runtime has an active event loop")
 
-    if not response.ok:
-        detail = response.text.strip().replace("\n", " ")
-        if len(detail) > 320:
-            detail = detail[:320] + "..."
-        raise RuntimeError(f"tts request failed ({response.status_code}): {detail}")
+    settings = _notebooklm_podcast_settings()
+    notebook_title = f"Benoss Podcast {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
+    source_title = title or "Benoss Notice Source"
 
-    content_type = str(response.headers.get("Content-Type") or "audio/mpeg").split(";")[0].strip().lower()
-    if "json" in content_type:
-        raise RuntimeError("tts response is json instead of audio")
-
-    audio_bytes = response.content or b""
-    if not audio_bytes:
-        raise RuntimeError("tts returned empty audio")
-
-    return audio_bytes, "audio/mpeg", {"provider": settings["provider"], "model": tts_model}
+    try:
+        return asyncio.run(
+            _notebooklm_generate_podcast_audio_async(
+                notebook_client_class=NotebookLMClient,
+                records_text=records_text,
+                notebook_title=notebook_title,
+                source_title=source_title,
+                settings=settings,
+            )
+        )
+    except RuntimeError as exc:
+        detail = str(exc).strip() or exc.__class__.__name__
+        lower = detail.lower()
+        if "not configured" in lower:
+            raise
+        if any(token in lower for token in {"auth", "login", "cookie", "storage", "expired", "credential"}):
+            raise RuntimeError(f"NotebookLM not configured: {detail}") from exc
+        raise
+    except Exception as exc:
+        detail = str(exc).strip() or exc.__class__.__name__
+        lower = detail.lower()
+        if any(token in lower for token in {"auth", "login", "cookie", "storage", "expired", "credential"}):
+            raise RuntimeError(f"NotebookLM not configured: {detail}") from exc
+        raise RuntimeError(f"notebooklm audio generation failed: {detail}") from exc
 
 
 def _ai_generate_poster_image(prompt: str) -> tuple[bytes, str, str, dict]:
-    image_model = str(current_app.config.get("AI_IMAGE_MODEL") or "").strip()
+    image_model = get_setting_str("AI_IMAGE_MODEL", default="gpt-image-1").strip()
     if not image_model:
         raise RuntimeError("AI_IMAGE_MODEL not configured")
 
@@ -674,7 +803,7 @@ def _ai_generate_poster_image(prompt: str) -> tuple[bytes, str, str, dict]:
             raise RuntimeError("image response base64 decode failed") from exc
     elif url:
         try:
-            response = requests.get(url, timeout=int(current_app.config.get("AI_REQUEST_TIMEOUT_SECONDS") or 45))
+            response = requests.get(url, timeout=get_setting_int("AI_REQUEST_TIMEOUT_SECONDS", default=45))
             response.raise_for_status()
             image_bytes = response.content
         except requests.RequestException as exc:
@@ -830,16 +959,15 @@ def _generate_podcast_asset(
     source_day: date | None = None,
     is_daily_digest: bool = False,
 ) -> tuple[GeneratedAsset, str]:
-    script, script_settings = _ai_chat(messages=_build_notice_ai_prompt("podcast", records_text), temperature=0.4, max_tokens=1400)
-    audio_bytes, audio_type, tts_info = _ai_tts_audio(script)
+    audio_bytes, audio_type, ext, audio_info, script = _notebooklm_generate_podcast_audio(records_text, title=title)
     asset = _save_generated_asset(
         user=user,
         kind="podcast_audio",
         title=title,
-        provider=script_settings["provider"],
-        model=f"{script_settings['model']} + {tts_info['model']}",
+        provider=audio_info["provider"],
+        model=audio_info["model"],
         content_type=audio_type,
-        ext=".mp3",
+        ext=ext,
         data=audio_bytes,
         filters=filters,
         visibility=visibility,
@@ -859,18 +987,20 @@ def _generate_poster_asset(
     source_day: date | None = None,
     is_daily_digest: bool = False,
 ) -> tuple[GeneratedAsset, str]:
+    poster_system_prompt = get_setting_str("PROMPT_POSTER_SYSTEM", default=DEFAULT_POSTER_SYSTEM_PROMPT)
+    poster_user_template = get_setting_str(
+        "PROMPT_POSTER_USER_TEMPLATE",
+        default=DEFAULT_POSTER_USER_TEMPLATE,
+    )
+    poster_user_prompt = format_prompt_template(poster_user_template, records_text=records_text)
     poster_prompt_messages = [
         {
             "role": "system",
-            "content": "你是视觉总监，请把学习记录提炼成适合图像模型的一段海报提示词。",
+            "content": poster_system_prompt,
         },
         {
             "role": "user",
-            "content": (
-                "请输出一段 200-450 字中文提示词，用于生成学习小组海报。"
-                "包含主题、排版、颜色、风格、元素。只输出提示词本身。\n\n"
-                f"记录输入：\n{records_text}"
-            ),
+            "content": poster_user_prompt,
         },
     ]
     poster_prompt, prompt_settings = _ai_chat(
@@ -910,7 +1040,7 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
     db.session.add(job)
     db.session.commit()
 
-    limit = int(current_app.config.get("AI_MAX_NOTICE_RECORDS") or 180)
+    limit = get_setting_int("AI_MAX_NOTICE_RECORDS", default=180)
     records = (
         Record.query.options(joinedload(Record.user), joinedload(Record.content))
         .filter(
@@ -1323,7 +1453,7 @@ def get_content_blob(content_id: int):
 def board_summary():
     user = g.get("user")
 
-    days = int(request.args.get("days") or current_app.config.get("BOARD_DEFAULT_DAYS") or 7)
+    days = int(request.args.get("days") or get_setting_int("BOARD_DEFAULT_DAYS", default=7))
     days = min(max(days, 1), 30)
 
     tag = str(request.args.get("tag") or "").strip()
@@ -1573,7 +1703,7 @@ def notice_assets():
     else:
         query = query.order_by(Record.created_at.asc(), Record.id.asc())
 
-    limit = int(current_app.config.get("AI_MAX_NOTICE_RECORDS") or 180)
+    limit = get_setting_int("AI_MAX_NOTICE_RECORDS", default=180)
     records = query.limit(max(20, min(limit, 500))).all()
     records_text = _records_for_ai_prompt(records)
     if not records_text:

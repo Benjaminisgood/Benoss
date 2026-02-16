@@ -106,6 +106,7 @@ def _ensure_schema_shape() -> None:
 
     required: dict[str, set[str]] = {
         "user": {"id", "username", "password_hash", "role", "is_active"},
+        "app_setting": {"id", "key", "value"},
         "content": {"id", "kind", "text_content", "oss_key"},
         "record": {"id", "user_id", "content_id", "visibility", "tags_json"},
         "comment": {"id", "record_id", "user_id", "body"},

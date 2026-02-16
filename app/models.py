@@ -32,6 +32,12 @@ class User(db.Model, TimestampMixin):
         return check_password_hash(self.password_hash, password)
 
 
+class AppSetting(db.Model, TimestampMixin):
+    id = db.Column(db.Integer, primary_key=True)
+    key = db.Column(db.String(128), unique=True, nullable=False, index=True)
+    value = db.Column(db.Text, nullable=False, default="")
+
+
 class Content(db.Model, TimestampMixin):
     id = db.Column(db.Integer, primary_key=True)
 

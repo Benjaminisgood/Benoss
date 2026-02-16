@@ -3,6 +3,7 @@ from flask import Blueprint, g, jsonify, request
 from ..extensions import db
 from ..models import User
 from ..utils.session_auth import login_required
+from ..utils.runtime_settings import admin_settings_payload, save_admin_settings
 
 
 account_bp = Blueprint("account", __name__)
@@ -65,3 +66,29 @@ def list_users():
             ]
         }
     )
+
+
+@account_bp.route("/api/admin/settings", methods=["GET"])
+@login_required(role="admin")
+def get_admin_settings():
+    return jsonify(admin_settings_payload())
+
+
+@account_bp.route("/api/admin/settings", methods=["PUT"])
+@login_required(role="admin")
+def update_admin_settings():
+    payload = request.get_json(silent=True) or {}
+    values = payload.get("values") or {}
+    reset_keys = payload.get("reset_keys") or []
+
+    if not isinstance(values, dict):
+        return jsonify({"error": "values must be an object"}), 400
+    if not isinstance(reset_keys, list):
+        return jsonify({"error": "reset_keys must be an array"}), 400
+
+    try:
+        updated = save_admin_settings(values, reset_keys=reset_keys)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    return jsonify(updated)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # benoss: manage Benoss Flask/Gunicorn service (local or server)
-# Usage: benoss {start|stop|status|restart|ip|logs|check|update|init}
+# Usage: benoss {start|stop|status|restart|ip|logs|check|update|init|bootstrap}
 #
 # Notes:
 # - Keep all ports in one place (PORTS section)
@@ -59,6 +59,17 @@ BACKUP_ITEMS="${BENOSS_BACKUP_ITEMS:-.env data}"
 DEFAULT_BACKUP_BASE="${HOME:-$PROJECT_PATH}/.benoss-backups"
 BACKUP_BASE="${BENOSS_BACKUP_BASE:-$DEFAULT_BACKUP_BASE}"
 
+# Env/dependency automation
+ENV_FILE="${BENOSS_ENV_FILE:-$PROJECT_PATH/.env}"
+ENV_EXAMPLE_FILE="${BENOSS_ENV_EXAMPLE_FILE:-$PROJECT_PATH/.env.example}"
+PYPROJECT_FILE="${BENOSS_PYPROJECT_FILE:-$PROJECT_PATH/pyproject.toml}"
+DEPS_STAMP_FILE="${BENOSS_DEPS_STAMP_FILE:-$RUNTIME_DIR/deps.sha256}"
+AUTO_CREATE_VENV="${BENOSS_AUTO_CREATE_VENV:-1}"
+AUTO_INSTALL_DEPS="${BENOSS_AUTO_INSTALL_DEPS:-1}"
+AUTO_SYNC_ENV="${BENOSS_AUTO_SYNC_ENV:-1}"
+AUTO_INIT_DB="${BENOSS_AUTO_INIT_DB:-1}"
+AUTO_NOTEBOOKLM_AUTH="${BENOSS_AUTO_NOTEBOOKLM_AUTH:-1}"
+
 ########################################
 # Helpers
 ########################################
@@ -80,6 +91,143 @@ prompt_yes_no() {
   esac
 }
 
+is_truthy() {
+  case "$1" in
+    1|[Yy]|[Yy][Ee][Ss]|[Tt][Rr][Uu][Ee]|[Oo][Nn]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+compute_file_sha256() {
+  local file="$1"
+  local host_py
+
+  [[ -f "$file" ]] || return 1
+
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+    return 0
+  fi
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+    return 0
+  fi
+
+  host_py="$(host_python_bin)" || return 1
+  "$host_py" - "$file" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+data = path.read_bytes()
+print(hashlib.sha256(data).hexdigest())
+PY
+}
+
+current_deps_signature() {
+  compute_file_sha256 "$PYPROJECT_FILE"
+}
+
+update_deps_stamp() {
+  local sig
+  sig="$(current_deps_signature 2>/dev/null || true)"
+  [[ -n "$sig" ]] || return 0
+  mkdir -p "$(dirname "$DEPS_STAMP_FILE")"
+  echo "$sig" > "$DEPS_STAMP_FILE"
+}
+
+deps_stamp_outdated() {
+  local current stored
+  current="$(current_deps_signature 2>/dev/null || true)"
+  [[ -n "$current" ]] || return 0
+  stored="$(cat "$DEPS_STAMP_FILE" 2>/dev/null || true)"
+  [[ "$current" != "$stored" ]]
+}
+
+sync_env_missing_keys() {
+  local key line
+  local -a missing_keys=()
+
+  [[ -f "$ENV_EXAMPLE_FILE" ]] || return 0
+  [[ -f "$ENV_FILE" ]] || return 0
+
+  while IFS= read -r key; do
+    [[ -n "$key" ]] || continue
+    if ! grep -Eq "^[[:space:]]*#?[[:space:]]*${key}=" "$ENV_FILE"; then
+      missing_keys+=("$key")
+    fi
+  done < <(sed -nE 's/^[[:space:]]*#?[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$ENV_EXAMPLE_FILE" | awk '!seen[$0]++')
+
+  if (( ${#missing_keys[@]} == 0 )); then
+    return 0
+  fi
+
+  info "Appending ${#missing_keys[@]} missing env key(s) to $ENV_FILE"
+  {
+    echo
+    echo "# --- Auto-appended from .env.example on $(date '+%Y-%m-%d %H:%M:%S') ---"
+    for key in "${missing_keys[@]}"; do
+      line="$(grep -E "^[[:space:]]*#?[[:space:]]*${key}=" "$ENV_EXAMPLE_FILE" | head -n 1 || true)"
+      if [[ -z "$line" ]]; then
+        echo "# ${key}="
+      elif [[ "$line" =~ ^[[:space:]]*# ]]; then
+        echo "$line"
+      else
+        echo "# $line"
+      fi
+    done
+  } >> "$ENV_FILE"
+}
+
+ensure_env_file() {
+  if ! is_truthy "$AUTO_SYNC_ENV"; then
+    return 0
+  fi
+
+  if [[ ! -f "$ENV_EXAMPLE_FILE" ]]; then
+    info "$ENV_EXAMPLE_FILE not found; skipping env sync."
+    return 0
+  fi
+
+  if [[ ! -f "$ENV_FILE" ]]; then
+    cp "$ENV_EXAMPLE_FILE" "$ENV_FILE" || die "Failed to create $ENV_FILE from $ENV_EXAMPLE_FILE."
+    ok "Created $ENV_FILE from $ENV_EXAMPLE_FILE"
+    return 0
+  fi
+
+  sync_env_missing_keys
+}
+
+ensure_notebooklm_auth() {
+  local nb_cli="$VENV_PATH/bin/notebooklm"
+
+  if ! is_truthy "$AUTO_NOTEBOOKLM_AUTH"; then
+    return 0
+  fi
+
+  if [[ ! -x "$nb_cli" ]]; then
+    info "notebooklm CLI not found in venv; skipping NotebookLM auth setup."
+    return 0
+  fi
+
+  if "$nb_cli" auth check >/dev/null 2>&1; then
+    ok "NotebookLM auth check passed."
+    return 0
+  fi
+
+  if [[ ! -t 0 ]]; then
+    info "NotebookLM auth not ready (non-interactive). Run: $nb_cli login"
+    return 0
+  fi
+
+  info "NotebookLM auth not ready. Starting browser login flow..."
+  "$nb_cli" login || die "NotebookLM login failed."
+  "$nb_cli" auth check >/dev/null 2>&1 || die "NotebookLM auth check failed after login."
+  ok "NotebookLM auth ready."
+}
+
 host_python_bin() {
   if command -v python3 >/dev/null 2>&1; then
     echo "python3"
@@ -95,7 +243,12 @@ host_python_bin() {
 }
 
 install_deps() {
-  "$VENV_PATH/bin/python" -m pip install -e "$PROJECT_PATH" || die "Dependency install failed."
+  local py="$VENV_PATH/bin/python"
+  info "Installing/updating Python dependencies..."
+  "$py" -m pip install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
+  "$py" -m pip install -e "$PROJECT_PATH" || die "Dependency install failed."
+  update_deps_stamp
+  ok "Dependencies are up to date."
 }
 
 create_venv() {
@@ -115,6 +268,11 @@ ensure_venv() {
   fi
 
   info "Virtualenv not found at $VENV_PATH."
+  if is_truthy "$AUTO_CREATE_VENV"; then
+    create_venv
+    return 0
+  fi
+
   if prompt_yes_no "Create a new virtualenv and install dependencies"; then
     create_venv
     return 0
@@ -126,18 +284,33 @@ ensure_venv() {
 
 ensure_deps() {
   local py="$VENV_PATH/bin/python"
+  local need_install=0
   local -a missing=()
   local pkg
 
-  for pkg in gunicorn Flask Flask-SQLAlchemy oss2 python-dotenv; do
+  for pkg in gunicorn Flask Flask-SQLAlchemy oss2 python-dotenv requests notebooklm-py; do
     "$py" -m pip show "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
   done
 
-  if (( ${#missing[@]} == 0 )); then
+  if (( ${#missing[@]} > 0 )); then
+    need_install=1
+    info "Missing dependencies: ${missing[*]}"
+  fi
+
+  if deps_stamp_outdated; then
+    need_install=1
+    info "Dependency signature changed: $PYPROJECT_FILE"
+  fi
+
+  if (( need_install == 0 )); then
     return 0
   fi
 
-  info "Missing dependencies: ${missing[*]}"
+  if is_truthy "$AUTO_INSTALL_DEPS"; then
+    install_deps
+    return 0
+  fi
+
   if prompt_yes_no "Install dependencies now"; then
     install_deps
     return 0
@@ -324,7 +497,7 @@ get_ips() {
 
 show_help() {
   cat <<EOF
-Usage: $(basename "$0") {start|stop|status|restart|ip|logs|check|update|init}
+Usage: $(basename "$0") {start|stop|status|restart|ip|logs|check|update|init|bootstrap}
 
 Config via env vars:
   BENOSS_PROJECT_PATH=$PROJECT_PATH
@@ -337,10 +510,16 @@ Config via env vars:
   BENOSS_REPO_URL=$REPO_URL
   BENOSS_BACKUP_ITEMS=$BACKUP_ITEMS
   BENOSS_BACKUP_BASE=$BACKUP_BASE
+  BENOSS_AUTO_CREATE_VENV=$AUTO_CREATE_VENV
+  BENOSS_AUTO_INSTALL_DEPS=$AUTO_INSTALL_DEPS
+  BENOSS_AUTO_SYNC_ENV=$AUTO_SYNC_ENV
+  BENOSS_AUTO_INIT_DB=$AUTO_INIT_DB
+  BENOSS_AUTO_NOTEBOOKLM_AUTH=$AUTO_NOTEBOOKLM_AUTH
 
 Examples:
   BENOSS_APP_PORT=80 $(basename "$0") start
   $(basename "$0") init
+  $(basename "$0") bootstrap
   BENOSS_BACKUP_ITEMS=".env data uploads" $(basename "$0") update
   $(basename "$0") logs
   $(basename "$0") logs --tail 200 --grep ERROR
@@ -355,10 +534,12 @@ cmd_check() {
   need_cmd bash
   ensure_dirs
   [[ -d "$PROJECT_PATH" ]] || die "Project path not found: $PROJECT_PATH"
+  ensure_env_file
   if ! ensure_venv; then
     info "Check stopped: no virtualenv available."
     return 1
   fi
+  ensure_deps
   local py g
   py="$(python_bin)"
   g="$(gunicorn_bin)"
@@ -490,6 +671,7 @@ cmd_start() {
 
   [[ -d "$PROJECT_PATH" ]] || die "Project path not found: $PROJECT_PATH"
   cd "$PROJECT_PATH"
+  ensure_env_file
 
   # Basic dependency sanity
   local py g
@@ -638,17 +820,24 @@ cmd_init() {
     return 1
   fi
   ensure_deps
+  ensure_env_file
 
-  if [[ ! -f "$PROJECT_PATH/.env" ]]; then
-    info ".env not found. Create it before starting the service."
-  fi
-
-  if prompt_yes_no "Initialize database now (flask init-db)"; then
+  if is_truthy "$AUTO_INIT_DB"; then
+    info "Initializing database..."
+    "$VENV_PATH/bin/python" -m flask --app app init-db || die "Database init failed."
+    ok "Database initialized."
+  elif prompt_yes_no "Initialize database now (flask init-db)"; then
     "$VENV_PATH/bin/python" -m flask --app app init-db || die "Database init failed."
     ok "Database initialized."
   fi
 
+  ensure_notebooklm_auth
+
   ok "Init complete."
+}
+
+cmd_bootstrap() {
+  cmd_init
 }
 
 cmd_ip() {
@@ -799,6 +988,7 @@ case "${1:-}" in
   check)   cmd_check ;;
   update)  cmd_update ;;
   init)    cmd_init ;;
+  bootstrap) cmd_bootstrap ;;
   -h|--help|help|"") show_help ;;
   *) die "Unknown command: $1 (try --help)" ;;
 esac

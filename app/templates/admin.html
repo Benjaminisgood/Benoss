@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h2>管理员配置中心</h2>
+  <p class="muted">
+    在这里可以集中配置 AI provider、参数与提示词。保存后立即生效，无需重启服务。
+  </p>
+</section>
+
+<section class="card">
+  <div class="section-head">
+    <h3>运行时配置</h3>
+    <div class="action-line">
+      <button type="button" class="secondary" id="admin-refresh-btn">刷新</button>
+      <button type="button" id="admin-save-btn">保存全部</button>
+    </div>
+  </div>
+
+  <p id="admin-settings-status" class="muted"></p>
+  <form id="admin-settings-form" class="admin-settings-grid"></form>
+</section>
+{% endblock %}
