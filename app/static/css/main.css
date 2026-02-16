@@ -340,19 +340,87 @@ button.secondary {
   min-width: 140px;
 }
 
-.home-grid {
+.home-workbench {
   display: grid;
-  gap: 1rem;
-  grid-template-columns: 1fr 1fr;
+  gap: 0.9rem;
+  border-color: #c7d9e5;
+  background:
+    linear-gradient(160deg, rgba(11, 106, 126, 0.05), rgba(255, 255, 255, 0.95)),
+    #fff;
 }
 
-.quick-publish-card,
-.ai-card {
-  min-height: 100%;
+.home-workbench-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+  align-items: flex-end;
 }
 
-.vector-chat-card {
-  grid-column: 1 / -1;
+.home-workbench-head h2 {
+  margin: 0;
+  font-size: clamp(1.08rem, 2vw, 1.36rem);
+}
+
+.home-workbench-head .muted {
+  margin: 0.3rem 0 0;
+}
+
+.home-panel-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.home-panel-tab {
+  border: 1px solid #cad9e4;
+  background: #f6fbff;
+  color: #21455a;
+  border-radius: var(--radius-pill);
+  padding: 0.38rem 0.9rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+  line-height: 1.2;
+}
+
+.home-panel-tab:hover {
+  filter: none;
+  background: #ebf5fc;
+}
+
+.home-panel-tab.is-active {
+  border-color: #0a6072;
+  background: #0a6072;
+  color: #fff;
+  box-shadow: 0 8px 16px rgba(8, 83, 99, 0.2);
+}
+
+.home-panels {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.home-panel {
+  border: 1px solid #d6e3ec;
+  border-radius: 0.82rem;
+  padding: 0.95rem;
+  background: var(--surface-subtle);
+}
+
+.home-panel[hidden] {
+  display: none !important;
+}
+
+.home-panel.is-entering {
+  animation: panel-fade-in 220ms ease-out;
+}
+
+.quick-publish-card h2,
+.ai-card h2,
+.vector-chat-card h2 {
+  margin-top: 0;
 }
 
 .ai-card h3 {
@@ -942,9 +1010,17 @@ button.echoes-chip.active {
     flex-direction: column;
   }
 
-  .home-grid,
   .board-layout {
     grid-template-columns: 1fr;
+  }
+
+  .home-workbench-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .home-panel-tab {
+    flex: 1 1 calc(50% - 0.55rem);
   }
 
   .site-header {
@@ -975,6 +1051,10 @@ button.echoes-chip.active {
     animation: none;
   }
 
+  .home-panel.is-entering {
+    animation: none;
+  }
+
   .record-item,
   .notice-item,
   .echo-card,
@@ -994,6 +1074,17 @@ button.echoes-chip.active {
   from {
     opacity: 0;
     transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes panel-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
   }
   to {
     opacity: 1;

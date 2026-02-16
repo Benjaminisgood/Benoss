@@ -268,8 +268,30 @@ data/
 
 AI provider 别名归一化：
 
+- `open_ai` / `open-ai` -> `openai`
 - `chat_anywhere` / `chat-anywhere` -> `chatanywhere`
 - `dashscope` -> `aliyun`
+
+当前版本 provider 主键：
+
+- 使用 `AI_PRIMARY_PROVIDER` 作为全局主 provider（聊天 + 向量默认均跟随）。
+- `AI_TTS_PROVIDER` / `AI_IMAGE_PROVIDER` 为空时跟随 `AI_PRIMARY_PROVIDER`，不再使用旧键兼容逻辑。
+
+能力分流执行顺序（`app/routes/api.py` + `app/utils/local_vector_db.py`）：
+
+1. 聊天能力：
+   - `_ai_provider_settings()` 只读取 `AI_PRIMARY_PROVIDER` 对应配置，不做 provider 自动切换。
+2. 向量 embedding：
+   - `_embedding_provider_settings()` 只读取 `AI_PRIMARY_PROVIDER + VECTOR_EMBEDDING_MODEL`。
+3. TTS/图片能力：
+   - `_capability_settings_candidates()` 的 provider 顺序为：
+     - `AI_TTS_PROVIDER`/`AI_IMAGE_PROVIDER`（若设置）
+     - `AI_PRIMARY_PROVIDER`
+     - 固定备用序：`openai -> chatanywhere -> aliyun -> deepseek`（去重后尝试）
+   - model 顺序为：
+     - 仅在“首选 provider”上尝试显式 `AI_TTS_MODEL`/`AI_IMAGE_MODEL`（排除 `unsupported/none` 等占位符）
+     - 再尝试该 provider 的内置默认模型
+   - 结论：只要备用 provider 的 key/base_url 完整，TTS/图片就可能在备用 provider 上成功，不会强制停留在主 provider。
 
 ---
 
@@ -478,7 +500,11 @@ AI 生成链路：
 2. 博客：`_generate_blog_asset()` -> `chat/completions` -> 包装 HTML 文档
 3. 播客：`_generate_podcast_asset()` -> 先生成脚本再走 `/audio/speech`
 4. 海报：`_generate_poster_asset()` -> 先生成图像提示词再走 `/images/generations`
-5. `_save_generated_asset()` 保存文件与数据库元数据
+5. TTS/图片会经 `_capability_settings_candidates()` 做候选 provider/model 路由（分流 provider -> 主 provider -> 备用 provider）
+6. 若外部能力不可用：
+   - `AI_TTS_FALLBACK_LOCAL=1` 时，播客音频降级到本机 `say`（通常输出 `.aiff`）
+   - `AI_IMAGE_FALLBACK_LOCAL=1` 时，海报降级为本地 SVG
+7. `_save_generated_asset()` 保存文件与数据库元数据
 
 ---
 
@@ -525,8 +551,9 @@ AI 生成链路：
 
 1. 从本地归档提取公开记录文档
 2. 对新增/更新文档做 embedding upsert（增量）
-3. 本地存 dense vector，查询时做 cosine 相似度
-4. 返回 `citations`（带 day/record_id/score/snippet）
+3. 正常路径：本地 dense vector + cosine 相似度
+4. 若 embedding/索引异常：自动降级为基于归档文本的 lexical 检索（`meta.retrieval_mode=lexical_fallback`）
+5. 返回 `citations`（带 day/record_id/score/snippet），结构保持不变
 
 回答流程：
 
@@ -569,6 +596,10 @@ benoss-sync push --username <user> --text "hello"
 benoss-sync pull --username <user> --output ./pulled_records
 ```
 
+补充：
+
+- 若 `digest-build` 在 CLI 报 `Unable to build URLs outside an active request`，优先改走 `POST /api/digest/daily`（admin）触发同等流程。
+
 ---
 
 ## 12. AI 改代码时的硬性约束
@@ -610,14 +641,22 @@ benoss-sync pull --username <user> --output ./pulled_records
 ## 13. 常见故障定位
 
 - `AI provider not configured`：
-  - 检查 `AI_AUTOFILL_PROVIDER` 与对应 API KEY/base_url/model
+  - 检查 `AI_PRIMARY_PROVIDER` 与对应 API KEY/base_url/model
 - `embedding provider not configured`：
   - 向量重建依赖 provider + `VECTOR_EMBEDDING_MODEL`
+- `embedding request failed (404) ... model_not_found`：
+  - 先检查生效配置（含 AppSetting 覆盖）：`AI_PRIMARY_PROVIDER` 与 `VECTOR_EMBEDDING_MODEL`
+  - 该报错通常表示“模型名与当前 provider 不匹配”，不是本地向量库损坏
+  - 修正模型后执行 `python -m flask --app app vector-build --force` 重新构建
+- Home 没看到手动生成资产：
+  - Home `today_assets` 仅展示 `public + is_daily_digest=true + source_day=今天` 的资产
+  - 手动脚本默认常用 `visibility=private`，不会出现在 Home 卡片
 - `content unavailable` / `asset unavailable`：
   - 检查 `oss_key`、OSS 凭据或本地 `data/oss-local` 文件
 - Digest 长期 `partial/failed`：
   - 查看 `daily_digest_job.error`
-  - 检查 TTS/图片模型可用性和限额
+  - 若错误出现在 `chat/completions` 阶段，博客/播客/海报都会受影响（脚本/提示词前置失败）
+  - 若错误仅在 TTS/图片阶段，检查 provider 能力、余额与本地兜底开关
 
 ---
 
@@ -638,3 +677,4 @@ benoss-sync pull --username <user> --output ./pulled_records
 - 所有时间归档按 `DIGEST_TIMEZONE` 切日
 - 归档是事实来源之一，向量索引由归档构建，不直接扫数据库
 - Home 页面是自动化入口：会触发归档、向量状态检查、可选日报自动补齐
+- Home 的 `today_assets` 不等于“今天新生成的所有资产”，只展示公开且标记为日报产物的资产

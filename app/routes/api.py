@@ -6,6 +6,9 @@ import html
 import json
 import mimetypes
 import re
+import shutil
+import subprocess
+import tempfile
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -679,31 +682,48 @@ def _render_notice_html(records: list[Record], *, day: str, user_id: str, tag: s
 
 
 def _ai_provider_settings() -> dict | None:
-    raw = get_setting_str("AI_AUTOFILL_PROVIDER", default="").strip().lower()
+    provider = _default_ai_provider()
+    return _provider_settings_for_chat(provider)
+
+
+def _normalize_provider(raw: str) -> str:
+    value = str(raw or "").strip().lower()
     aliases = {
+        "open_ai": "openai",
+        "open-ai": "openai",
         "chat_anywhere": "chatanywhere",
         "chat-anywhere": "chatanywhere",
         "dashscope": "aliyun",
     }
-    provider = aliases.get(raw, raw)
-    if not provider:
-        return None
+    return aliases.get(value, value)
 
+
+def _default_ai_provider() -> str:
+    primary = _normalize_provider(get_setting_str("AI_PRIMARY_PROVIDER", default=""))
+    return primary
+
+
+def _provider_raw_config(provider: str) -> dict | None:
     choices = {
+        "openai": {
+            "api_key": get_setting_str("OPENAI_API_KEY", default=""),
+            "base_url": get_setting_str("OPENAI_API_BASE_URL", default="https://api.openai.com/v1"),
+            "chat_model": get_setting_str("OPENAI_MODEL", default="gpt-4o-mini"),
+        },
         "chatanywhere": {
             "api_key": get_setting_str("CHAT_ANYWHERE_API_KEY", default=""),
             "base_url": get_setting_str("CHAT_ANYWHERE_API_BASE_URL", default="https://api.chatanywhere.tech/v1"),
-            "model": get_setting_str("CHAT_ANYWHERE_MODEL", default="gpt-4o-mini"),
+            "chat_model": get_setting_str("CHAT_ANYWHERE_MODEL", default="gpt-4o-mini"),
         },
         "deepseek": {
             "api_key": get_setting_str("DEEPSEEK_API_KEY", default=""),
             "base_url": get_setting_str("DEEPSEEK_API_BASE_URL", default="https://api.deepseek.com/v1"),
-            "model": get_setting_str("DEEPSEEK_MODEL", default="deepseek-chat"),
+            "chat_model": get_setting_str("DEEPSEEK_MODEL", default="deepseek-chat"),
         },
         "aliyun": {
             "api_key": get_setting_str("ALIYUN_AI_API_KEY", default=""),
             "base_url": get_setting_str("ALIYUN_AI_API_BASE_URL", default="https://dashscope.aliyuncs.com/compatible-mode/v1"),
-            "model": get_setting_str("ALIYUN_AI_MODEL", default="qwen-plus"),
+            "chat_model": get_setting_str("ALIYUN_AI_MODEL", default="qwen-plus"),
         },
     }
     selected = choices.get(provider)
@@ -712,16 +732,134 @@ def _ai_provider_settings() -> dict | None:
 
     api_key = str(selected.get("api_key") or "").strip()
     base_url = str(selected.get("base_url") or "").strip().rstrip("/")
-    model = str(selected.get("model") or "").strip()
-    if not api_key or not base_url or not model:
+    chat_model = str(selected.get("chat_model") or "").strip()
+    if not api_key or not base_url:
         return None
-
     return {
         "provider": provider,
         "api_key": api_key,
         "base_url": base_url,
+        "chat_model": chat_model,
+    }
+
+
+def _provider_settings_for_chat(provider: str) -> dict | None:
+    config = _provider_raw_config(provider)
+    if not config:
+        return None
+    model = str(config.get("chat_model") or "").strip()
+    if not model:
+        return None
+    return {
+        "provider": str(config.get("provider") or ""),
+        "api_key": str(config.get("api_key") or ""),
+        "base_url": str(config.get("base_url") or ""),
         "model": model,
     }
+
+
+def _provider_settings_with_model(provider: str, model: str) -> dict | None:
+    config = _provider_raw_config(provider)
+    selected_model = str(model or "").strip()
+    if not config or not selected_model:
+        return None
+    return {
+        "provider": str(config.get("provider") or ""),
+        "api_key": str(config.get("api_key") or ""),
+        "base_url": str(config.get("base_url") or ""),
+        "model": selected_model,
+    }
+
+
+def _model_placeholder(value: str) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"", "none", "n/a", "na", "-", "unsupported", "not-supported", "not_supported"}
+
+
+def _capability_default_model(capability: str, provider: str) -> str:
+    defaults = {
+        "tts": {
+            "openai": "gpt-4o-mini-tts",
+            "chatanywhere": "gpt-4o-mini-tts",
+            "deepseek": "",
+            "aliyun": "qwen3-tts-instruct-flash",
+        },
+        "image": {
+            "openai": "gpt-image-1",
+            "chatanywhere": "gpt-image-1",
+            "deepseek": "",
+            "aliyun": "qwen-image-max",
+        },
+    }
+    selected = defaults.get(capability) or {}
+    return str(selected.get(provider) or "")
+
+
+def _capability_provider_order(capability: str) -> list[str]:
+    provider_key = {
+        "tts": "AI_TTS_PROVIDER",
+        "image": "AI_IMAGE_PROVIDER",
+    }.get(capability, "")
+
+    ordered: list[str] = []
+    if provider_key:
+        ordered.append(_normalize_provider(get_setting_str(provider_key, default="")))
+    ordered.append(_default_ai_provider())
+    # Common fallback providers for media generation.
+    ordered.extend(["openai", "chatanywhere", "aliyun", "deepseek"])
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for provider in ordered:
+        if not provider or provider in seen:
+            continue
+        seen.add(provider)
+        result.append(provider)
+    return result
+
+
+def _capability_setting_model(capability: str) -> str:
+    if capability == "tts":
+        return get_setting_str("AI_TTS_MODEL", default="").strip()
+    if capability == "image":
+        return get_setting_str("AI_IMAGE_MODEL", default="").strip()
+    return ""
+
+
+def _capability_preferred_provider(capability: str) -> str:
+    provider_key = {
+        "tts": "AI_TTS_PROVIDER",
+        "image": "AI_IMAGE_PROVIDER",
+    }.get(capability, "")
+    if provider_key:
+        explicit = _normalize_provider(get_setting_str(provider_key, default=""))
+        if explicit:
+            return explicit
+    return _default_ai_provider()
+
+
+def _capability_settings_candidates(capability: str) -> list[dict]:
+    preferred_model = _capability_setting_model(capability)
+    preferred_provider = _capability_preferred_provider(capability)
+    candidates: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    for provider in _capability_provider_order(capability):
+        models: list[str] = []
+        if provider == preferred_provider and not _model_placeholder(preferred_model):
+            models.append(preferred_model)
+        fallback_model = _capability_default_model(capability, provider)
+        if fallback_model and fallback_model not in models:
+            models.append(fallback_model)
+        for model in models:
+            pair = (provider, model)
+            if pair in seen:
+                continue
+            seen.add(pair)
+            settings = _provider_settings_with_model(provider, model)
+            if settings:
+                candidates.append(settings)
+    return candidates
 
 
 def _message_content_to_text(content) -> str:
@@ -1162,8 +1300,14 @@ def _build_notice_ai_prompt(
     ]
 
 
-def _ai_request_json(path: str, payload: dict, *, timeout: int | None = None) -> tuple[dict, dict]:
-    settings = _ai_provider_settings()
+def _ai_request_json(
+    path: str,
+    payload: dict,
+    *,
+    timeout: int | None = None,
+    settings: dict | None = None,
+) -> tuple[dict, dict]:
+    settings = settings or _ai_provider_settings()
     if not settings:
         raise RuntimeError("AI provider not configured")
 
@@ -1191,8 +1335,14 @@ def _ai_request_json(path: str, payload: dict, *, timeout: int | None = None) ->
     return data, settings
 
 
-def _ai_request_binary(path: str, payload: dict, *, timeout: int | None = None) -> tuple[bytes, str, dict]:
-    settings = _ai_provider_settings()
+def _ai_request_binary(
+    path: str,
+    payload: dict,
+    *,
+    timeout: int | None = None,
+    settings: dict | None = None,
+) -> tuple[bytes, str, dict]:
+    settings = settings or _ai_provider_settings()
     if not settings:
         raise RuntimeError("AI provider not configured")
 
@@ -1246,11 +1396,57 @@ def _audio_format_meta(audio_format: str) -> tuple[str, str]:
     return mapping.get(value, ("audio/mpeg", ".mp3"))
 
 
-def _ai_tts_audio(script: str, *, podcast_style: str) -> tuple[bytes, str, str, dict]:
-    tts_model = get_setting_str("AI_TTS_MODEL", default="gpt-4o-mini-tts").strip()
-    if not tts_model:
-        raise RuntimeError("AI_TTS_MODEL not configured")
+def _local_tts_audio(text: str, *, voice: str) -> tuple[bytes, str, str, dict]:
+    say_bin = shutil.which("say")
+    if not say_bin:
+        raise RuntimeError("local tts command `say` not found")
 
+    content = str(text or "").strip()
+    if not content:
+        raise RuntimeError("local tts input is empty")
+
+    tmp_path = ""
+    with tempfile.NamedTemporaryFile(prefix="benoss-tts-", suffix=".aiff", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    voice_value = str(voice or "").strip()
+    attempts: list[list[str]] = []
+    if voice_value:
+        attempts.append([say_bin, "-v", voice_value, "-o", tmp_path, content])
+    attempts.append([say_bin, "-o", tmp_path, content])
+
+    last_error = ""
+    try:
+        for command in attempts:
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode == 0:
+                audio_bytes = Path(tmp_path).read_bytes()
+                if not audio_bytes:
+                    raise RuntimeError("local tts produced empty audio")
+                return (
+                    audio_bytes,
+                    "audio/aiff",
+                    ".aiff",
+                    {
+                        "provider": "local",
+                        "model": "macos-say",
+                        "voice": voice_value or "system-default",
+                    },
+                )
+            stderr_text = str(result.stderr or "").strip()
+            stdout_text = str(result.stdout or "").strip()
+            last_error = stderr_text or stdout_text or f"exit code {result.returncode}"
+    finally:
+        if tmp_path:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    raise RuntimeError(f"local tts failed: {last_error}")
+
+
+def _ai_tts_audio(script: str, *, podcast_style: str) -> tuple[bytes, str, str, dict]:
     tts_voice = get_setting_str("AI_TTS_VOICE", default="alloy").strip() or "alloy"
     response_format = get_setting_str("AI_TTS_RESPONSE_FORMAT", default="mp3").strip().lower() or "mp3"
     max_chars = max(600, min(get_setting_int("AI_TTS_MAX_INPUT_CHARS", default=3600), 20000))
@@ -1262,69 +1458,170 @@ def _ai_tts_audio(script: str, *, podcast_style: str) -> tuple[bytes, str, str, 
 
     style = _normalize_podcast_style(podcast_style)
     style_hint = _PODCAST_STYLE_GUIDE.get(style, _PODCAST_STYLE_GUIDE["dialogue"])
-    payload = {
-        "model": tts_model,
-        "voice": tts_voice,
-        "input": f"{style_hint}\n\n{safe_text}",
-        "response_format": response_format,
-    }
     timeout = max(45, get_setting_int("AI_REQUEST_TIMEOUT_SECONDS", default=45))
-    audio_bytes, returned_content_type, settings = _ai_request_binary("/audio/speech", payload, timeout=timeout)
-    if not audio_bytes:
-        raise RuntimeError("audio generation returned empty bytes")
+    errors: list[str] = []
 
-    content_type, ext = _audio_format_meta(response_format)
-    if returned_content_type and "application/json" not in returned_content_type:
-        content_type = returned_content_type.split(";")[0].strip() or content_type
-    return (
-        audio_bytes,
-        content_type,
-        ext,
-        {
-            "provider": settings["provider"],
-            "model": tts_model,
+    for settings in _capability_settings_candidates("tts"):
+        payload = {
+            "model": settings["model"],
             "voice": tts_voice,
-        },
-    )
+            "input": f"{style_hint}\n\n{safe_text}",
+            "response_format": response_format,
+        }
+        try:
+            audio_bytes, returned_content_type, used = _ai_request_binary(
+                "/audio/speech",
+                payload,
+                timeout=timeout,
+                settings=settings,
+            )
+        except RuntimeError as exc:
+            errors.append(f"{settings['provider']}:{settings['model']} => {exc}")
+            continue
+
+        if not audio_bytes:
+            errors.append(f"{settings['provider']}:{settings['model']} => empty audio")
+            continue
+
+        content_type, ext = _audio_format_meta(response_format)
+        if returned_content_type and "application/json" not in returned_content_type:
+            content_type = returned_content_type.split(";")[0].strip() or content_type
+        return (
+            audio_bytes,
+            content_type,
+            ext,
+            {
+                "provider": used["provider"],
+                "model": used["model"],
+                "voice": tts_voice,
+            },
+        )
+
+    if get_setting_bool("AI_TTS_FALLBACK_LOCAL", default=True):
+        try:
+            return _local_tts_audio(f"{style_hint}\n\n{safe_text}", voice=tts_voice)
+        except RuntimeError as exc:
+            errors.append(f"local:macos-say => {exc}")
+
+    if not errors:
+        raise RuntimeError("TTS provider not configured")
+    raise RuntimeError("TTS unavailable across providers: " + " | ".join(errors)[:2000])
 
 
 def _ai_generate_poster_image(prompt: str) -> tuple[bytes, str, str, dict]:
-    image_model = get_setting_str("AI_IMAGE_MODEL", default="gpt-image-1").strip()
-    if not image_model:
+    timeout = max(45, get_setting_int("AI_REQUEST_TIMEOUT_SECONDS", default=45))
+    errors: list[str] = []
+
+    for settings in _capability_settings_candidates("image"):
+        payload = {
+            "model": settings["model"],
+            "prompt": prompt,
+            "size": "1024x1024",
+            "response_format": "b64_json",
+        }
+        try:
+            data, used = _ai_request_json("/images/generations", payload, timeout=timeout, settings=settings)
+        except RuntimeError as exc:
+            errors.append(f"{settings['provider']}:{settings['model']} => {exc}")
+            continue
+
+        items = data.get("data") or []
+        first = items[0] if items else {}
+        b64_json = str(first.get("b64_json") or "").strip()
+        url = str(first.get("url") or "").strip()
+
+        if b64_json:
+            try:
+                image_bytes = base64.b64decode(b64_json)
+            except Exception as exc:
+                errors.append(f"{settings['provider']}:{settings['model']} => base64 decode failed: {exc}")
+                continue
+        elif url:
+            try:
+                response = requests.get(url, timeout=timeout)
+                response.raise_for_status()
+                image_bytes = response.content
+            except requests.RequestException as exc:
+                errors.append(f"{settings['provider']}:{settings['model']} => image download failed: {exc}")
+                continue
+        else:
+            errors.append(f"{settings['provider']}:{settings['model']} => response missing b64_json/url")
+            continue
+
+        if not image_bytes:
+            errors.append(f"{settings['provider']}:{settings['model']} => image bytes empty")
+            continue
+
+        return image_bytes, "image/png", ".png", {"provider": used["provider"], "model": used["model"]}
+
+    if get_setting_bool("AI_IMAGE_FALLBACK_LOCAL", default=True):
+        image_bytes = _render_local_poster_svg(prompt)
+        return image_bytes, "image/svg+xml", ".svg", {"provider": "local", "model": "local-svg-poster-v1"}
+
+    if not errors:
         raise RuntimeError("AI_IMAGE_MODEL not configured")
+    raise RuntimeError("image generation unavailable across providers: " + " | ".join(errors)[:2000])
 
-    payload = {
-        "model": image_model,
-        "prompt": prompt,
-        "size": "1024x1024",
-        "response_format": "b64_json",
-    }
-    data, settings = _ai_request_json("/images/generations", payload)
 
-    items = data.get("data") or []
-    first = items[0] if items else {}
-    b64_json = str(first.get("b64_json") or "").strip()
-    url = str(first.get("url") or "").strip()
+def _wrap_lines(value: str, *, width: int, max_lines: int) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
 
-    if b64_json:
-        try:
-            image_bytes = base64.b64decode(b64_json)
-        except Exception as exc:
-            raise RuntimeError("image response base64 decode failed") from exc
-    elif url:
-        try:
-            response = requests.get(url, timeout=get_setting_int("AI_REQUEST_TIMEOUT_SECONDS", default=45))
-            response.raise_for_status()
-            image_bytes = response.content
-        except requests.RequestException as exc:
-            raise RuntimeError(f"image download failed: {exc}") from exc
-    else:
-        raise RuntimeError("image response missing b64_json/url")
+    chunks: list[str] = []
+    current = ""
+    for ch in text:
+        if ch == "\n":
+            if current.strip():
+                chunks.append(current.strip())
+            current = ""
+            if len(chunks) >= max_lines:
+                return chunks
+            continue
+        current += ch
+        if len(current) >= width:
+            chunks.append(current.strip())
+            current = ""
+            if len(chunks) >= max_lines:
+                return chunks
+    if current.strip() and len(chunks) < max_lines:
+        chunks.append(current.strip())
+    return chunks
 
-    if not image_bytes:
-        raise RuntimeError("image generation returned empty bytes")
 
-    return image_bytes, "image/png", ".png", {"provider": settings["provider"], "model": image_model}
+def _render_local_poster_svg(prompt: str) -> bytes:
+    prompt_text = _normalize_prompt_text(prompt)
+    if not prompt_text:
+        prompt_text = "Daily Digest Poster"
+
+    lines = _wrap_lines(prompt_text, width=26, max_lines=14)
+    if not lines:
+        lines = ["Daily Digest Poster"]
+
+    y_start = 170
+    line_gap = 56
+    line_items: list[str] = []
+    for idx, line in enumerate(lines):
+        safe = html.escape(line)
+        y_pos = y_start + idx * line_gap
+        line_items.append(f'<text x="92" y="{y_pos}" font-size="34" fill="#132037">{safe}</text>')
+
+    body = "\n    ".join(line_items)
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">\n'
+        "  <defs>\n"
+        '    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">\n'
+        '      <stop offset="0%" stop-color="#f8fbff"/>\n'
+        '      <stop offset="100%" stop-color="#e5eefc"/>\n'
+        "    </linearGradient>\n"
+        "  </defs>\n"
+        '  <rect width="1024" height="1024" fill="url(#bg)"/>\n'
+        '  <rect x="64" y="72" width="896" height="880" rx="28" fill="#ffffff" stroke="#d3dded" stroke-width="2"/>\n'
+        '  <text x="92" y="122" font-size="28" fill="#4a5f82">Benoss Local Poster Fallback</text>\n'
+        f"  {body}\n"
+        "</svg>\n"
+    )
+    return svg.encode("utf-8")
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -1995,12 +2292,13 @@ def update_record(record_id: int):
         content, preview = _file_to_content(new_file)
 
         record.content.kind = content.kind
-        record.content.text_content = content.text_content
-        record.content.filename = content.filename
-        record.content.content_type = content.content_type
-        record.content.size_bytes = content.size_bytes
-        record.content.sha256 = content.sha256
-        record.content.oss_key = content.oss_key
+        # Content.text_content is non-null in schema; keep empty string for file records.
+        record.content.text_content = content.text_content or ""
+        record.content.filename = content.filename or ""
+        record.content.content_type = content.content_type or ""
+        record.content.size_bytes = int(content.size_bytes or 0)
+        record.content.sha256 = content.sha256 or ""
+        record.content.oss_key = content.oss_key or ""
 
         record.preview = preview
         record.format = _detect_format(record.content, payload.get("format"))

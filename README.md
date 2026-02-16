@@ -21,7 +21,7 @@ Benoss 是一个“学习记录流”应用：用户可以发布文本或文件�
 - 资产生成（可选）：
   - AI 生成博客网页（html）；
   - AI 生成播客音频（本地脚本 + TTS，支持对话/演讲/访谈/播报风格）；
-  - AI 生成海报图片（png）。
+  - AI 生成海报图片（png，失败时可本地兜底为 svg）。
   - 自动按天保存本地归档（JSON），向量库采用本地持久化 + embedding 增量 upsert。
   - Home 页内置本地向量问答机器人（RAG 检索 + 可选 AI 回答）。
 
@@ -296,12 +296,13 @@ data/
 
 实现点：
 - `_render_notice_html`：把记录流按日期分组渲染为单页 HTML。
-- `_ai_provider_settings`：读取当前 provider 配置。
-- `_ai_chat`：调用 `/chat/completions`。
+- `_ai_provider_settings`：读取 `AI_PRIMARY_PROVIDER` 并解析聊天模型配置。
+- `_ai_chat`：调用 `/chat/completions`（博客/播客脚本/海报提示词都依赖这一步）。
 - `_records_for_ai_prompt`：构建 AI 上下文，优先注入记录全文；文本文件会尝试读取并提取正文（受长度/字节预算限制）。
 - `save_daily_archive`：将当天记录完整写入本地 JSON 归档（含文本全文、文件元信息、可提取文本）；该归档落在 `LOCAL_DAILY_ARCHIVE_DIR`，不是数据库表。
-- `_generate_podcast_asset`：先生成多风格播客脚本，再调用 TTS 接口生成音频。
-- `_ai_generate_poster_image`：调用 `/images/generations`。
+- `_capability_settings_candidates`：按“能力分流 provider -> 主 provider -> 备用 provider”选择候选模型。
+- `_generate_podcast_asset`：先生成多风格播客脚本，再调用 TTS；外部 TTS 全失败时可本机 `say` 兜底（`audio/aiff`）。
+- `_ai_generate_poster_image`：调用 `/images/generations`；外部图像接口全失败时可本地 SVG 兜底。
 - `_save_generated_asset`：将 AI 结果写入对象存储 + `GeneratedAsset` 表。
 - `build_daily_public_digest`：按日汇总公开内容，产出博客/播客/海报并归档。
 
@@ -368,6 +369,8 @@ data/
   - 拉取今日公开记录：`GET /api/home/today`
   - 快速发布：`POST /api/push`
   - 查看系统自动生成的今日博客/播客/海报
+  - `today_assets` 仅包含：`visibility=public` 且 `is_daily_digest=true` 且 `source_day=今天` 的资产
+  - 手动测试生成的 `private` 资产不会出现在 Home 卡片中
   - 本地向量问答：`POST /api/vector/chat`
   - 重建向量索引：`POST /api/vector/rebuild`
 - Board 页面：
@@ -411,6 +414,16 @@ python -m flask --app app digest-build
 python -m flask --app app vector-build
 # 强制全量重建（忽略增量缓存）
 python -m flask --app app vector-build --force
+```
+
+提示：
+- 若 `python -m flask --app app digest-build` 报 `Unable to build URLs outside an active request`，可改用管理员接口触发：
+
+```bash
+curl -X POST "http://127.0.0.1:80/api/digest/daily" \
+  -H "Content-Type: application/json" \
+  -b "session=<admin-session-cookie>" \
+  -d '{"day":"2026-02-16","timezone":"Asia/Shanghai","force":true}'
 ```
 
 打开浏览器访问：
@@ -473,7 +486,9 @@ benoss-sync pull --username alice --output ./pulled_records
 
 ### 13.3 AI 配置
 
-- `AI_AUTOFILL_PROVIDER`：`chatanywhere` / `deepseek` / `aliyun`
+- `AI_PRIMARY_PROVIDER`：`openai` / `chatanywhere` / `deepseek` / `aliyun`（推荐主键）
+- `AI_TTS_PROVIDER`（可选，留空则跟随 `AI_PRIMARY_PROVIDER`）
+- `AI_IMAGE_PROVIDER`（可选，留空则跟随 `AI_PRIMARY_PROVIDER`）
 - `AI_REQUEST_TIMEOUT_SECONDS`
 - `AI_MAX_NOTICE_RECORDS`
 - `AI_NOTICE_CONTEXT_MAX_CHARS`
@@ -487,6 +502,8 @@ benoss-sync pull --username alice --output ./pulled_records
 - `AI_TTS_VOICE`
 - `AI_TTS_RESPONSE_FORMAT`
 - `AI_TTS_MAX_INPUT_CHARS`
+- `AI_TTS_FALLBACK_LOCAL`（外部 TTS 失败时，尝试本机 `say` 兜底）
+- `AI_IMAGE_FALLBACK_LOCAL`（图片模型不可用时本地 SVG 兜底）
 - `PODCAST_DEFAULT_STYLE`（`dialogue/speech/interview/news`）
 - `LOCAL_DAILY_ARCHIVE_DIR`
 - `LOCAL_VECTOR_STORE_DIR`
@@ -500,11 +517,105 @@ benoss-sync pull --username alice --output ./pulled_records
 
 说明：
 - `VECTOR_EMBEDDING_MODEL` 需要与你当前 provider 兼容，否则向量重建/检索会返回模型错误。
+- `AI_TTS_MODEL` / `AI_IMAGE_MODEL` 可留空，系统会按 `AI_PRIMARY_PROVIDER` 选择对应默认模型。
+
+能力路由规则（当前版本）：
+- 聊天（博客正文/播客脚本/海报提示词）只走 `AI_PRIMARY_PROVIDER`。
+- 向量 embedding 默认跟随 `AI_PRIMARY_PROVIDER`（通过 `VECTOR_EMBEDDING_MODEL` 控制模型）。
+- TTS / 图片支持能力分流：优先 `AI_TTS_PROVIDER` / `AI_IMAGE_PROVIDER`，为空时跟随 `AI_PRIMARY_PROVIDER`，失败再尝试备用 provider。
+- 若 `AI_TTS_FALLBACK_LOCAL=1`，外部 TTS 全失败时自动降级到本机 `say`（产物通常为 `.aiff`）。
+- 若 `AI_IMAGE_FALLBACK_LOCAL=1`，外部图像全失败时自动降级到本地 SVG 海报。
+
+`VECTOR_EMBEDDING_MODEL` 推荐对照（2026-02-16 实测）：
+- `openai`：`text-embedding-3-small`（未在本项目当前环境实测，需要配置 `OPENAI_API_KEY`）
+- `chatanywhere`：`text-embedding-3-small`（也可用 `text-embedding-3-large`、`text-embedding-ada-002`）
+- `deepseek`：当前无可用 embedding 模型（`/models` 仅返回 `deepseek-chat`、`deepseek-reasoner`）
+- `aliyun`：`text-embedding-v3`（兼容 `text-embedding-v2`、`text-embedding-v1`）
+
+`AI_TTS_MODEL` 推荐对照（2026-02-16）：
+- `openai`：`gpt-4o-mini-tts`（未在本项目当前环境实测，需要配置 `OPENAI_API_KEY`）
+- `chatanywhere`：`gpt-4o-mini-tts`（实测可用）
+- `deepseek`：`unsupported`（当前无 TTS 模型）
+- `aliyun`：`unsupported`（当前 `compatible-mode /audio/speech` 返回 404）
+
+`AI_IMAGE_MODEL` 推荐对照（2026-02-16）：
+- `openai`：`gpt-image-1`（未在本项目当前环境实测，需要配置 `OPENAI_API_KEY`）
+- `chatanywhere`：`gpt-image-1`（模型可用，受账户余额影响）
+- `deepseek`：`unsupported`（当前无图像生成模型）
+- `aliyun`：`unsupported`（当前 `compatible-mode /images/generations` 返回 404）
 
 按 provider 分组：
+- `OPENAI_API_KEY` / `OPENAI_API_BASE_URL` / `OPENAI_MODEL`
 - `CHAT_ANYWHERE_API_KEY` / `CHAT_ANYWHERE_API_BASE_URL` / `CHAT_ANYWHERE_MODEL`
 - `DEEPSEEK_API_KEY` / `DEEPSEEK_API_BASE_URL` / `DEEPSEEK_MODEL`
 - `ALIYUN_AI_API_KEY` / `ALIYUN_AI_API_BASE_URL` / `ALIYUN_AI_MODEL`
+
+### 13.4 能力分流执行顺序（按代码真实行为）
+
+- 聊天（博客正文/播客脚本/海报提示词）：
+  - 只读取 `AI_PRIMARY_PROVIDER` 对应的聊天模型（`*_MODEL`），不做 provider 级自动切换。
+- 向量 embedding：
+  - 只读取 `AI_PRIMARY_PROVIDER + VECTOR_EMBEDDING_MODEL`，不做 provider 级自动切换。
+- TTS / 图片：
+  - provider 候选顺序：`AI_TTS_PROVIDER`/`AI_IMAGE_PROVIDER`（若设置） -> `AI_PRIMARY_PROVIDER` -> `openai` -> `chatanywhere` -> `aliyun` -> `deepseek`（去重后依次尝试）。
+  - model 选择顺序：优先显式 `AI_TTS_MODEL`/`AI_IMAGE_MODEL`（仅在“首选 provider”上生效，且不是 `unsupported/none` 占位符），否则用该 provider 的内置默认模型。
+  - 全部外部 provider 失败后，若开启本地兜底：
+    - `AI_TTS_FALLBACK_LOCAL=1` -> `macos-say`（`.aiff`）
+    - `AI_IMAGE_FALLBACK_LOCAL=1` -> 本地 SVG
+
+### 13.5 Embedding 404（`model_not_found`）快速排查
+
+典型报错：
+- `embedding request failed (404) ... code=model_not_found`
+
+排查步骤：
+
+```bash
+# 1) 先看“实际生效”的 provider 和 embedding model（含管理员后台覆盖）
+python -m flask --app app shell -c "from app.utils.runtime_settings import get_setting_str; print('AI_PRIMARY_PROVIDER=', get_setting_str('AI_PRIMARY_PROVIDER')); print('VECTOR_EMBEDDING_MODEL=', get_setting_str('VECTOR_EMBEDDING_MODEL'))"
+
+# 2) 修正为该 provider 支持的 embedding 模型（示例）
+# openai/chatanywhere -> text-embedding-3-small
+# aliyun             -> text-embedding-v3
+# deepseek           -> 当前无 embedding，需换 provider
+
+# 3) 强制重建索引验证
+python -m flask --app app vector-build --force
+```
+
+结论：
+- 向量链路报 404 时，根因通常不是“本地模型没跑起来”，而是“当前 provider 不支持你配置的 `VECTOR_EMBEDDING_MODEL`”。
+
+### 13.6 推荐配置模板（当前版本）
+
+模板 A（全云端，一套 provider 跑全链路，推荐）：
+
+```env
+AI_PRIMARY_PROVIDER=openai
+AI_TTS_PROVIDER=
+AI_IMAGE_PROVIDER=
+VECTOR_EMBEDDING_MODEL=text-embedding-3-small
+AI_TTS_MODEL=gpt-4o-mini-tts
+AI_IMAGE_MODEL=gpt-image-1
+AI_TTS_FALLBACK_LOCAL=0
+AI_IMAGE_FALLBACK_LOCAL=0
+```
+
+模板 B（主用阿里云，媒体走本地兜底）：
+
+```env
+AI_PRIMARY_PROVIDER=aliyun
+AI_TTS_PROVIDER=
+AI_IMAGE_PROVIDER=
+VECTOR_EMBEDDING_MODEL=text-embedding-v3
+AI_TTS_MODEL=unsupported
+AI_IMAGE_MODEL=unsupported
+AI_TTS_FALLBACK_LOCAL=1
+AI_IMAGE_FALLBACK_LOCAL=1
+```
+
+说明：
+- 模板 B 依赖“其他媒体 provider 不可用”时触发本地兜底；若同时配置了可用的 `OPENAI_*` 或 `CHAT_ANYWHERE_*`，TTS/图片仍可能先在备用 provider 成功。
 
 ## 14. 面向未来的扩展方向
 

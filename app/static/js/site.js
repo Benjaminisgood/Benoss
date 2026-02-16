@@ -36,6 +36,7 @@
     observer: null,
     pageSize: 24,
   };
+  const homePanelStorageKey = "benoss.home.active_panel";
 
   function escapeHtml(value) {
     return String(value ?? "").replace(htmlEscapePattern, (char) => htmlEscapeMap[char]);
@@ -371,6 +372,76 @@
     });
   }
 
+  function initHomePanelSwitcher() {
+    const tabs = Array.from(document.querySelectorAll("[data-home-panel-tab]"));
+    const panels = Array.from(document.querySelectorAll("[data-home-panel]"));
+    if (!tabs.length || !panels.length) {
+      return;
+    }
+
+    const tabMap = new Map();
+    const panelMap = new Map();
+    tabs.forEach((tab) => {
+      const key = String(tab.dataset.homePanelTab || "").trim();
+      if (key) {
+        tabMap.set(key, tab);
+      }
+    });
+    panels.forEach((panel) => {
+      const key = String(panel.dataset.homePanel || "").trim();
+      if (key) {
+        panelMap.set(key, panel);
+      }
+    });
+
+    const keys = [...panelMap.keys()].filter((key) => tabMap.has(key));
+    if (!keys.length) {
+      return;
+    }
+
+    const defaultKey = keys.includes("quick") ? "quick" : keys[0];
+    const normalizeKey = (value) => (keys.includes(value) ? value : defaultKey);
+
+    const activatePanel = (key, opts = {}) => {
+      const nextKey = normalizeKey(String(key || "").trim());
+      const animate = opts.animate !== false;
+      for (const [panelKey, panelEl] of panelMap.entries()) {
+        const active = panelKey === nextKey;
+        panelEl.hidden = !active;
+        panelEl.classList.toggle("is-entering", active && animate);
+      }
+      for (const [tabKey, tabEl] of tabMap.entries()) {
+        const active = tabKey === nextKey;
+        tabEl.classList.toggle("is-active", active);
+        tabEl.setAttribute("aria-selected", active ? "true" : "false");
+      }
+      try {
+        window.localStorage.setItem(homePanelStorageKey, nextKey);
+      } catch (_error) {
+        // Ignore storage failures (private mode / restricted contexts).
+      }
+    };
+
+    tabs.forEach((tabEl) => {
+      tabEl.addEventListener("click", () => {
+        activatePanel(tabEl.dataset.homePanelTab, { animate: true });
+      });
+    });
+    panels.forEach((panelEl) => {
+      panelEl.addEventListener("animationend", () => {
+        panelEl.classList.remove("is-entering");
+      });
+    });
+
+    let initialKey = defaultKey;
+    try {
+      initialKey = normalizeKey(window.localStorage.getItem(homePanelStorageKey) || defaultKey);
+    } catch (_error) {
+      initialKey = defaultKey;
+    }
+    activatePanel(initialKey, { animate: false });
+  }
+
   async function loadHome() {
     const dateEl = qs("#today-date");
     const aiStatusEl = qs("#ai-status");
@@ -473,6 +544,8 @@
   }
 
   async function initHome() {
+    initHomePanelSwitcher();
+
     const form = qs("#quick-publish-form");
     const msgEl = qs("#quick-publish-msg");
     const vectorForm = qs("#vector-chat-form");

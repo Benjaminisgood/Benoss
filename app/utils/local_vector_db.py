@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -15,10 +16,14 @@ from .runtime_settings import get_setting_int, get_setting_str
 
 _SCHEMA_VERSION = 2
 _PROVIDER_ALIASES = {
+    "open_ai": "openai",
+    "open-ai": "openai",
     "chat_anywhere": "chatanywhere",
     "chat-anywhere": "chatanywhere",
     "dashscope": "aliyun",
 }
+_EN_TOKEN_PATTERN = re.compile(r"[a-z0-9_]+")
+_CJK_CHAR_PATTERN = re.compile(r"[\u4e00-\u9fff]")
 
 
 def _vector_dir() -> Path:
@@ -43,12 +48,21 @@ def _normalize_provider(value: str) -> str:
     return _PROVIDER_ALIASES.get(raw, raw)
 
 
+def _default_ai_provider() -> str:
+    primary = _normalize_provider(get_setting_str("AI_PRIMARY_PROVIDER", default=""))
+    return primary
+
+
 def _embedding_provider_settings() -> dict | None:
-    provider = _normalize_provider(get_setting_str("AI_AUTOFILL_PROVIDER", default=""))
+    provider = _default_ai_provider()
     if not provider:
         return None
 
     choices = {
+        "openai": {
+            "api_key": get_setting_str("OPENAI_API_KEY", default=""),
+            "base_url": get_setting_str("OPENAI_API_BASE_URL", default="https://api.openai.com/v1"),
+        },
         "chatanywhere": {
             "api_key": get_setting_str("CHAT_ANYWHERE_API_KEY", default=""),
             "base_url": get_setting_str("CHAT_ANYWHERE_API_BASE_URL", default="https://api.chatanywhere.tech/v1"),
@@ -121,6 +135,12 @@ def _embed_texts(texts: list[str]) -> tuple[list[list[float]], dict]:
         detail = response.text.strip().replace("\n", " ")
         if len(detail) > 320:
             detail = detail[:320] + "..."
+        if response.status_code == 404 and "model_not_found" in detail.lower():
+            raise RuntimeError(
+                "embedding model not found "
+                f"(provider={settings['provider']}, model={settings['model']}, endpoint={endpoint}). "
+                "Please update VECTOR_EMBEDDING_MODEL to a model supported by the current provider."
+            )
         raise RuntimeError(f"embedding request failed ({response.status_code}): {detail}")
 
     try:
@@ -165,6 +185,112 @@ def _cosine_similarity(query_vector: list[float], doc_vector: list[float], *, qu
     if dot <= 0.0:
         return 0.0
     return dot / (query_norm * doc_norm)
+
+
+def _top_k_limit(top_k: int) -> int:
+    return max(1, min(int(top_k or 6), 20))
+
+
+def _tokens(text: str) -> list[str]:
+    raw = str(text or "").lower()
+    en_tokens = _EN_TOKEN_PATTERN.findall(raw)
+    cjk_chars = _CJK_CHAR_PATTERN.findall(raw)
+    cjk_bigrams = [cjk_chars[idx] + cjk_chars[idx + 1] for idx in range(len(cjk_chars) - 1)]
+    # Keep single CJK chars to support one-word queries like "图" or "课".
+    return en_tokens + cjk_bigrams + cjk_chars
+
+
+def _token_counts(tokens: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for token in tokens:
+        if not token:
+            continue
+        counts[token] = counts.get(token, 0) + 1
+    return counts
+
+
+def _lexical_score(*, query_tokens: list[str], doc_text: str) -> float:
+    if not query_tokens:
+        return 0.0
+    doc_tokens = _tokens(doc_text)
+    if not doc_tokens:
+        return 0.0
+    query_counts = _token_counts(query_tokens)
+    doc_counts = _token_counts(doc_tokens)
+
+    overlap = 0.0
+    for token, q_count in query_counts.items():
+        overlap += min(float(q_count), float(doc_counts.get(token) or 0.0))
+    if overlap <= 0.0:
+        return 0.0
+
+    coverage = overlap / max(1.0, float(len(query_tokens)))
+    density = overlap / max(1.0, float(len(doc_tokens)))
+    return 0.8 * coverage + 0.2 * density
+
+
+def _make_hit(doc: dict, score: float) -> dict:
+    snippet = str(doc.get("text") or "").strip()
+    if len(snippet) > 240:
+        snippet = snippet[:239].rstrip() + "…"
+    return {
+        "id": str(doc.get("id") or ""),
+        "day": str(doc.get("day") or ""),
+        "record_id": int(doc.get("record_id") or 0),
+        "username": str(doc.get("username") or ""),
+        "tags": doc.get("tags") or [],
+        "score": round(float(score), 6),
+        "snippet": snippet,
+        "created_at": doc.get("created_at"),
+        "text": str(doc.get("text") or ""),
+    }
+
+
+def _dense_hits(query_text: str, documents: list[dict], *, top_k: int) -> list[dict]:
+    query_vectors, _ = _embed_texts([query_text])
+    if not query_vectors or not query_vectors[0]:
+        return []
+    query_vector = query_vectors[0]
+    query_norm = _vector_norm(query_vector)
+    if query_norm <= 0:
+        return []
+
+    scored: list[dict] = []
+    for doc in documents:
+        doc_vector = doc.get("vector") or []
+        if not isinstance(doc_vector, list) or not doc_vector:
+            continue
+        score = _cosine_similarity(
+            query_vector,
+            doc_vector,
+            query_norm=query_norm,
+            doc_norm=float(doc.get("vector_norm") or _vector_norm(doc_vector)),
+        )
+        if score <= 0:
+            continue
+        scored.append(_make_hit(doc, score))
+
+    scored.sort(key=lambda item: item.get("score", 0.0), reverse=True)
+    return scored[: _top_k_limit(top_k)]
+
+
+def _lexical_hits(query_text: str, documents: list[dict], *, top_k: int) -> list[dict]:
+    query_tokens = _tokens(query_text)
+    if not query_tokens:
+        return []
+
+    scored: list[dict] = []
+    for doc in documents:
+        doc_text = str(doc.get("text") or "").strip()
+        if not doc_text:
+            continue
+        score = _lexical_score(query_tokens=query_tokens, doc_text=doc_text)
+        if score <= 0:
+            continue
+        scored.append(_make_hit(doc, score))
+
+    scored.sort(key=lambda item: item.get("score", 0.0), reverse=True)
+    return scored[: _top_k_limit(top_k)]
 
 
 def _document_text(item: dict) -> str:
@@ -517,59 +643,35 @@ def search(query: str, *, top_k: int = 6) -> dict:
         return {"query": "", "hits": [], "meta": index_meta()}
 
     data = _load_index()
+    dense_error = ""
     if not data:
-        build_index()
+        try:
+            build_index()
+        except RuntimeError as exc:
+            dense_error = str(exc)
         data = _load_index()
-    if not data:
-        return {"query": query_text, "hits": [], "meta": index_meta()}
 
-    documents = _normalize_existing_documents(data.get("documents"))
-    if not documents:
-        return {"query": query_text, "hits": [], "meta": index_meta()}
+    dense_documents = _normalize_existing_documents(data.get("documents")) if data else []
+    if dense_documents:
+        try:
+            hits = _dense_hits(query_text, dense_documents, top_k=top_k)
+            meta = index_meta()
+            meta["retrieval_mode"] = "dense_vector"
+            return {"query": query_text, "hits": hits, "meta": meta}
+        except RuntimeError as exc:
+            dense_error = str(exc) or dense_error
 
-    query_vectors, _ = _embed_texts([query_text])
-    if not query_vectors or not query_vectors[0]:
-        return {"query": query_text, "hits": [], "meta": index_meta()}
-    query_vector = query_vectors[0]
-    query_norm = _vector_norm(query_vector)
-    if query_norm <= 0:
-        return {"query": query_text, "hits": [], "meta": index_meta()}
-
-    scored: list[dict] = []
-    for doc in documents:
-        doc_vector = doc.get("vector") or []
-        if not isinstance(doc_vector, list) or not doc_vector:
-            continue
-        score = _cosine_similarity(
-            query_vector,
-            doc_vector,
-            query_norm=query_norm,
-            doc_norm=float(doc.get("vector_norm") or _vector_norm(doc_vector)),
-        )
-        if score <= 0:
-            continue
-
-        snippet = str(doc.get("text") or "").strip()
-        if len(snippet) > 240:
-            snippet = snippet[:239].rstrip() + "…"
-        scored.append(
-            {
-                "id": str(doc.get("id") or ""),
-                "day": str(doc.get("day") or ""),
-                "record_id": int(doc.get("record_id") or 0),
-                "username": str(doc.get("username") or ""),
-                "tags": doc.get("tags") or [],
-                "score": round(float(score), 6),
-                "snippet": snippet,
-                "created_at": doc.get("created_at"),
-                "text": str(doc.get("text") or ""),
-            }
-        )
-
-    scored.sort(key=lambda item: item.get("score", 0.0), reverse=True)
-    limit = max(1, min(int(top_k or 6), 20))
-    hits = scored[:limit]
-    return {"query": query_text, "hits": hits, "meta": index_meta()}
+    max_docs_default = get_setting_int(
+        "VECTOR_MAX_DOCS",
+        default=int(current_app.config.get("VECTOR_MAX_DOCS") or 4000),
+    )
+    fallback_documents, _ = _archive_documents(max_docs=max_docs_default)
+    hits = _lexical_hits(query_text, fallback_documents, top_k=top_k)
+    meta = index_meta()
+    meta["retrieval_mode"] = "lexical_fallback"
+    if dense_error:
+        meta["warning"] = dense_error
+    return {"query": query_text, "hits": hits, "meta": meta}
 
 
 def build_chat_context(hits: list[dict], *, max_chars: int = 5000) -> str:
