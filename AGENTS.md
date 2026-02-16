@@ -282,15 +282,14 @@ AI provider 别名归一化：
 1. 聊天能力：
    - `_ai_provider_settings()` 只读取 `AI_PRIMARY_PROVIDER` 对应配置，不做 provider 自动切换。
 2. 向量 embedding：
-   - `_embedding_provider_settings()` 只读取 `AI_PRIMARY_PROVIDER + VECTOR_EMBEDDING_MODEL`。
+   - `_embedding_provider_settings()` 只读取 `AI_PRIMARY_PROVIDER` 对应 provider 的 `*_EMBEDDING_MODEL`。
 3. TTS/图片能力：
    - `_capability_settings_candidates()` 的 provider 顺序为：
      - `AI_TTS_PROVIDER`/`AI_IMAGE_PROVIDER`（若设置）
      - `AI_PRIMARY_PROVIDER`
      - 固定备用序：`openai -> chatanywhere -> aliyun -> deepseek`（去重后尝试）
    - model 顺序为：
-     - 仅在“首选 provider”上尝试显式 `AI_TTS_MODEL`/`AI_IMAGE_MODEL`（排除 `unsupported/none` 等占位符）
-     - 再尝试该 provider 的内置默认模型
+     - 每个 provider 只读取自己的 `*_TTS_MODEL`/`*_IMAGE_MODEL`（排除 `unsupported/none` 等占位符）
    - 结论：只要备用 provider 的 key/base_url 完整，TTS/图片就可能在备用 provider 上成功，不会强制停留在主 provider。
 
 ---
@@ -641,11 +640,11 @@ benoss-sync pull --username <user> --output ./pulled_records
 ## 13. 常见故障定位
 
 - `AI provider not configured`：
-  - 检查 `AI_PRIMARY_PROVIDER` 与对应 API KEY/base_url/model
+  - 检查 `AI_PRIMARY_PROVIDER` 与对应 API KEY/base_url/`*_CHAT_MODEL`
 - `embedding provider not configured`：
-  - 向量重建依赖 provider + `VECTOR_EMBEDDING_MODEL`
+  - 向量重建依赖 provider + 对应 provider 的 `*_EMBEDDING_MODEL`
 - `embedding request failed (404) ... model_not_found`：
-  - 先检查生效配置（含 AppSetting 覆盖）：`AI_PRIMARY_PROVIDER` 与 `VECTOR_EMBEDDING_MODEL`
+  - 先检查生效配置（含 AppSetting 覆盖）：`AI_PRIMARY_PROVIDER` 与该 provider 的 `*_EMBEDDING_MODEL`
   - 该报错通常表示“模型名与当前 provider 不匹配”，不是本地向量库损坏
   - 修正模型后执行 `python -m flask --app app vector-build --force` 重新构建
 - Home 没看到手动生成资产：

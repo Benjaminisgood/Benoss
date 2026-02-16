@@ -22,6 +22,19 @@ _PROVIDER_ALIASES = {
     "chat-anywhere": "chatanywhere",
     "dashscope": "aliyun",
 }
+_EMBEDDING_MODEL_SETTING_KEYS = {
+    "openai": "OPENAI_EMBEDDING_MODEL",
+    "chatanywhere": "CHAT_ANYWHERE_EMBEDDING_MODEL",
+    "deepseek": "DEEPSEEK_EMBEDDING_MODEL",
+    "aliyun": "ALIYUN_AI_EMBEDDING_MODEL",
+}
+_EMBEDDING_MODEL_DEFAULTS = {
+    "openai": "text-embedding-3-small",
+    "chatanywhere": "text-embedding-3-small",
+    "deepseek": "unsupported",
+    "aliyun": "text-embedding-v3",
+}
+_MODEL_PLACEHOLDERS = {"", "none", "n/a", "na", "-", "unsupported", "not-supported", "not_supported"}
 _EN_TOKEN_PATTERN = re.compile(r"[a-z0-9_]+")
 _CJK_CHAR_PATTERN = re.compile(r"[\u4e00-\u9fff]")
 
@@ -51,6 +64,23 @@ def _normalize_provider(value: str) -> str:
 def _default_ai_provider() -> str:
     primary = _normalize_provider(get_setting_str("AI_PRIMARY_PROVIDER", default=""))
     return primary
+
+
+def _model_placeholder(value: str) -> bool:
+    return str(value or "").strip().lower() in _MODEL_PLACEHOLDERS
+
+
+def _embedding_model_setting(provider: str) -> tuple[str, str]:
+    key = str(_EMBEDDING_MODEL_SETTING_KEYS.get(provider) or "")
+    default = str(_EMBEDDING_MODEL_DEFAULTS.get(provider) or "")
+    return key, default
+
+
+def _embedding_model_for_provider(provider: str) -> str:
+    key, default = _embedding_model_setting(provider)
+    if not key:
+        return ""
+    return get_setting_str(key, default=default).strip()
 
 
 def _embedding_provider_settings() -> dict | None:
@@ -85,8 +115,9 @@ def _embedding_provider_settings() -> dict | None:
 
     api_key = str(selected.get("api_key") or "").strip()
     base_url = str(selected.get("base_url") or "").strip().rstrip("/")
-    model = get_setting_str("VECTOR_EMBEDDING_MODEL", default="text-embedding-3-small").strip()
-    if not api_key or not base_url or not model:
+    model_key, _ = _embedding_model_setting(provider)
+    model = _embedding_model_for_provider(provider)
+    if not api_key or not base_url or _model_placeholder(model):
         return None
 
     return {
@@ -94,6 +125,7 @@ def _embedding_provider_settings() -> dict | None:
         "api_key": api_key,
         "base_url": base_url,
         "model": model,
+        "model_setting_key": model_key,
     }
 
 
@@ -136,10 +168,11 @@ def _embed_texts(texts: list[str]) -> tuple[list[list[float]], dict]:
         if len(detail) > 320:
             detail = detail[:320] + "..."
         if response.status_code == 404 and "model_not_found" in detail.lower():
+            model_setting_key = str(settings.get("model_setting_key") or "EMBEDDING_MODEL")
             raise RuntimeError(
                 "embedding model not found "
                 f"(provider={settings['provider']}, model={settings['model']}, endpoint={endpoint}). "
-                "Please update VECTOR_EMBEDDING_MODEL to a model supported by the current provider."
+                f"Please update {model_setting_key} to a model supported by the current provider."
             )
         raise RuntimeError(f"embedding request failed ({response.status_code}): {detail}")
 
@@ -475,10 +508,13 @@ def build_index(*, max_docs: int | None = None, force: bool = False) -> dict:
     existing_docs = _normalize_existing_documents(existing.get("documents"))
     existing_map = {str(item.get("id") or ""): item for item in existing_docs if str(item.get("id") or "")}
 
-    expected_model = get_setting_str("VECTOR_EMBEDDING_MODEL", default="text-embedding-3-small").strip()
+    expected_provider = _default_ai_provider()
+    expected_model = _embedding_model_for_provider(expected_provider)
     existing_model = str((existing.get("embedding") or {}).get("model") or "").strip()
-    model_changed = bool(existing_model and expected_model and existing_model != expected_model)
-    if model_changed:
+    existing_provider = str((existing.get("embedding") or {}).get("provider") or "").strip()
+    model_changed = bool(existing_model != expected_model)
+    provider_changed = bool(existing_provider != expected_provider)
+    if model_changed or provider_changed:
         existing_map = {}
         force = True
 
@@ -486,7 +522,7 @@ def build_index(*, max_docs: int | None = None, force: bool = False) -> dict:
         payload = _empty_index(
             archive_count=archive_count,
             embedding_info={
-                "provider": (existing.get("embedding") or {}).get("provider", ""),
+                "provider": expected_provider or (existing.get("embedding") or {}).get("provider", ""),
                 "model": expected_model or existing_model,
                 "vector_dim": int(existing.get("vector_dim") or 0),
             },

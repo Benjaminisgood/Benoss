@@ -497,8 +497,6 @@ benoss-sync pull --username alice --output ./pulled_records
 - `AI_NOTICE_ATTACH_IMAGES`
 - `AI_NOTICE_MAX_IMAGE_ATTACHMENTS`
 - `AI_NOTICE_IMAGE_URL_EXPIRES_SECONDS`
-- `AI_IMAGE_MODEL`
-- `AI_TTS_MODEL`
 - `AI_TTS_VOICE`
 - `AI_TTS_RESPONSE_FORMAT`
 - `AI_TTS_MAX_INPUT_CHARS`
@@ -510,55 +508,37 @@ benoss-sync pull --username alice --output ./pulled_records
 - `VECTOR_AUTO_REBUILD`
 - `VECTOR_TOP_K`
 - `VECTOR_MAX_DOCS`
-- `VECTOR_EMBEDDING_MODEL`
 - `VECTOR_EMBEDDING_BATCH_SIZE`
 - `VECTOR_EMBEDDING_MAX_INPUT_CHARS`
 - `DIGEST_TIMEZONE`（默认 `Asia/Shanghai`，用于“每日结束”切分日期）
 
+按 provider 分组（聊天/向量/TTS/图片）：
+- `OPENAI_API_KEY` / `OPENAI_API_BASE_URL` / `OPENAI_CHAT_MODEL` / `OPENAI_EMBEDDING_MODEL` / `OPENAI_TTS_MODEL` / `OPENAI_IMAGE_MODEL`
+- `CHAT_ANYWHERE_API_KEY` / `CHAT_ANYWHERE_API_BASE_URL` / `CHAT_ANYWHERE_CHAT_MODEL` / `CHAT_ANYWHERE_EMBEDDING_MODEL` / `CHAT_ANYWHERE_TTS_MODEL` / `CHAT_ANYWHERE_IMAGE_MODEL`
+- `DEEPSEEK_API_KEY` / `DEEPSEEK_API_BASE_URL` / `DEEPSEEK_CHAT_MODEL` / `DEEPSEEK_EMBEDDING_MODEL` / `DEEPSEEK_TTS_MODEL` / `DEEPSEEK_IMAGE_MODEL`
+- `ALIYUN_AI_API_KEY` / `ALIYUN_AI_API_BASE_URL` / `ALIYUN_AI_CHAT_MODEL` / `ALIYUN_AI_EMBEDDING_MODEL` / `ALIYUN_AI_TTS_MODEL` / `ALIYUN_AI_IMAGE_MODEL`
+
 说明：
-- `VECTOR_EMBEDDING_MODEL` 需要与你当前 provider 兼容，否则向量重建/检索会返回模型错误。
-- `AI_TTS_MODEL` / `AI_IMAGE_MODEL` 可留空，系统会按 `AI_PRIMARY_PROVIDER` 选择对应默认模型。
+- 媒体与向量模型现在都是“每个 provider 独立配置”，不再使用全局 `AI_TTS_MODEL` / `AI_IMAGE_MODEL` / `VECTOR_EMBEDDING_MODEL`。
+- `unsupported/none` 等占位值会被视为“该 provider 该能力禁用”。
 
 能力路由规则（当前版本）：
 - 聊天（博客正文/播客脚本/海报提示词）只走 `AI_PRIMARY_PROVIDER`。
-- 向量 embedding 默认跟随 `AI_PRIMARY_PROVIDER`（通过 `VECTOR_EMBEDDING_MODEL` 控制模型）。
+- 向量 embedding 默认跟随 `AI_PRIMARY_PROVIDER`（读取该 provider 的 `*_EMBEDDING_MODEL`）。
 - TTS / 图片支持能力分流：优先 `AI_TTS_PROVIDER` / `AI_IMAGE_PROVIDER`，为空时跟随 `AI_PRIMARY_PROVIDER`，失败再尝试备用 provider。
 - 若 `AI_TTS_FALLBACK_LOCAL=1`，外部 TTS 全失败时自动降级到本机 `say`（产物通常为 `.aiff`）。
 - 若 `AI_IMAGE_FALLBACK_LOCAL=1`，外部图像全失败时自动降级到本地 SVG 海报。
 
-`VECTOR_EMBEDDING_MODEL` 推荐对照（2026-02-16 实测）：
-- `openai`：`text-embedding-3-small`（未在本项目当前环境实测，需要配置 `OPENAI_API_KEY`）
-- `chatanywhere`：`text-embedding-3-small`（也可用 `text-embedding-3-large`、`text-embedding-ada-002`）
-- `deepseek`：当前无可用 embedding 模型（`/models` 仅返回 `deepseek-chat`、`deepseek-reasoner`）
-- `aliyun`：`text-embedding-v3`（兼容 `text-embedding-v2`、`text-embedding-v1`）
-
-`AI_TTS_MODEL` 推荐对照（2026-02-16）：
-- `openai`：`gpt-4o-mini-tts`（未在本项目当前环境实测，需要配置 `OPENAI_API_KEY`）
-- `chatanywhere`：`gpt-4o-mini-tts`（实测可用）
-- `deepseek`：`unsupported`（当前无 TTS 模型）
-- `aliyun`：`unsupported`（当前 `compatible-mode /audio/speech` 返回 404）
-
-`AI_IMAGE_MODEL` 推荐对照（2026-02-16）：
-- `openai`：`gpt-image-1`（未在本项目当前环境实测，需要配置 `OPENAI_API_KEY`）
-- `chatanywhere`：`gpt-image-1`（模型可用，受账户余额影响）
-- `deepseek`：`unsupported`（当前无图像生成模型）
-- `aliyun`：`unsupported`（当前 `compatible-mode /images/generations` 返回 404）
-
-按 provider 分组：
-- `OPENAI_API_KEY` / `OPENAI_API_BASE_URL` / `OPENAI_MODEL`
-- `CHAT_ANYWHERE_API_KEY` / `CHAT_ANYWHERE_API_BASE_URL` / `CHAT_ANYWHERE_MODEL`
-- `DEEPSEEK_API_KEY` / `DEEPSEEK_API_BASE_URL` / `DEEPSEEK_MODEL`
-- `ALIYUN_AI_API_KEY` / `ALIYUN_AI_API_BASE_URL` / `ALIYUN_AI_MODEL`
-
 ### 13.4 能力分流执行顺序（按代码真实行为）
 
 - 聊天（博客正文/播客脚本/海报提示词）：
-  - 只读取 `AI_PRIMARY_PROVIDER` 对应的聊天模型（`*_MODEL`），不做 provider 级自动切换。
+  - 只读取 `AI_PRIMARY_PROVIDER` 对应的聊天模型（`*_CHAT_MODEL`），不做 provider 级自动切换。
 - 向量 embedding：
-  - 只读取 `AI_PRIMARY_PROVIDER + VECTOR_EMBEDDING_MODEL`，不做 provider 级自动切换。
+  - 只读取 `AI_PRIMARY_PROVIDER` 对应 provider 的 `*_EMBEDDING_MODEL`，不做 provider 级自动切换。
 - TTS / 图片：
   - provider 候选顺序：`AI_TTS_PROVIDER`/`AI_IMAGE_PROVIDER`（若设置） -> `AI_PRIMARY_PROVIDER` -> `openai` -> `chatanywhere` -> `aliyun` -> `deepseek`（去重后依次尝试）。
-  - model 选择顺序：优先显式 `AI_TTS_MODEL`/`AI_IMAGE_MODEL`（仅在“首选 provider”上生效，且不是 `unsupported/none` 占位符），否则用该 provider 的内置默认模型。
+  - model 选择顺序：每个 provider 只读取自己对应的 `*_TTS_MODEL` / `*_IMAGE_MODEL`。
+  - 若模型值是 `unsupported/none` 等占位符，该 provider 会跳过该能力调用。
   - 全部外部 provider 失败后，若开启本地兜底：
     - `AI_TTS_FALLBACK_LOCAL=1` -> `macos-say`（`.aiff`）
     - `AI_IMAGE_FALLBACK_LOCAL=1` -> 本地 SVG
@@ -571,8 +551,25 @@ benoss-sync pull --username alice --output ./pulled_records
 排查步骤：
 
 ```bash
-# 1) 先看“实际生效”的 provider 和 embedding model（含管理员后台覆盖）
-python -m flask --app app shell -c "from app.utils.runtime_settings import get_setting_str; print('AI_PRIMARY_PROVIDER=', get_setting_str('AI_PRIMARY_PROVIDER')); print('VECTOR_EMBEDDING_MODEL=', get_setting_str('VECTOR_EMBEDDING_MODEL'))"
+# 1) 先看“实际生效”的 provider 与对应 embedding model（含管理员后台覆盖）
+python - <<'PY'
+from app import create_app
+from app.utils.runtime_settings import get_setting_str
+
+app = create_app()
+with app.app_context():
+    provider = get_setting_str("AI_PRIMARY_PROVIDER").strip()
+    mapping = {
+        "openai": "OPENAI_EMBEDDING_MODEL",
+        "chatanywhere": "CHAT_ANYWHERE_EMBEDDING_MODEL",
+        "deepseek": "DEEPSEEK_EMBEDDING_MODEL",
+        "aliyun": "ALIYUN_AI_EMBEDDING_MODEL",
+    }
+    key = mapping.get(provider, "")
+    print("AI_PRIMARY_PROVIDER=", provider)
+    if key:
+        print(f"{key}=", get_setting_str(key))
+PY
 
 # 2) 修正为该 provider 支持的 embedding 模型（示例）
 # openai/chatanywhere -> text-embedding-3-small
@@ -584,7 +581,7 @@ python -m flask --app app vector-build --force
 ```
 
 结论：
-- 向量链路报 404 时，根因通常不是“本地模型没跑起来”，而是“当前 provider 不支持你配置的 `VECTOR_EMBEDDING_MODEL`”。
+- 向量链路报 404 时，根因通常不是“本地模型没跑起来”，而是“当前 provider 的 `*_EMBEDDING_MODEL` 与 provider 能力不匹配”。
 
 ### 13.6 推荐配置模板（当前版本）
 
@@ -594,9 +591,10 @@ python -m flask --app app vector-build --force
 AI_PRIMARY_PROVIDER=openai
 AI_TTS_PROVIDER=
 AI_IMAGE_PROVIDER=
-VECTOR_EMBEDDING_MODEL=text-embedding-3-small
-AI_TTS_MODEL=gpt-4o-mini-tts
-AI_IMAGE_MODEL=gpt-image-1
+OPENAI_CHAT_MODEL=gpt-4o-mini
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+OPENAI_TTS_MODEL=gpt-4o-mini-tts
+OPENAI_IMAGE_MODEL=gpt-image-1
 AI_TTS_FALLBACK_LOCAL=0
 AI_IMAGE_FALLBACK_LOCAL=0
 ```
@@ -607,9 +605,10 @@ AI_IMAGE_FALLBACK_LOCAL=0
 AI_PRIMARY_PROVIDER=aliyun
 AI_TTS_PROVIDER=
 AI_IMAGE_PROVIDER=
-VECTOR_EMBEDDING_MODEL=text-embedding-v3
-AI_TTS_MODEL=unsupported
-AI_IMAGE_MODEL=unsupported
+ALIYUN_AI_CHAT_MODEL=qwen-plus
+ALIYUN_AI_EMBEDDING_MODEL=text-embedding-v3
+ALIYUN_AI_TTS_MODEL=qwen3-tts-instruct-flash
+ALIYUN_AI_IMAGE_MODEL=qwen-image-max
 AI_TTS_FALLBACK_LOCAL=1
 AI_IMAGE_FALLBACK_LOCAL=1
 ```

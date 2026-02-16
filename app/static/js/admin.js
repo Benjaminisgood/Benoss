@@ -6,12 +6,16 @@
 
   const form = document.getElementById("admin-settings-form");
   const statusEl = document.getElementById("admin-settings-status");
+  const summaryEl = document.getElementById("admin-settings-summary");
   const refreshBtn = document.getElementById("admin-refresh-btn");
   const saveBtn = document.getElementById("admin-save-btn");
+  const filterInput = document.getElementById("admin-filter-input");
+  const onlyOverridesInput = document.getElementById("admin-only-overrides");
 
   let pendingReset = new Set();
   let latestGroups = [];
   const fieldByKey = new Map();
+  const draftValues = new Map();
 
   function escapeHtml(value) {
     return String(value || "")
@@ -30,6 +34,65 @@
       return "环境变量";
     }
     return "系统默认";
+  }
+
+  function sourceClass(source) {
+    if (source === "override") {
+      return "source-override";
+    }
+    if (source === "config") {
+      return "source-config";
+    }
+    return "source-default";
+  }
+
+  function normalizeText(value) {
+    return String(value || "").trim().toLowerCase();
+  }
+
+  function hasActiveFilter() {
+    const query = normalizeText(filterInput && filterInput.value);
+    const onlyOverrides = Boolean(onlyOverridesInput && onlyOverridesInput.checked);
+    return Boolean(query || onlyOverrides);
+  }
+
+  function valuePreview(item, value) {
+    if (item.secret) {
+      return "******";
+    }
+    if (item.type === "bool") {
+      return value ? "true" : "false";
+    }
+    const text = String(value ?? "").trim();
+    if (!text) {
+      return "(空)";
+    }
+    return text.length > 72 ? `${text.slice(0, 72)}...` : text;
+  }
+
+  function currentItemValue(item) {
+    const key = item.key;
+    if (key && draftValues.has(key)) {
+      return draftValues.get(key);
+    }
+    return item.value;
+  }
+
+  function itemMatches(item, groupName, query, onlyOverrides) {
+    if (onlyOverrides && item.source !== "override" && !pendingReset.has(item.key)) {
+      return false;
+    }
+    if (!query) {
+      return true;
+    }
+    const stack = [
+      item.key,
+      item.label,
+      item.description,
+      groupName,
+      sourceLabel(item.source),
+    ];
+    return normalizeText(stack.join(" ")).includes(query);
   }
 
   async function api(path, options = {}) {
@@ -54,10 +117,17 @@
     statusEl.style.color = isError ? "#8d2200" : "";
   }
 
+  function setSummary(text) {
+    if (!summaryEl) {
+      return;
+    }
+    summaryEl.textContent = text || "";
+  }
+
   function inputHtml(item) {
     const type = item.type || "string";
     const key = item.key;
-    const value = item.value;
+    const value = currentItemValue(item);
     const isSecret = Boolean(item.secret);
 
     if (type === "bool") {
@@ -95,6 +165,35 @@
     return `<input type="${inputType}" data-setting-key="${escapeHtml(key)}" data-setting-type="string" value="${escapeHtml(value ?? "")}" autocomplete="off">`;
   }
 
+  function allItems() {
+    return latestGroups.flatMap((group) => (Array.isArray(group.items) ? group.items : []));
+  }
+
+  function filteredGroups() {
+    const query = normalizeText(filterInput && filterInput.value);
+    const onlyOverrides = Boolean(onlyOverridesInput && onlyOverridesInput.checked);
+    return latestGroups
+      .map((group) => {
+        const rawItems = Array.isArray(group.items) ? group.items : [];
+        const items = rawItems.filter((item) => itemMatches(item, group.name || "", query, onlyOverrides));
+        return {
+          name: group.name || "未分组",
+          allCount: rawItems.length,
+          items,
+        };
+      })
+      .filter((group) => group.items.length > 0);
+  }
+
+  function refreshSummary(filtered = null) {
+    const groups = filtered || filteredGroups();
+    const totalCount = allItems().length;
+    const visibleCount = groups.reduce((sum, group) => sum + group.items.length, 0);
+    const overrideCount = allItems().filter((item) => item.source === "override").length;
+    const pendingCount = pendingReset.size;
+    setSummary(`共 ${totalCount} 项，显示 ${visibleCount} 项，前端覆盖 ${overrideCount} 项，待回退 ${pendingCount} 项。`);
+  }
+
   function render(groups) {
     latestGroups = Array.isArray(groups) ? groups : [];
     fieldByKey.clear();
@@ -112,55 +211,64 @@
 
     if (!latestGroups.length) {
       form.innerHTML = `<p class="muted">暂无可配置项</p>`;
+      setSummary("");
       return;
     }
 
-    form.innerHTML = latestGroups
-      .map((group) => {
-        const items = Array.isArray(group.items) ? group.items : [];
-        const itemsHtml = items
+    const filtered = filteredGroups();
+    refreshSummary(filtered);
+
+    if (!filtered.length) {
+      form.innerHTML = `<p class="muted">没有匹配项，请调整筛选条件。</p>`;
+      return;
+    }
+
+    form.innerHTML = filtered
+      .map((group, index) => {
+        const isOpen = hasActiveFilter() || index === 0;
+        const itemsHtml = group.items
           .map(
             (item) => `
-              <article class="admin-field" data-field-key="${escapeHtml(item.key || "")}">
-                <strong>${escapeHtml(item.label || item.key || "")}</strong>
-                <span class="admin-source">${escapeHtml(sourceLabel(item.source))}</span>
+              <article class="admin-field ${pendingReset.has(item.key || "") ? "is-pending-reset" : ""}" data-field-key="${escapeHtml(item.key || "")}" data-field-source="${escapeHtml(item.source || "default")}">
+                <div class="admin-field-head">
+                  <strong>${escapeHtml(item.label || item.key || "")}</strong>
+                  <span class="admin-source ${sourceClass(item.source)}">${escapeHtml(sourceLabel(item.source))}</span>
+                </div>
+                <p class="admin-field-key"><code>${escapeHtml(item.key || "")}</code></p>
                 <span class="muted">${escapeHtml(item.description || "")}</span>
                 ${inputHtml(item)}
-                <button class="secondary admin-reset" type="button" data-reset-key="${escapeHtml(item.key || "")}">回退默认</button>
+                <p class="admin-field-default muted">默认值：${escapeHtml(valuePreview(item, item.default))}</p>
+                <button class="secondary admin-reset" type="button" data-reset-key="${escapeHtml(item.key || "")}">${pendingReset.has(item.key || "") ? "已标记回退" : "回退默认"}</button>
               </article>
             `,
           )
           .join("");
         return `
-          <section class="admin-group">
-            <h4>${escapeHtml(group.name || "未分组")}</h4>
+          <details class="admin-group" ${isOpen ? "open" : ""}>
+            <summary>
+              <span>${escapeHtml(group.name || "未分组")}</span>
+              <span class="admin-group-meta">${group.items.length} / ${group.allCount}</span>
+            </summary>
             <div class="admin-group-grid">${itemsHtml}</div>
-          </section>
+          </details>
         `;
       })
       .join("");
   }
 
-  function fieldElements() {
-    if (!form) {
-      return [];
-    }
-    return Array.from(form.querySelectorAll("[data-setting-key]"));
-  }
-
   function collectValues() {
     const values = {};
-    fieldElements().forEach((element) => {
-      const key = element.dataset.settingKey || "";
-      const type = element.dataset.settingType || "string";
+    allItems().forEach((item) => {
+      const key = item.key || "";
+      const type = item.type || "string";
       if (!key || pendingReset.has(key)) {
         return;
       }
-
+      const value = currentItemValue(item);
       if (type === "bool") {
-        values[key] = Boolean(element.checked);
+        values[key] = Boolean(value);
       } else {
-        values[key] = element.value;
+        values[key] = value ?? "";
       }
     });
     return values;
@@ -175,22 +283,9 @@
       return;
     }
 
-    const escaped = window.CSS && typeof window.CSS.escape === "function"
-      ? window.CSS.escape(key)
-      : key.replaceAll('"', '\\"');
-    const input = form.querySelector(`[data-setting-key="${escaped}"]`);
-    if (!input) {
-      return;
-    }
-
-    const fallback = field.default;
-    const type = field.type || "string";
-    if (type === "bool") {
-      input.checked = Boolean(fallback);
-    } else {
-      input.value = fallback ?? "";
-    }
+    draftValues.delete(key);
     pendingReset.add(key);
+    render(latestGroups);
     setStatus(`已标记 ${key} 回退默认，点击“保存全部”生效。`);
   }
 
@@ -198,8 +293,9 @@
     try {
       setStatus("正在加载管理员配置...");
       const data = await api("/api/admin/settings");
-      render(data.groups || []);
       pendingReset = new Set();
+      draftValues.clear();
+      render(data.groups || []);
       setStatus("配置已加载。");
     } catch (error) {
       setStatus(error.message, true);
@@ -220,6 +316,7 @@
         body: JSON.stringify(payload),
       });
       pendingReset = new Set();
+      draftValues.clear();
       render(data.groups || []);
       setStatus("保存成功，配置已即时生效。");
     } catch (error) {
@@ -241,11 +338,38 @@
       return;
     }
     const key = input.dataset.settingKey || "";
+    const fieldEl = input.closest(".admin-field");
     if (key && pendingReset.has(key)) {
       pendingReset.delete(key);
+      if (fieldEl) {
+        fieldEl.classList.remove("is-pending-reset");
+        const resetBtn = fieldEl.querySelector("button[data-reset-key]");
+        if (resetBtn) {
+          resetBtn.textContent = "回退默认";
+        }
+      }
+      refreshSummary();
+    }
+    if (key) {
+      if (input.dataset.settingType === "bool") {
+        draftValues.set(key, Boolean(input.checked));
+      } else {
+        draftValues.set(key, input.value);
+      }
+      setStatus("存在未保存改动，点击“保存全部”生效。");
     }
   });
 
+  if (filterInput) {
+    filterInput.addEventListener("input", () => {
+      render(latestGroups);
+    });
+  }
+  if (onlyOverridesInput) {
+    onlyOverridesInput.addEventListener("change", () => {
+      render(latestGroups);
+    });
+  }
   if (refreshBtn) {
     refreshBtn.addEventListener("click", loadSettings);
   }

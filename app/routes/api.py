@@ -708,22 +708,22 @@ def _provider_raw_config(provider: str) -> dict | None:
         "openai": {
             "api_key": get_setting_str("OPENAI_API_KEY", default=""),
             "base_url": get_setting_str("OPENAI_API_BASE_URL", default="https://api.openai.com/v1"),
-            "chat_model": get_setting_str("OPENAI_MODEL", default="gpt-4o-mini"),
+            "chat_model": get_setting_str("OPENAI_CHAT_MODEL", default="gpt-4o-mini"),
         },
         "chatanywhere": {
             "api_key": get_setting_str("CHAT_ANYWHERE_API_KEY", default=""),
             "base_url": get_setting_str("CHAT_ANYWHERE_API_BASE_URL", default="https://api.chatanywhere.tech/v1"),
-            "chat_model": get_setting_str("CHAT_ANYWHERE_MODEL", default="gpt-4o-mini"),
+            "chat_model": get_setting_str("CHAT_ANYWHERE_CHAT_MODEL", default="gpt-4o-mini"),
         },
         "deepseek": {
             "api_key": get_setting_str("DEEPSEEK_API_KEY", default=""),
             "base_url": get_setting_str("DEEPSEEK_API_BASE_URL", default="https://api.deepseek.com/v1"),
-            "chat_model": get_setting_str("DEEPSEEK_MODEL", default="deepseek-chat"),
+            "chat_model": get_setting_str("DEEPSEEK_CHAT_MODEL", default="deepseek-chat"),
         },
         "aliyun": {
             "api_key": get_setting_str("ALIYUN_AI_API_KEY", default=""),
             "base_url": get_setting_str("ALIYUN_AI_API_BASE_URL", default="https://dashscope.aliyuncs.com/compatible-mode/v1"),
-            "chat_model": get_setting_str("ALIYUN_AI_MODEL", default="qwen-plus"),
+            "chat_model": get_setting_str("ALIYUN_AI_CHAT_MODEL", default="qwen-plus"),
         },
     }
     selected = choices.get(provider)
@@ -781,13 +781,13 @@ def _capability_default_model(capability: str, provider: str) -> str:
         "tts": {
             "openai": "gpt-4o-mini-tts",
             "chatanywhere": "gpt-4o-mini-tts",
-            "deepseek": "",
+            "deepseek": "unsupported",
             "aliyun": "qwen3-tts-instruct-flash",
         },
         "image": {
             "openai": "gpt-image-1",
             "chatanywhere": "gpt-image-1",
-            "deepseek": "",
+            "deepseek": "unsupported",
             "aliyun": "qwen-image-max",
         },
     }
@@ -818,47 +818,48 @@ def _capability_provider_order(capability: str) -> list[str]:
     return result
 
 
-def _capability_setting_model(capability: str) -> str:
-    if capability == "tts":
-        return get_setting_str("AI_TTS_MODEL", default="").strip()
-    if capability == "image":
-        return get_setting_str("AI_IMAGE_MODEL", default="").strip()
-    return ""
+def _capability_provider_model_key(capability: str, provider: str) -> str:
+    keys = {
+        "tts": {
+            "openai": "OPENAI_TTS_MODEL",
+            "chatanywhere": "CHAT_ANYWHERE_TTS_MODEL",
+            "deepseek": "DEEPSEEK_TTS_MODEL",
+            "aliyun": "ALIYUN_AI_TTS_MODEL",
+        },
+        "image": {
+            "openai": "OPENAI_IMAGE_MODEL",
+            "chatanywhere": "CHAT_ANYWHERE_IMAGE_MODEL",
+            "deepseek": "DEEPSEEK_IMAGE_MODEL",
+            "aliyun": "ALIYUN_AI_IMAGE_MODEL",
+        },
+    }
+    selected = keys.get(capability) or {}
+    return str(selected.get(provider) or "")
 
 
-def _capability_preferred_provider(capability: str) -> str:
-    provider_key = {
-        "tts": "AI_TTS_PROVIDER",
-        "image": "AI_IMAGE_PROVIDER",
-    }.get(capability, "")
-    if provider_key:
-        explicit = _normalize_provider(get_setting_str(provider_key, default=""))
-        if explicit:
-            return explicit
-    return _default_ai_provider()
+def _capability_provider_model(capability: str, provider: str) -> str:
+    setting_key = _capability_provider_model_key(capability, provider)
+    if not setting_key:
+        return ""
+    default_model = _capability_default_model(capability, provider)
+    return get_setting_str(setting_key, default=default_model).strip()
 
 
 def _capability_settings_candidates(capability: str) -> list[dict]:
-    preferred_model = _capability_setting_model(capability)
-    preferred_provider = _capability_preferred_provider(capability)
     candidates: list[dict] = []
     seen: set[tuple[str, str]] = set()
 
     for provider in _capability_provider_order(capability):
-        models: list[str] = []
-        if provider == preferred_provider and not _model_placeholder(preferred_model):
-            models.append(preferred_model)
-        fallback_model = _capability_default_model(capability, provider)
-        if fallback_model and fallback_model not in models:
-            models.append(fallback_model)
-        for model in models:
-            pair = (provider, model)
-            if pair in seen:
-                continue
-            seen.add(pair)
-            settings = _provider_settings_with_model(provider, model)
-            if settings:
-                candidates.append(settings)
+        model = _capability_provider_model(capability, provider)
+        if _model_placeholder(model):
+            continue
+        pair = (provider, model)
+        if pair in seen:
+            continue
+        seen.add(pair)
+        settings = _provider_settings_with_model(provider, model)
+        if settings:
+            candidates.append(settings)
     return candidates
 
 
@@ -1504,7 +1505,7 @@ def _ai_tts_audio(script: str, *, podcast_style: str) -> tuple[bytes, str, str, 
             errors.append(f"local:macos-say => {exc}")
 
     if not errors:
-        raise RuntimeError("TTS provider not configured")
+        raise RuntimeError("TTS not configured for available providers")
     raise RuntimeError("TTS unavailable across providers: " + " | ".join(errors)[:2000])
 
 
@@ -1559,7 +1560,7 @@ def _ai_generate_poster_image(prompt: str) -> tuple[bytes, str, str, dict]:
         return image_bytes, "image/svg+xml", ".svg", {"provider": "local", "model": "local-svg-poster-v1"}
 
     if not errors:
-        raise RuntimeError("AI_IMAGE_MODEL not configured")
+        raise RuntimeError("image generation not configured for available providers")
     raise RuntimeError("image generation unavailable across providers: " + " | ".join(errors)[:2000])
 
 

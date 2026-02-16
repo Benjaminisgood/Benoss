@@ -5,6 +5,20 @@
   <p class="muted">
     在这里可以集中配置 AI provider、参数与提示词。保存后立即生效，无需重启服务。
   </p>
+  <div class="admin-logic-grid">
+    <article class="admin-logic-card">
+      <h3>生效优先级</h3>
+      <p class="muted">前端覆盖(AppSetting) &gt; 环境变量(.env) &gt; 系统默认。</p>
+    </article>
+    <article class="admin-logic-card">
+      <h3>模型路由</h3>
+      <p class="muted">聊天/向量跟随主 provider；TTS/图片先走能力 provider，再按后备顺序尝试。</p>
+    </article>
+    <article class="admin-logic-card">
+      <h3>命名规则</h3>
+      <p class="muted">每个 provider 使用独立模型键：<code>*_CHAT_MODEL</code> / <code>*_EMBEDDING_MODEL</code> / <code>*_TTS_MODEL</code> / <code>*_IMAGE_MODEL</code>。</p>
+    </article>
+  </div>
 </section>
 
 <section class="card">
@@ -16,6 +30,23 @@
     </div>
   </div>
 
+  <div class="admin-toolbar">
+    <label class="admin-filter">
+      <span>筛选</span>
+      <input
+        id="admin-filter-input"
+        type="search"
+        placeholder="按 key/名称/描述筛选，例如 embedding"
+        autocomplete="off"
+      >
+    </label>
+    <label class="inline-check admin-only-overrides">
+      <input id="admin-only-overrides" type="checkbox">
+      <span>仅看前端覆盖</span>
+    </label>
+  </div>
+
+  <p id="admin-settings-summary" class="muted admin-settings-summary"></p>
   <p id="admin-settings-status" class="muted"></p>
   <form id="admin-settings-form" class="admin-settings-grid"></form>
 </section>
