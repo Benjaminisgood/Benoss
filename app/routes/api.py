@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import html
 import json
 import mimetypes
 import re
-import tempfile
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -23,16 +21,23 @@ from ..extensions import db
 from ..models import Comment, Content, DailyDigestJob, GeneratedAsset, Record, User
 from ..oss import delete_object, get_object_bytes, put_object_bytes, put_object_from_file, sign_get_url
 from ..utils.ids import new_uuid
+from ..utils.local_archive import save_daily_archive
+from ..utils.local_vector_db import (
+    build_chat_context,
+    build_index,
+    ensure_index,
+    index_meta,
+    search as vector_search,
+)
 from ..utils.oss_paths import generated_asset_key, record_content_key
 from ..utils.runtime_settings import (
-    DEFAULT_NOTEBOOKLM_AUDIO_INSTRUCTIONS,
-    DEFAULT_NOTEBOOKLM_SCRIPT_PROMPT,
     DEFAULT_NOTICE_BLOG_TASK,
     DEFAULT_NOTICE_PODCAST_TASK,
     DEFAULT_NOTICE_POSTER_TASK,
     DEFAULT_NOTICE_SYSTEM_PROMPT,
     DEFAULT_POSTER_SYSTEM_PROMPT,
     DEFAULT_POSTER_USER_TEMPLATE,
+    DEFAULT_VECTOR_CHAT_SYSTEM_PROMPT,
     format_prompt_template,
     get_setting_bool,
     get_setting_int,
@@ -45,6 +50,12 @@ api_bp = Blueprint("api", __name__)
 
 _VALID_VISIBILITY = {"public", "private"}
 _DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_PODCAST_STYLE_GUIDE = {
+    "dialogue": "对话式：双人主持人口吻，包含主持人A/主持人B轮流发言，节奏自然。",
+    "speech": "演讲式：单人演讲结构，逻辑清晰，重点突出。",
+    "interview": "访谈式：主持人提问、嘉宾回答，问题与观点递进。",
+    "news": "播报式：新闻播报口吻，先摘要后分点，语言准确克制。",
+}
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -565,11 +576,42 @@ def _records_for_ai_prompt(records: list[Record], *, max_chars: int = 18000) -> 
     return "\n\n".join(chunks)
 
 
-def _build_notice_ai_prompt(action: str, records_text: str) -> list[dict]:
+def _normalize_podcast_style(raw) -> str:
+    value = str(raw or "").strip().lower()
+    aliases = {
+        "talk": "dialogue",
+        "chat": "dialogue",
+        "conversation": "dialogue",
+        "speech": "speech",
+        "lecture": "speech",
+        "interview": "interview",
+        "qa": "interview",
+        "news": "news",
+        "newscast": "news",
+    }
+    value = aliases.get(value, value)
+    if value in _PODCAST_STYLE_GUIDE:
+        return value
+
+    fallback = get_setting_str("PODCAST_DEFAULT_STYLE", default="dialogue").strip().lower()
+    fallback = aliases.get(fallback, fallback)
+    if fallback in _PODCAST_STYLE_GUIDE:
+        return fallback
+    return "dialogue"
+
+
+def _build_notice_ai_prompt(action: str, records_text: str, *, podcast_style: str = "dialogue") -> list[dict]:
     if action == "blog":
         task = get_setting_str("PROMPT_NOTICE_BLOG_TASK", default=DEFAULT_NOTICE_BLOG_TASK)
     elif action == "podcast":
+        style = _normalize_podcast_style(podcast_style)
+        style_line = _PODCAST_STYLE_GUIDE.get(style, _PODCAST_STYLE_GUIDE["dialogue"])
         task = get_setting_str("PROMPT_NOTICE_PODCAST_TASK", default=DEFAULT_NOTICE_PODCAST_TASK)
+        task = (
+            f"{task}\n"
+            f"风格要求：{style_line}\n"
+            "请输出适合直接 TTS 的纯文本脚本，不要 markdown，不要代码块。"
+        )
     elif action == "poster":
         task = get_setting_str("PROMPT_NOTICE_POSTER_TASK", default=DEFAULT_NOTICE_POSTER_TASK)
     else:
@@ -617,165 +659,101 @@ def _ai_request_json(path: str, payload: dict, *, timeout: int | None = None) ->
     return data, settings
 
 
-def _notebooklm_podcast_settings() -> dict:
-    storage_path_raw = get_setting_str("NOTEBOOKLM_STORAGE_PATH", default="").strip()
-    storage_path = str(Path(storage_path_raw).expanduser()) if storage_path_raw else None
-    language = get_setting_str("NOTEBOOKLM_AUDIO_LANGUAGE", default="zh-CN").strip() or "zh-CN"
-    generation_timeout = max(60, get_setting_int("NOTEBOOKLM_AUDIO_TIMEOUT_SECONDS", default=900))
-    source_wait_timeout = max(30, get_setting_int("NOTEBOOKLM_SOURCE_WAIT_TIMEOUT_SECONDS", default=240))
-    cleanup_notebook = get_setting_bool("NOTEBOOKLM_AUTO_DELETE_NOTEBOOK", default=True)
+def _ai_request_binary(path: str, payload: dict, *, timeout: int | None = None) -> tuple[bytes, str, dict]:
+    settings = _ai_provider_settings()
+    if not settings:
+        raise RuntimeError("AI provider not configured")
 
-    instructions = get_setting_str("NOTEBOOKLM_AUDIO_INSTRUCTIONS", default="")
-    if not instructions:
-        instructions = DEFAULT_NOTEBOOKLM_AUDIO_INSTRUCTIONS
-
-    return {
-        "storage_path": storage_path,
-        "language": language,
-        "generation_timeout": generation_timeout,
-        "source_wait_timeout": source_wait_timeout,
-        "cleanup_notebook": cleanup_notebook,
-        "instructions": instructions,
+    endpoint = settings["base_url"] + path
+    timeout_seconds = int(timeout or get_setting_int("AI_REQUEST_TIMEOUT_SECONDS", default=45))
+    headers = {
+        "Authorization": f"Bearer {settings['api_key']}",
+        "Content-Type": "application/json",
     }
+    try:
+        response = requests.post(endpoint, headers=headers, json=payload, timeout=timeout_seconds)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"provider request error: {exc}") from exc
 
+    if not response.ok:
+        detail = response.text.strip().replace("\n", " ")
+        if len(detail) > 320:
+            detail = detail[:320] + "..."
+        raise RuntimeError(f"provider request failed ({response.status_code}): {detail}")
 
-async def _notebooklm_generate_podcast_audio_async(
-    *,
-    notebook_client_class,
-    records_text: str,
-    notebook_title: str,
-    source_title: str,
-    settings: dict,
-) -> tuple[bytes, str, str, dict, str]:
-    storage_path = settings["storage_path"]
-    language = settings["language"]
-    generation_timeout = settings["generation_timeout"]
-    source_wait_timeout = settings["source_wait_timeout"]
-    cleanup_notebook = settings["cleanup_notebook"]
-    instructions = settings["instructions"]
-
-    if storage_path:
-        client = await notebook_client_class.from_storage(storage_path)
-    else:
-        client = await notebook_client_class.from_storage()
-
-    notebook_id = ""
-    transcript = ""
-    audio_bytes = b""
-
-    async with client as notebook_client:
-        notebook = await notebook_client.notebooks.create(notebook_title[:120])
-        notebook_id = notebook.id
-
+    content_type = str(response.headers.get("content-type") or "").strip().lower()
+    if "application/json" in content_type:
         try:
-            await notebook_client.sources.add_text(
-                notebook_id,
-                source_title[:120],
-                records_text,
-                wait=True,
-                wait_timeout=float(source_wait_timeout),
-            )
+            data = response.json()
+        except Exception as exc:
+            raise RuntimeError("provider returned invalid json payload") from exc
+        b64_value = ""
+        if isinstance(data, dict):
+            b64_value = str(data.get("audio") or data.get("b64_json") or data.get("data") or "").strip()
+        if not b64_value:
+            raise RuntimeError("provider returned json without audio bytes")
+        try:
+            audio_bytes = base64.b64decode(b64_value)
+        except Exception as exc:
+            raise RuntimeError("provider json audio decode failed") from exc
+        return audio_bytes, content_type, settings
 
-            try:
-                prompt = get_setting_str(
-                    "PROMPT_NOTEBOOKLM_SCRIPT_TASK",
-                    default=DEFAULT_NOTEBOOKLM_SCRIPT_PROMPT,
-                )
-                chat_result = await notebook_client.chat.ask(notebook_id, prompt)
-                transcript = str(chat_result.answer or "").strip()
-            except Exception:
-                transcript = ""
+    return response.content, content_type, settings
 
-            status = await notebook_client.artifacts.generate_audio(
-                notebook_id,
-                language=language,
-                instructions=instructions,
-            )
-            final_status = await notebook_client.artifacts.wait_for_completion(
-                notebook_id,
-                status.task_id,
-                timeout=float(generation_timeout),
-            )
-            if final_status.is_failed:
-                error_text = str(final_status.error or final_status.status or "unknown").strip()
-                raise RuntimeError(f"notebooklm audio generation failed: {error_text}")
 
-            with tempfile.TemporaryDirectory(prefix="benoss-notebooklm-") as temp_dir:
-                output_path = Path(temp_dir) / "podcast.mp4"
-                await notebook_client.artifacts.download_audio(
-                    notebook_id,
-                    str(output_path),
-                    artifact_id=status.task_id,
-                )
-                audio_bytes = output_path.read_bytes()
-        finally:
-            if cleanup_notebook and notebook_id:
-                try:
-                    await notebook_client.notebooks.delete(notebook_id)
-                except Exception:
-                    current_app.logger.warning(
-                        "failed to cleanup temporary notebooklm notebook: %s",
-                        notebook_id,
-                    )
+def _audio_format_meta(audio_format: str) -> tuple[str, str]:
+    value = str(audio_format or "").strip().lower()
+    mapping = {
+        "mp3": ("audio/mpeg", ".mp3"),
+        "wav": ("audio/wav", ".wav"),
+        "aac": ("audio/aac", ".aac"),
+        "flac": ("audio/flac", ".flac"),
+        "opus": ("audio/opus", ".opus"),
+        "pcm": ("audio/wav", ".wav"),
+    }
+    return mapping.get(value, ("audio/mpeg", ".mp3"))
 
+
+def _ai_tts_audio(script: str, *, podcast_style: str) -> tuple[bytes, str, str, dict]:
+    tts_model = get_setting_str("AI_TTS_MODEL", default="gpt-4o-mini-tts").strip()
+    if not tts_model:
+        raise RuntimeError("AI_TTS_MODEL not configured")
+
+    tts_voice = get_setting_str("AI_TTS_VOICE", default="alloy").strip() or "alloy"
+    response_format = get_setting_str("AI_TTS_RESPONSE_FORMAT", default="mp3").strip().lower() or "mp3"
+    max_chars = max(600, min(get_setting_int("AI_TTS_MAX_INPUT_CHARS", default=3600), 20000))
+    safe_text = str(script or "").strip()
+    if not safe_text:
+        raise RuntimeError("podcast script is empty")
+    if len(safe_text) > max_chars:
+        safe_text = safe_text[:max_chars].rstrip()
+
+    style = _normalize_podcast_style(podcast_style)
+    style_hint = _PODCAST_STYLE_GUIDE.get(style, _PODCAST_STYLE_GUIDE["dialogue"])
+    payload = {
+        "model": tts_model,
+        "voice": tts_voice,
+        "input": f"{style_hint}\n\n{safe_text}",
+        "response_format": response_format,
+    }
+    timeout = max(45, get_setting_int("AI_REQUEST_TIMEOUT_SECONDS", default=45))
+    audio_bytes, returned_content_type, settings = _ai_request_binary("/audio/speech", payload, timeout=timeout)
     if not audio_bytes:
-        raise RuntimeError("notebooklm returned empty audio")
+        raise RuntimeError("audio generation returned empty bytes")
 
-    if not transcript:
-        transcript = "NotebookLM 已生成音频，暂未返回可用文本稿。"
-
+    content_type, ext = _audio_format_meta(response_format)
+    if returned_content_type and "application/json" not in returned_content_type:
+        content_type = returned_content_type.split(";")[0].strip() or content_type
     return (
         audio_bytes,
-        "audio/mp4",
-        ".mp4",
-        {"provider": "notebooklm", "model": "audio_overview"},
-        transcript,
+        content_type,
+        ext,
+        {
+            "provider": settings["provider"],
+            "model": tts_model,
+            "voice": tts_voice,
+        },
     )
-
-
-def _notebooklm_generate_podcast_audio(records_text: str, *, title: str) -> tuple[bytes, str, str, dict, str]:
-    try:
-        from notebooklm import NotebookLMClient
-    except Exception as exc:
-        raise RuntimeError(
-            "NotebookLM not configured: install notebooklm-py and run `notebooklm login` first."
-        ) from exc
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        pass
-    else:
-        raise RuntimeError("notebooklm audio generation failed: current runtime has an active event loop")
-
-    settings = _notebooklm_podcast_settings()
-    notebook_title = f"Benoss Podcast {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
-    source_title = title or "Benoss Notice Source"
-
-    try:
-        return asyncio.run(
-            _notebooklm_generate_podcast_audio_async(
-                notebook_client_class=NotebookLMClient,
-                records_text=records_text,
-                notebook_title=notebook_title,
-                source_title=source_title,
-                settings=settings,
-            )
-        )
-    except RuntimeError as exc:
-        detail = str(exc).strip() or exc.__class__.__name__
-        lower = detail.lower()
-        if "not configured" in lower:
-            raise
-        if any(token in lower for token in {"auth", "login", "cookie", "storage", "expired", "credential"}):
-            raise RuntimeError(f"NotebookLM not configured: {detail}") from exc
-        raise
-    except Exception as exc:
-        detail = str(exc).strip() or exc.__class__.__name__
-        lower = detail.lower()
-        if any(token in lower for token in {"auth", "login", "cookie", "storage", "expired", "credential"}):
-            raise RuntimeError(f"NotebookLM not configured: {detail}") from exc
-        raise RuntimeError(f"notebooklm audio generation failed: {detail}") from exc
 
 
 def _ai_generate_poster_image(prompt: str) -> tuple[bytes, str, str, dict]:
@@ -956,16 +934,23 @@ def _generate_podcast_asset(
     filters: dict,
     title: str,
     visibility: str,
+    podcast_style: str = "dialogue",
     source_day: date | None = None,
     is_daily_digest: bool = False,
 ) -> tuple[GeneratedAsset, str]:
-    audio_bytes, audio_type, ext, audio_info, script = _notebooklm_generate_podcast_audio(records_text, title=title)
+    style = _normalize_podcast_style(podcast_style)
+    script, script_info = _ai_chat(
+        messages=_build_notice_ai_prompt("podcast", records_text, podcast_style=style),
+        temperature=0.42,
+        max_tokens=1900,
+    )
+    audio_bytes, audio_type, ext, audio_info = _ai_tts_audio(script, podcast_style=style)
     asset = _save_generated_asset(
         user=user,
         kind="podcast_audio",
         title=title,
         provider=audio_info["provider"],
-        model=audio_info["model"],
+        model=f"{script_info['model']} + {audio_info['model']}",
         content_type=audio_type,
         ext=ext,
         data=audio_bytes,
@@ -1067,6 +1052,14 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
             "assets": [],
         }
 
+    _archive_and_index_records(
+        day_value=day_value,
+        records=records,
+        scope="public",
+        source="daily_digest",
+        timezone_name=tz_name,
+    )
+
     records_text = _records_for_ai_prompt(records)
     if not records_text:
         job.status = "failed"
@@ -1090,6 +1083,9 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
         "timezone": tz_name,
         "job": "daily_digest",
     }
+    digest_podcast_style = _normalize_podcast_style(
+        get_setting_str("PODCAST_DEFAULT_STYLE", default="dialogue")
+    )
 
     kind_map = {
         "blog_html": {
@@ -1146,6 +1142,7 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
                     filters=base_filters,
                     title=meta["title"],
                     visibility="public",
+                    podcast_style=digest_podcast_style,
                     source_day=day_value,
                     is_daily_digest=True,
                 )
@@ -1185,6 +1182,43 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
         "status": job.status,
         "error": job.error,
         "assets": [_generated_asset_payload(item) for item in ordered_assets],
+    }
+
+
+def _archive_and_index_records(
+    *,
+    day_value: date,
+    records: list[Record],
+    scope: str,
+    source: str,
+    timezone_name: str,
+) -> dict:
+    if not records:
+        return {"saved": False, "reason": "no_records"}
+
+    try:
+        archive_info = save_daily_archive(
+            day_value,
+            records,
+            scope=scope,
+            source=source,
+            timezone_name=timezone_name,
+        )
+    except Exception as exc:
+        current_app.logger.warning("daily archive save failed: %s", exc)
+        return {"saved": False, "reason": str(exc)}
+
+    vector_info = index_meta()
+    if scope == "public" and archive_info.get("changed") and get_setting_bool("VECTOR_AUTO_REBUILD", default=True):
+        try:
+            vector_info = build_index(max_docs=get_setting_int("VECTOR_MAX_DOCS", default=4000))
+        except Exception as exc:
+            current_app.logger.warning("vector rebuild failed: %s", exc)
+
+    return {
+        "saved": True,
+        "archive": archive_info,
+        "vector": vector_info,
     }
 
 
@@ -1690,6 +1724,7 @@ def notice_assets():
     day = str(filters.get("day") or "").strip()
     source_day = None
     order = str(filters.get("order") or "asc").strip().lower()
+    podcast_style = _normalize_podcast_style(payload.get("podcast_style"))
 
     query = _record_query_for(user, include_comments=False, public_only=public_only)
     try:
@@ -1711,6 +1746,17 @@ def notice_assets():
 
     asset_filters = dict(filters)
     asset_filters["public_only"] = bool(public_only)
+    if action == "podcast":
+        asset_filters["podcast_style"] = podcast_style
+        if public_only:
+            archive_day = source_day or datetime.utcnow().date()
+            _archive_and_index_records(
+                day_value=archive_day,
+                records=records,
+                scope="public",
+                source="notice_assets",
+                timezone_name=_digest_timezone(),
+            )
 
     try:
         if action == "blog":
@@ -1738,12 +1784,14 @@ def notice_assets():
                 filters=asset_filters,
                 title=f"Notice Podcast {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
                 visibility=visibility,
+                podcast_style=podcast_style,
                 source_day=source_day,
             )
             return jsonify(
                 {
                     "action": action,
                     "record_count": len(records),
+                    "podcast_style": podcast_style,
                     "asset": _generated_asset_payload(asset),
                     "transcript": script,
                 }
@@ -1895,6 +1943,17 @@ def home_today():
         .all()
     )
 
+    archive_state = _archive_and_index_records(
+        day_value=today,
+        records=records,
+        scope="public",
+        source="home_today",
+        timezone_name=_digest_timezone(),
+    )
+    vector_state = index_meta()
+    if not vector_state.get("ready"):
+        vector_state = ensure_index()
+
     ai_settings = _ai_provider_settings()
 
     return jsonify(
@@ -1912,5 +1971,106 @@ def home_today():
                     else "未配置 AI provider，将使用非 AI 拼接渲染内容。"
                 ),
             },
+            "archive": archive_state,
+            "vector": vector_state,
+        }
+    )
+
+
+def _vector_chat_fallback_answer(query: str, hits: list[dict]) -> str:
+    if not hits:
+        return f"问题“{query}”在当前本地归档中没有检索到高相关内容。"
+
+    lines = ["以下回答基于本地归档检索结果："]
+    for idx, hit in enumerate(hits[:3], start=1):
+        lines.append(
+            f"{idx}. [{hit.get('day', '')} #{hit.get('record_id', 0)} | score={hit.get('score', 0)}] "
+            f"{str(hit.get('snippet') or '').strip()}"
+        )
+    return "\n".join(lines)
+
+
+@api_bp.route("/api/vector/rebuild", methods=["POST"])
+@login_required()
+def vector_rebuild():
+    payload = request.get_json(silent=True) or {}
+    max_docs = payload.get("max_docs")
+    try:
+        result = build_index(max_docs=int(max_docs) if max_docs not in (None, "") else None)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(result)
+
+
+@api_bp.route("/api/vector/chat", methods=["POST"])
+@login_required()
+def vector_chat():
+    payload = request.get_json(silent=True) or {}
+    query = str(payload.get("query") or "").strip()
+    if not query:
+        return jsonify({"error": "missing query"}), 400
+
+    top_k = max(1, min(int(payload.get("top_k") or get_setting_int("VECTOR_TOP_K", default=6)), 20))
+    use_ai = str(payload.get("use_ai") if payload.get("use_ai") is not None else "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    result = vector_search(query, top_k=top_k)
+    hits = result.get("hits") or []
+    citations = [
+        {
+            "id": hit.get("id"),
+            "day": hit.get("day"),
+            "record_id": hit.get("record_id"),
+            "username": hit.get("username"),
+            "tags": hit.get("tags") or [],
+            "score": hit.get("score"),
+            "snippet": hit.get("snippet") or "",
+        }
+        for hit in hits
+    ]
+
+    ai_answer = ""
+    ai_used = False
+    ai_error = ""
+    if use_ai and hits and _ai_provider_settings():
+        context_text = build_chat_context(hits, max_chars=5000)
+        prompt = (
+            f"用户问题：{query}\n\n"
+            f"本地向量检索结果：\n{context_text}\n\n"
+            "请只基于检索结果回答，若证据不足要明确说“归档中暂无充分依据”。"
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": get_setting_str(
+                    "PROMPT_VECTOR_CHAT_SYSTEM",
+                    default=DEFAULT_VECTOR_CHAT_SYSTEM_PROMPT,
+                ),
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ]
+        try:
+            ai_answer, _ = _ai_chat(messages=messages, temperature=0.2, max_tokens=800)
+            ai_used = True
+        except RuntimeError as exc:
+            ai_error = str(exc)
+
+    answer = ai_answer.strip() if ai_answer else _vector_chat_fallback_answer(query, hits)
+    return jsonify(
+        {
+            "query": query,
+            "answer": answer,
+            "ai_used": ai_used,
+            "ai_error": ai_error,
+            "citations": citations,
+            "hits_count": len(citations),
+            "vector": result.get("meta") or index_meta(),
         }
     )

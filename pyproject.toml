@@ -12,7 +12,6 @@ dependencies = [
   "Flask>=2.3.0",
   "Flask-SQLAlchemy>=3.1.0",
   "gunicorn>=21.2.0",
-  "notebooklm-py>=0.3.2",
   "oss2>=2.18.0",
   "python-dotenv>=1.0.0",
   "requests>=2.31.0",

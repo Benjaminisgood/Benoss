@@ -20,8 +20,10 @@ Benoss 是一个“学习记录流”应用：用户可以发布文本或文件�
   - `Notice`：按筛选条件拼接整页内容，支持 AI 二次生成资产。
 - 资产生成（可选）：
   - AI 生成博客网页（html）；
-  - AI 生成播客音频（NotebookLM Audio Overview，默认 mp4）；
+  - AI 生成播客音频（本地脚本 + TTS，支持对话/演讲/访谈/播报风格）；
   - AI 生成海报图片（png）。
+  - 自动按天保存本地归档（JSON），支持后续向量索引构建。
+  - Home 页内置本地向量问答机器人（RAG 检索 + 可选 AI 回答）。
 
 ## 2. 技术栈与运行形态
 
@@ -33,8 +35,8 @@ Benoss 是一个“学习记录流”应用：用户可以发布文本或文件�
   - 或本地落盘目录（`data/oss-local/`）
 - 前端：Jinja 模板 + 原生 JS（`app/templates/*`, `app/static/js/site.js`）
 - AI 接入：
-  - OpenAI 兼容 API（博客/海报，通过 `requests` 调用）
-  - NotebookLM（播客，通过 `notebooklm-py` 调用）
+  - OpenAI 兼容 API（博客/播客脚本/向量问答/海报，通过 `requests` 调用）
+  - TTS 接口（播客音频）
 
 ## 3. 代码目录（先看这个）
 
@@ -53,12 +55,16 @@ app/
     session_auth.py        # 登录态读取、登录校验装饰器
     oss_paths.py           # OSS key 命名规则
     ids.py                 # UUID 生成
+    local_archive.py       # 本地按天归档（JSON）
+    local_vector_db.py     # 本地向量索引与检索
   cli/
     sync.py                # benoss-sync 命令行工具（pull/push/status）
 data/
   benoss.sqlite            # 默认数据库文件
   oss-local/               # 未配置远端 OSS 时的本地对象存储目录
   uploads/                 # 文件上传临时目录
+  daily-archive/           # 本地按天归档目录
+  vector-store/            # 本地向量索引目录
 ```
 
 ## 4. 数据结构（重点，面向小白）
@@ -293,7 +299,7 @@ data/
 - `_render_notice_html`：把记录流按日期分组渲染为单页 HTML。
 - `_ai_provider_settings`：读取当前 provider 配置。
 - `_ai_chat`：调用 `/chat/completions`。
-- `_notebooklm_generate_podcast_audio`：创建临时 NotebookLM notebook、写入文本源、生成并下载音频。
+- `_generate_podcast_asset`：先生成多风格播客脚本，再调用 TTS 接口生成音频。
 - `_ai_generate_poster_image`：调用 `/images/generations`。
 - `_save_generated_asset`：将 AI 结果写入对象存储 + `GeneratedAsset` 表。
 - `build_daily_public_digest`：按日汇总公开内容，产出博客/播客/海报并归档。
@@ -360,6 +366,8 @@ data/
 - Home 页面：
   - 拉取今日公开记录：`GET /api/home/today`
   - 快速发布：`POST /api/push`
+  - 本地向量问答：`POST /api/vector/chat`
+  - 重建向量索引：`POST /api/vector/rebuild`
 - Board 页面：
   - 主表：`GET /api/board`
   - 点击行/列/单元格触发对应详情 API
@@ -374,7 +382,7 @@ data/
 
 ### 11.1 最小步骤
 
-推荐直接用脚本自动化初始化（包含 venv、依赖、`.env`、数据库与 NotebookLM 登录态检查）：
+推荐直接用脚本自动化初始化（包含 venv、依赖、`.env`、数据库、本地归档目录与向量库目录）：
 
 ```bash
 ./benoss.sh bootstrap
@@ -384,7 +392,7 @@ data/
 如需关闭某些自动步骤，可用环境变量：
 
 ```bash
-BENOSS_AUTO_NOTEBOOKLM_AUTH=0 BENOSS_AUTO_INIT_DB=0 ./benoss.sh init
+BENOSS_AUTO_INIT_DB=0 ./benoss.sh init
 ```
 
 手动步骤（等价流程）：
@@ -398,12 +406,8 @@ python -m flask --app app init-db
 python -m flask --app app run --debug --port 80
 # 手动触发日报（默认按 DIGEST_TIMEZONE 跑昨天）
 python -m flask --app app digest-build
-```
-
-如果要使用播客生成功能，还需要先完成 NotebookLM 登录态准备：
-
-```bash
-notebooklm login
+# 手动重建本地向量索引
+python -m flask --app app vector-build
 ```
 
 打开浏览器访问：
@@ -470,12 +474,16 @@ benoss-sync pull --username alice --output ./pulled_records
 - `AI_REQUEST_TIMEOUT_SECONDS`
 - `AI_MAX_NOTICE_RECORDS`
 - `AI_IMAGE_MODEL`
-- `NOTEBOOKLM_STORAGE_PATH`（可选，默认走 `~/.notebooklm/storage_state.json`）
-- `NOTEBOOKLM_AUDIO_LANGUAGE`（默认 `zh-CN`）
-- `NOTEBOOKLM_AUDIO_TIMEOUT_SECONDS`
-- `NOTEBOOKLM_SOURCE_WAIT_TIMEOUT_SECONDS`
-- `NOTEBOOKLM_AUTO_DELETE_NOTEBOOK`（默认 `1`，生成后删除临时 notebook）
-- `NOTEBOOKLM_AUDIO_INSTRUCTIONS`（可选，覆盖默认播客指令）
+- `AI_TTS_MODEL`
+- `AI_TTS_VOICE`
+- `AI_TTS_RESPONSE_FORMAT`
+- `AI_TTS_MAX_INPUT_CHARS`
+- `PODCAST_DEFAULT_STYLE`（`dialogue/speech/interview/news`）
+- `LOCAL_DAILY_ARCHIVE_DIR`
+- `LOCAL_VECTOR_STORE_DIR`
+- `VECTOR_AUTO_REBUILD`
+- `VECTOR_TOP_K`
+- `VECTOR_MAX_DOCS`
 - `DIGEST_TIMEZONE`（默认 `Asia/Shanghai`，用于“每日结束”切分日期）
 
 按 provider 分组：

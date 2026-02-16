@@ -289,6 +289,21 @@ button.secondary {
   min-height: 100%;
 }
 
+.vector-chat-card {
+  grid-column: 1 / -1;
+}
+
+.vector-hit-item {
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  padding: 0.65rem;
+  background: #fbfdff;
+}
+
+.vector-hit-item p {
+  margin: 0.3rem 0;
+}
+
 .ai-block {
   margin-top: 0.8rem;
   padding-top: 0.8rem;

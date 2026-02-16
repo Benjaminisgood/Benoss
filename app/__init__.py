@@ -13,6 +13,7 @@ from .extensions import db
 from .models import User
 from .routes.api import build_daily_public_digest
 from .routes import register_blueprints
+from .utils.local_vector_db import build_index
 from .utils.session_auth import load_current_user
 
 
@@ -71,6 +72,16 @@ def create_app() -> Flask:
 
             try:
                 result = build_daily_public_digest(day_value=day_value, force=bool(force), timezone_name=tz_name)
+            except Exception as exc:
+                raise click.ClickException(str(exc)) from exc
+            click.echo(json.dumps(result, ensure_ascii=False))
+
+    @app.cli.command("vector-build")
+    @click.option("--max-docs", default=0, type=int, help="Max docs for local vector index.")
+    def vector_build_command(max_docs: int):
+        with app.app_context():
+            try:
+                result = build_index(max_docs=max_docs if max_docs > 0 else None)
             except Exception as exc:
                 raise click.ClickException(str(exc)) from exc
             click.echo(json.dumps(result, ensure_ascii=False))

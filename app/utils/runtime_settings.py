@@ -14,7 +14,10 @@ DEFAULT_NOTICE_BLOG_TASK = (
     "结构包含：标题、导语、按主题分节的小标题、结语。"
     "保留关键事实和时间线，语言自然可读，避免空泛。"
 )
-DEFAULT_NOTICE_PODCAST_TASK = "把输入记录整理成一个 3-5 分钟中文播客稿，分段清晰，有开场、主体、结尾。"
+DEFAULT_NOTICE_PODCAST_TASK = (
+    "把输入记录整理成一份中文播客脚本，时长 3-6 分钟。"
+    "需要有开场、主体、结尾，重点清晰，可直接用于语音合成。"
+)
 DEFAULT_NOTICE_POSTER_TASK = "把输入记录提炼成一份中文海报文案，包含标题、3-6 个重点、结语。"
 DEFAULT_POSTER_SYSTEM_PROMPT = "你是视觉总监，请把学习记录提炼成适合图像模型的一段海报提示词。"
 DEFAULT_POSTER_USER_TEMPLATE = (
@@ -22,13 +25,10 @@ DEFAULT_POSTER_USER_TEMPLATE = (
     "包含主题、排版、颜色、风格、元素。只输出提示词本身。\n\n"
     "记录输入：\n{records_text}"
 )
-DEFAULT_NOTEBOOKLM_AUDIO_INSTRUCTIONS = (
-    "请使用中文生成一段 3-5 分钟的双人播客音频，结构包含开场、主体、结尾，"
-    "重点清晰，表达自然，尽量保留输入记录中的关键信息。"
-)
-DEFAULT_NOTEBOOKLM_SCRIPT_PROMPT = (
-    "请基于当前资料输出中文播客稿，时长约 3-5 分钟，"
-    "分段清晰，包含开场、主体、结尾。只输出正文。"
+DEFAULT_VECTOR_CHAT_SYSTEM_PROMPT = (
+    "你是 Benoss 本地知识库助手。"
+    "只基于给定检索结果回答，不确定就明确说明证据不足。"
+    "回答时尽量简洁，并优先给出结论。"
 )
 
 
@@ -52,11 +52,55 @@ SETTING_DEFINITIONS: list[dict] = [
         "default": "Asia/Shanghai",
     },
     {
+        "key": "LOCAL_DAILY_ARCHIVE_DIR",
+        "label": "本地归档目录",
+        "type": "string",
+        "group": "站点",
+        "description": "按天保存 JSON 归档的目录。",
+        "default": "data/daily-archive",
+    },
+    {
+        "key": "LOCAL_VECTOR_STORE_DIR",
+        "label": "本地向量库目录",
+        "type": "string",
+        "group": "站点",
+        "description": "本地向量索引文件目录。",
+        "default": "data/vector-store",
+    },
+    {
+        "key": "VECTOR_AUTO_REBUILD",
+        "label": "自动重建向量索引",
+        "type": "bool",
+        "group": "站点",
+        "description": "归档更新后自动重建本地向量索引。",
+        "default": True,
+    },
+    {
+        "key": "VECTOR_TOP_K",
+        "label": "向量检索默认 TopK",
+        "type": "int",
+        "group": "站点",
+        "description": "聊天检索默认返回多少条候选。",
+        "min": 1,
+        "max": 20,
+        "default": 6,
+    },
+    {
+        "key": "VECTOR_MAX_DOCS",
+        "label": "向量库最大文档数",
+        "type": "int",
+        "group": "站点",
+        "description": "本地向量索引最多纳入多少条文档。",
+        "min": 200,
+        "max": 30000,
+        "default": 4000,
+    },
+    {
         "key": "AI_AUTOFILL_PROVIDER",
         "label": "AI Provider",
         "type": "choice",
         "group": "AI 基础",
-        "description": "Notice 生成使用的默认 provider。",
+        "description": "Notice 生成与向量问答使用的默认 provider。",
         "default": "",
         "options": [
             {"label": "关闭", "value": ""},
@@ -93,6 +137,61 @@ SETTING_DEFINITIONS: list[dict] = [
         "group": "AI 基础",
         "description": "海报生成所用图像模型。",
         "default": "gpt-image-1",
+    },
+    {
+        "key": "AI_TTS_MODEL",
+        "label": "播客 TTS 模型",
+        "type": "string",
+        "group": "AI 基础",
+        "description": "播客音频生成的语音模型。",
+        "default": "gpt-4o-mini-tts",
+    },
+    {
+        "key": "AI_TTS_VOICE",
+        "label": "播客 TTS 音色",
+        "type": "string",
+        "group": "AI 基础",
+        "description": "播客语音音色，例如 alloy。",
+        "default": "alloy",
+    },
+    {
+        "key": "AI_TTS_RESPONSE_FORMAT",
+        "label": "播客音频格式",
+        "type": "choice",
+        "group": "AI 基础",
+        "description": "语音接口返回格式。",
+        "default": "mp3",
+        "options": [
+            {"label": "mp3", "value": "mp3"},
+            {"label": "wav", "value": "wav"},
+            {"label": "aac", "value": "aac"},
+            {"label": "flac", "value": "flac"},
+            {"label": "opus", "value": "opus"},
+        ],
+    },
+    {
+        "key": "AI_TTS_MAX_INPUT_CHARS",
+        "label": "TTS 最大输入长度",
+        "type": "int",
+        "group": "AI 基础",
+        "description": "播客脚本传给 TTS 前的最大字符数。",
+        "min": 600,
+        "max": 20000,
+        "default": 3600,
+    },
+    {
+        "key": "PODCAST_DEFAULT_STYLE",
+        "label": "默认播客风格",
+        "type": "choice",
+        "group": "AI 基础",
+        "description": "Notice 播客默认脚本风格。",
+        "default": "dialogue",
+        "options": [
+            {"label": "对话式", "value": "dialogue"},
+            {"label": "演讲式", "value": "speech"},
+            {"label": "访谈式", "value": "interview"},
+            {"label": "播报式", "value": "news"},
+        ],
     },
     {
         "key": "CHAT_ANYWHERE_API_KEY",
@@ -170,58 +269,6 @@ SETTING_DEFINITIONS: list[dict] = [
         "default": "qwen-plus",
     },
     {
-        "key": "NOTEBOOKLM_STORAGE_PATH",
-        "label": "NotebookLM 存储路径",
-        "type": "string",
-        "group": "NotebookLM",
-        "description": "可选，默认走 notebooklm-py 内置路径。",
-        "default": "",
-    },
-    {
-        "key": "NOTEBOOKLM_AUDIO_LANGUAGE",
-        "label": "NotebookLM 音频语言",
-        "type": "string",
-        "group": "NotebookLM",
-        "description": "例如 zh-CN。",
-        "default": "zh-CN",
-    },
-    {
-        "key": "NOTEBOOKLM_AUDIO_TIMEOUT_SECONDS",
-        "label": "NotebookLM 生成超时(秒)",
-        "type": "int",
-        "group": "NotebookLM",
-        "description": "生成音频任务的最长等待时间。",
-        "min": 60,
-        "max": 7200,
-        "default": 900,
-    },
-    {
-        "key": "NOTEBOOKLM_SOURCE_WAIT_TIMEOUT_SECONDS",
-        "label": "NotebookLM Source 等待(秒)",
-        "type": "int",
-        "group": "NotebookLM",
-        "description": "添加 source 后等待索引的最大时间。",
-        "min": 30,
-        "max": 3600,
-        "default": 240,
-    },
-    {
-        "key": "NOTEBOOKLM_AUTO_DELETE_NOTEBOOK",
-        "label": "自动删除临时 Notebook",
-        "type": "bool",
-        "group": "NotebookLM",
-        "description": "音频生成后是否删除临时 notebook。",
-        "default": True,
-    },
-    {
-        "key": "NOTEBOOKLM_AUDIO_INSTRUCTIONS",
-        "label": "NotebookLM 音频指令",
-        "type": "text",
-        "group": "提示词",
-        "description": "NotebookLM 音频生成 instructions。",
-        "default": DEFAULT_NOTEBOOKLM_AUDIO_INSTRUCTIONS,
-    },
-    {
         "key": "PROMPT_NOTICE_SYSTEM",
         "label": "Notice System Prompt",
         "type": "text",
@@ -242,7 +289,7 @@ SETTING_DEFINITIONS: list[dict] = [
         "label": "Notice 播客任务提示词",
         "type": "text",
         "group": "提示词",
-        "description": "生成播客稿的任务指令。",
+        "description": "生成播客脚本的任务指令。",
         "default": DEFAULT_NOTICE_PODCAST_TASK,
     },
     {
@@ -270,12 +317,12 @@ SETTING_DEFINITIONS: list[dict] = [
         "default": DEFAULT_POSTER_USER_TEMPLATE,
     },
     {
-        "key": "PROMPT_NOTEBOOKLM_SCRIPT_TASK",
-        "label": "NotebookLM 文稿提炼提示词",
+        "key": "PROMPT_VECTOR_CHAT_SYSTEM",
+        "label": "向量问答 System Prompt",
         "type": "text",
         "group": "提示词",
-        "description": "调用 notebook chat.ask 时使用。",
-        "default": DEFAULT_NOTEBOOKLM_SCRIPT_PROMPT,
+        "description": "首页向量机器人回答时使用的 system prompt。",
+        "default": DEFAULT_VECTOR_CHAT_SYSTEM_PROMPT,
     },
 ]
 

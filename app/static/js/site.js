@@ -338,6 +338,8 @@
   async function loadHome() {
     const dateEl = qs("#today-date");
     const aiStatusEl = qs("#ai-status");
+    const archiveStatusEl = qs("#archive-status");
+    const vectorStatusEl = qs("#vector-status");
     const metricPublicEl = qs("#metric-public-count");
     const metricUserEl = qs("#metric-user-count");
     const metricTagsEl = qs("#metric-top-tags");
@@ -350,6 +352,21 @@
     }
     if (aiStatusEl) {
       aiStatusEl.textContent = data.ai?.message || "未启用";
+    }
+    if (archiveStatusEl) {
+      const archive = data.archive || {};
+      if (archive.saved && archive.archive) {
+        const changedText = archive.archive.changed ? "已更新" : "无变更";
+        archiveStatusEl.textContent = `归档${changedText}：${archive.archive.day || "-"}，记录 ${archive.archive.record_count || 0} 条`;
+      } else if (archive.reason) {
+        archiveStatusEl.textContent = `归档状态：${archive.reason}`;
+      } else {
+        archiveStatusEl.textContent = "归档状态：无更新";
+      }
+    }
+    if (vectorStatusEl) {
+      const vector = data.vector || {};
+      vectorStatusEl.textContent = `索引文档 ${vector.doc_count || 0} 条，语料文件 ${vector.archive_count || 0} 个`;
     }
 
     const userSet = new Set();
@@ -376,11 +393,39 @@
     if (metricTagsEl) {
       metricTagsEl.textContent = topTags.length ? topTags.join(" ") : "-";
     }
+    return data;
+  }
+
+  function vectorHitHtml(hit) {
+    const tags = Array.isArray(hit.tags) && hit.tags.length ? hit.tags.map((tag) => `#${escapeHtml(tag)}`).join(" ") : "无标签";
+    return `
+      <article class="vector-hit-item">
+        <p><strong>${escapeHtml(hit.day || "")} #${Number(hit.record_id || 0)}</strong> | 用户: ${escapeHtml(hit.username || "-")} | score=${Number(hit.score || 0).toFixed(3)}</p>
+        <p class="muted">${escapeHtml(tags)}</p>
+        <p>${escapeHtml(hit.snippet || "")}</p>
+      </article>
+    `;
+  }
+
+  function renderVectorHits(hits) {
+    const wrap = qs("#vector-chat-hits");
+    if (!wrap) {
+      return;
+    }
+    if (!Array.isArray(hits) || !hits.length) {
+      wrap.innerHTML = "<p class=\"muted\">暂无检索命中</p>";
+      return;
+    }
+    wrap.innerHTML = hits.map((hit) => vectorHitHtml(hit)).join("");
   }
 
   async function initHome() {
     const form = qs("#quick-publish-form");
     const msgEl = qs("#quick-publish-msg");
+    const vectorForm = qs("#vector-chat-form");
+    const vectorAnswerEl = qs("#vector-chat-answer");
+    const vectorStatusEl = qs("#vector-status");
+    const vectorRebuildBtn = qs("#vector-rebuild-btn");
 
     if (form) {
       const formatEl = qs("#quick-publish-format", form);
@@ -498,6 +543,83 @@
       });
     }
 
+    if (vectorForm) {
+      vectorForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const formData = new FormData(vectorForm);
+        const query = String(formData.get("query") || "").trim();
+        if (!query) {
+          window.alert("请输入问题");
+          return;
+        }
+        const topK = Number(formData.get("top_k") || 6);
+        const useAiChecked = Boolean(qs('input[name="use_ai"]', vectorForm)?.checked);
+        const submitBtn = qs('button[type="submit"]', vectorForm);
+        if (submitBtn) {
+          submitBtn.disabled = true;
+        }
+        if (vectorAnswerEl) {
+          vectorAnswerEl.hidden = false;
+          vectorAnswerEl.textContent = "检索中...";
+        }
+        try {
+          const data = await api("/api/vector/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              query,
+              top_k: topK,
+              use_ai: useAiChecked,
+            }),
+          });
+          if (vectorAnswerEl) {
+            const aiFlag = data.ai_used ? "AI 已增强回答" : "检索直答";
+            vectorAnswerEl.textContent = `${aiFlag}\n\n${data.answer || ""}`;
+          }
+          renderVectorHits(data.citations || []);
+          if (vectorStatusEl) {
+            const vector = data.vector || {};
+            vectorStatusEl.textContent = `索引文档 ${vector.doc_count || 0} 条，语料文件 ${vector.archive_count || 0} 个`;
+          }
+        } catch (error) {
+          if (vectorAnswerEl) {
+            vectorAnswerEl.hidden = false;
+            vectorAnswerEl.textContent = error.message;
+          }
+        } finally {
+          if (submitBtn) {
+            submitBtn.disabled = false;
+          }
+        }
+      });
+    }
+
+    if (vectorRebuildBtn) {
+      vectorRebuildBtn.addEventListener("click", async () => {
+        vectorRebuildBtn.disabled = true;
+        try {
+          const data = await api("/api/vector/rebuild", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          if (vectorStatusEl) {
+            vectorStatusEl.textContent = `索引已重建：文档 ${data.doc_count || 0} 条，语料文件 ${data.archive_count || 0} 个`;
+          }
+          if (vectorAnswerEl) {
+            vectorAnswerEl.hidden = false;
+            vectorAnswerEl.textContent = `向量索引重建完成\nbuilt_at=${data.built_at || ""}`;
+          }
+          renderVectorHits([]);
+        } catch (error) {
+          window.alert(error.message);
+        } finally {
+          vectorRebuildBtn.disabled = false;
+        }
+      });
+    }
+
+    renderVectorHits([]);
     await loadHome();
   }
 
@@ -814,6 +936,8 @@
     const filters = readNoticeFilters();
     const outputEl = qs("#notice-ai-output");
     const htmlEl = qs("#notice-render-html");
+    const podcastStyleEl = qs("#notice-podcast-style");
+    const podcastStyle = String(podcastStyleEl?.value || "dialogue").trim().toLowerCase();
     setNoticeResultsVisible(true);
     setNoticeAiOutputVisible(true);
     noticeAiBusy = true;
@@ -828,12 +952,14 @@
         body: JSON.stringify({
           action,
           filters,
+          podcast_style: podcastStyle,
         }),
       });
 
       const asset = data.asset || {};
       const actionTitle = action === "blog" ? "博客网页" : action === "podcast" ? "播客音频" : "海报图片";
-      const title = `${actionTitle} 已生成\nprovider=${asset.provider || "-"} model=${asset.model || "-"} size=${asset.size_bytes || 0} bytes`;
+      const styleText = action === "podcast" ? `\nstyle=${data.podcast_style || podcastStyle}` : "";
+      const title = `${actionTitle} 已生成\nprovider=${asset.provider || "-"} model=${asset.model || "-"} size=${asset.size_bytes || 0} bytes${styleText}`;
       if (outputEl) {
         outputEl.textContent = title;
       }

@@ -72,7 +72,39 @@
     <h2>AI 生成状态</h2>
     <p class="muted" id="today-date"></p>
     <pre id="ai-status"></pre>
-    <p class="muted">AI 配置可用时，Notice 页可直接生成播客稿、海报文案或优化版内容。</p>
+    <p class="muted">AI 配置可用时，Notice 页可直接生成多风格播客、海报文案或优化版内容。</p>
+    <p class="muted" id="archive-status"></p>
+  </article>
+
+  <article class="card vector-chat-card">
+    <div class="section-head">
+      <h2>本地向量机器人</h2>
+      <button type="button" class="secondary" id="vector-rebuild-btn">重建向量索引</button>
+    </div>
+    <p class="muted" id="vector-status">向量索引未加载</p>
+    <form id="vector-chat-form" class="stack-form">
+      <label>
+        提问
+        <textarea name="query" rows="3" placeholder="例如：今天大家在学什么？哪些主题最热？"></textarea>
+      </label>
+      <div class="inline-fields">
+        <label>
+          Top-K
+          <select name="top_k">
+            <option value="4">4</option>
+            <option value="6" selected>6</option>
+            <option value="8">8</option>
+          </select>
+        </label>
+        <label class="inline-check">
+          <input type="checkbox" name="use_ai" checked>
+          用 AI 基于检索结果回答
+        </label>
+      </div>
+      <button type="submit">开始问答</button>
+    </form>
+    <pre id="vector-chat-answer" class="ai-output" hidden></pre>
+    <div id="vector-chat-hits" class="notice-feed"></div>
   </article>
 </section>
 

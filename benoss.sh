@@ -68,7 +68,9 @@ AUTO_CREATE_VENV="${BENOSS_AUTO_CREATE_VENV:-1}"
 AUTO_INSTALL_DEPS="${BENOSS_AUTO_INSTALL_DEPS:-1}"
 AUTO_SYNC_ENV="${BENOSS_AUTO_SYNC_ENV:-1}"
 AUTO_INIT_DB="${BENOSS_AUTO_INIT_DB:-1}"
-AUTO_NOTEBOOKLM_AUTH="${BENOSS_AUTO_NOTEBOOKLM_AUTH:-1}"
+
+DAILY_ARCHIVE_DIR="${BENOSS_DAILY_ARCHIVE_DIR:-$PROJECT_PATH/data/daily-archive}"
+VECTOR_STORE_DIR="${BENOSS_VECTOR_STORE_DIR:-$PROJECT_PATH/data/vector-store}"
 
 ########################################
 # Helpers
@@ -200,32 +202,8 @@ ensure_env_file() {
   sync_env_missing_keys
 }
 
-ensure_notebooklm_auth() {
-  local nb_cli="$VENV_PATH/bin/notebooklm"
-
-  if ! is_truthy "$AUTO_NOTEBOOKLM_AUTH"; then
-    return 0
-  fi
-
-  if [[ ! -x "$nb_cli" ]]; then
-    info "notebooklm CLI not found in venv; skipping NotebookLM auth setup."
-    return 0
-  fi
-
-  if "$nb_cli" auth check >/dev/null 2>&1; then
-    ok "NotebookLM auth check passed."
-    return 0
-  fi
-
-  if [[ ! -t 0 ]]; then
-    info "NotebookLM auth not ready (non-interactive). Run: $nb_cli login"
-    return 0
-  fi
-
-  info "NotebookLM auth not ready. Starting browser login flow..."
-  "$nb_cli" login || die "NotebookLM login failed."
-  "$nb_cli" auth check >/dev/null 2>&1 || die "NotebookLM auth check failed after login."
-  ok "NotebookLM auth ready."
+ensure_local_storage_dirs() {
+  mkdir -p "$DAILY_ARCHIVE_DIR" "$VECTOR_STORE_DIR" || die "Cannot create local archive/vector directories."
 }
 
 host_python_bin() {
@@ -288,7 +266,7 @@ ensure_deps() {
   local -a missing=()
   local pkg
 
-  for pkg in gunicorn Flask Flask-SQLAlchemy oss2 python-dotenv requests notebooklm-py; do
+  for pkg in gunicorn Flask Flask-SQLAlchemy oss2 python-dotenv requests; do
     "$py" -m pip show "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
   done
 
@@ -514,7 +492,8 @@ Config via env vars:
   BENOSS_AUTO_INSTALL_DEPS=$AUTO_INSTALL_DEPS
   BENOSS_AUTO_SYNC_ENV=$AUTO_SYNC_ENV
   BENOSS_AUTO_INIT_DB=$AUTO_INIT_DB
-  BENOSS_AUTO_NOTEBOOKLM_AUTH=$AUTO_NOTEBOOKLM_AUTH
+  BENOSS_DAILY_ARCHIVE_DIR=$DAILY_ARCHIVE_DIR
+  BENOSS_VECTOR_STORE_DIR=$VECTOR_STORE_DIR
 
 Examples:
   BENOSS_APP_PORT=80 $(basename "$0") start
@@ -535,6 +514,7 @@ cmd_check() {
   ensure_dirs
   [[ -d "$PROJECT_PATH" ]] || die "Project path not found: $PROJECT_PATH"
   ensure_env_file
+  ensure_local_storage_dirs
   if ! ensure_venv; then
     info "Check stopped: no virtualenv available."
     return 1
@@ -672,6 +652,7 @@ cmd_start() {
   [[ -d "$PROJECT_PATH" ]] || die "Project path not found: $PROJECT_PATH"
   cd "$PROJECT_PATH"
   ensure_env_file
+  ensure_local_storage_dirs
 
   # Basic dependency sanity
   local py g
@@ -821,6 +802,7 @@ cmd_init() {
   fi
   ensure_deps
   ensure_env_file
+  ensure_local_storage_dirs
 
   if is_truthy "$AUTO_INIT_DB"; then
     info "Initializing database..."
@@ -830,8 +812,6 @@ cmd_init() {
     "$VENV_PATH/bin/python" -m flask --app app init-db || die "Database init failed."
     ok "Database initialized."
   fi
-
-  ensure_notebooklm_auth
 
   ok "Init complete."
 }
