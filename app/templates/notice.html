@@ -24,15 +24,6 @@
         <option value="desc">从晚到早</option>
       </select>
     </label>
-    <label>
-      播客风格
-      <select name="podcast_style" id="notice-podcast-style">
-        <option value="dialogue" selected>对话式</option>
-        <option value="speech">演讲式</option>
-        <option value="interview">访谈式</option>
-        <option value="news">播报式</option>
-      </select>
-    </label>
     <button type="submit">直接渲染完整内容页</button>
   </form>
 
@@ -41,11 +32,5 @@
 
 <section class="card" id="notice-render-panel" hidden>
   <article id="notice-render-html" class="optimized-html"></article>
-  <div class="notice-actions" id="notice-actions" hidden>
-    <button type="button" data-ai-action="blog">AI 生成博客网页</button>
-    <button type="button" data-ai-action="podcast">AI 生成播客音频</button>
-    <button type="button" data-ai-action="poster">AI 生成海报图片</button>
-  </div>
-  <pre id="notice-ai-output" class="ai-output" hidden></pre>
 </section>
 {% endblock %}

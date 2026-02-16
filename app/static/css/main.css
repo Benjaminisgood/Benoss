@@ -293,6 +293,10 @@ button.secondary {
   grid-column: 1 / -1;
 }
 
+.digest-assets-card {
+  grid-column: 1 / -1;
+}
+
 .vector-hit-item {
   border: 1px solid var(--line);
   border-radius: 0.65rem;
@@ -396,7 +400,7 @@ button.secondary {
 
 .board-layout {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 1rem;
 }
 

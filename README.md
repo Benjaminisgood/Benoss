@@ -1,6 +1,6 @@
 # Benoss
 
-Benoss 是一个“学习记录流”应用：用户可以发布文本或文件记录，按标签筛选、评论互动，并在 Notice 页面把记录聚合成整页内容，或进一步生成 AI 博客网页、播客音频、海报图片。
+Benoss 是一个“学习记录流”应用：用户可以发布文本或文件记录，按标签筛选、评论互动；Notice 页面用于筛选并拼接整页内容，系统后台会自动基于当天公开内容生成博客、播客和海报并展示到 Home。
 
 项目当前是一个完整的 Flask 单体应用（Web 页面 + API + 数据库 + 对象存储 + AI 调用），适合从 0 开始理解“一个可运行后端是怎么组织起来的”。
 
@@ -14,10 +14,10 @@ Benoss 是一个“学习记录流”应用：用户可以发布文本或文件�
   - 作者可编辑或删除自己的记录。
 - 评论系统：对“你有权限看到”的记录发表评论。
 - 看板视图：
-  - `Home`：今天公开记录概览 + 快速发布；
+  - `Home`：今天公开记录概览 + 快速发布 + 今日自动生成资产；
   - `Board`：按用户 × 日期统计热力表 以及记录查看；
   - `Echoes`：公开内容流；
-  - `Notice`：按筛选条件拼接整页内容，支持 AI 二次生成资产。
+  - `Notice`：按筛选条件拼接整页内容（不含页面内 AI 生成入口）。
 - 资产生成（可选）：
   - AI 生成博客网页（html）；
   - AI 生成播客音频（本地脚本 + TTS，支持对话/演讲/访谈/播报风格）；
@@ -286,11 +286,11 @@ data/
 - 返回内容 payload，可直接渲染图片/音频/视频/文件链接；
 - 公开博客网页（HTML）会以链接方式展示。
 
-### 7.3 Notice（整页拼接 + AI）
+### 7.3 Notice（整页拼接）
 
 入口：
 - `GET /api/notice/render`：按筛选直接拼 HTML。
-- `POST /api/notice/assets`：`action=blog/podcast/poster`，生成真实资产并入库（支持 `visibility`）。
+- `POST /api/notice/assets`：后端资产生成接口（当前不在 Notice 页面直接暴露）。
 - `GET /api/generated-assets`：查询资产列表（支持 `day/kind/visibility/daily_digest`）。
 - `GET /api/generated-assets/<id>/blob`：读取生成资产文件（`public` 资产对登录用户可读）。
 - `POST /api/digest/daily`：管理员触发“某天公开内容”的日报生成。
@@ -366,6 +366,7 @@ data/
 - Home 页面：
   - 拉取今日公开记录：`GET /api/home/today`
   - 快速发布：`POST /api/push`
+  - 查看系统自动生成的今日博客/播客/海报
   - 本地向量问答：`POST /api/vector/chat`
   - 重建向量索引：`POST /api/vector/rebuild`
 - Board 页面：
@@ -375,8 +376,7 @@ data/
   - `GET /api/echoes`（记录 + 公开资产）
 - Notice 页面：
   - `GET /api/users` 填充用户筛选；
-  - `GET /api/notice/render` 直接渲染；
-  - `POST /api/notice/assets` 触发博客/播客/海报生成。
+  - `GET /api/notice/render` 直接渲染。
 
 ## 11. 本地运行（开发）
 

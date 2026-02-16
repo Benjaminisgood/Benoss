@@ -5,7 +5,6 @@
   const dialogTitle = document.getElementById("record-dialog-title");
 
   let usersCache = null;
-  let noticeAiBusy = false;
 
   function escapeHtml(value) {
     return String(value || "")
@@ -340,15 +339,18 @@
     const aiStatusEl = qs("#ai-status");
     const archiveStatusEl = qs("#archive-status");
     const vectorStatusEl = qs("#vector-status");
+    const digestStatusEl = qs("#digest-status");
+    const todayAssetsEl = qs("#today-assets-list");
     const metricPublicEl = qs("#metric-public-count");
     const metricUserEl = qs("#metric-user-count");
     const metricTagsEl = qs("#metric-top-tags");
 
     const data = await api("/api/home/today");
     const records = data.public_records || [];
+    const todayAssets = data.today_assets || [];
 
     if (dateEl) {
-      dateEl.textContent = `日期: ${data.date || ""}`;
+      dateEl.textContent = `日期: ${data.date || ""} (${data.timezone || "UTC"})`;
     }
     if (aiStatusEl) {
       aiStatusEl.textContent = data.ai?.message || "未启用";
@@ -367,6 +369,19 @@
     if (vectorStatusEl) {
       const vector = data.vector || {};
       vectorStatusEl.textContent = `索引文档 ${vector.doc_count || 0} 条，语料文件 ${vector.archive_count || 0} 个`;
+    }
+    if (digestStatusEl) {
+      const digest = data.digest_build || {};
+      const status = String(digest.status || "unknown");
+      const message = String(digest.message || "").trim();
+      digestStatusEl.textContent = message ? `自动生成状态：${status} (${message})` : `自动生成状态：${status}`;
+    }
+    if (todayAssetsEl) {
+      if (!todayAssets.length) {
+        todayAssetsEl.innerHTML = "<p class=\"muted\">今日自动内容尚未生成</p>";
+      } else {
+        todayAssetsEl.innerHTML = todayAssets.map((asset) => echoAssetCardHtml(asset)).join("");
+      }
     }
 
     const userSet = new Set();
@@ -862,50 +877,27 @@
     };
   }
 
-  function setNoticeActionsDisabled(disabled) {
-    document.querySelectorAll("#notice-actions [data-ai-action]").forEach((button) => {
-      button.disabled = Boolean(disabled);
-    });
-  }
-
   function setNoticeResultsVisible(visible) {
     const metaEl = qs("#notice-render-meta");
-    const actionsEl = qs("#notice-actions");
     const panelEl = qs("#notice-render-panel");
     if (metaEl) {
       metaEl.hidden = !visible;
-    }
-    if (actionsEl) {
-      actionsEl.hidden = !visible;
     }
     if (panelEl) {
       panelEl.hidden = !visible;
     }
   }
 
-  function setNoticeAiOutputVisible(visible) {
-    const outputEl = qs("#notice-ai-output");
-    if (outputEl) {
-      outputEl.hidden = !visible;
-    }
-  }
-
   function clearNoticeRender() {
     const metaEl = qs("#notice-render-meta");
     const htmlEl = qs("#notice-render-html");
-    const outputEl = qs("#notice-ai-output");
     if (metaEl) {
       metaEl.textContent = "";
     }
     if (htmlEl) {
       htmlEl.innerHTML = "";
     }
-    if (outputEl) {
-      outputEl.textContent = "";
-    }
     setNoticeResultsVisible(false);
-    setNoticeAiOutputVisible(false);
-    setNoticeActionsDisabled(false);
   }
 
   async function loadNoticeRender(filters = readNoticeFilters()) {
@@ -915,91 +907,13 @@
 
     const metaEl = qs("#notice-render-meta");
     const htmlEl = qs("#notice-render-html");
-    const outputEl = qs("#notice-ai-output");
     if (metaEl) {
       metaEl.textContent = `匹配记录: ${data.count || 0}`;
     }
     if (htmlEl) {
       htmlEl.innerHTML = data.rendered_html || "";
     }
-    if (outputEl) {
-      outputEl.textContent = "";
-    }
     setNoticeResultsVisible(true);
-    setNoticeAiOutputVisible(false);
-  }
-
-  async function runNoticeAi(action) {
-    if (noticeAiBusy) {
-      return;
-    }
-    const filters = readNoticeFilters();
-    const outputEl = qs("#notice-ai-output");
-    const htmlEl = qs("#notice-render-html");
-    const podcastStyleEl = qs("#notice-podcast-style");
-    const podcastStyle = String(podcastStyleEl?.value || "dialogue").trim().toLowerCase();
-    setNoticeResultsVisible(true);
-    setNoticeAiOutputVisible(true);
-    noticeAiBusy = true;
-    setNoticeActionsDisabled(true);
-    if (outputEl) {
-      outputEl.textContent = "AI 处理中...";
-    }
-    try {
-      const data = await api("/api/notice/assets", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action,
-          filters,
-          podcast_style: podcastStyle,
-        }),
-      });
-
-      const asset = data.asset || {};
-      const actionTitle = action === "blog" ? "博客网页" : action === "podcast" ? "播客音频" : "海报图片";
-      const styleText = action === "podcast" ? `\nstyle=${data.podcast_style || podcastStyle}` : "";
-      const title = `${actionTitle} 已生成\nprovider=${asset.provider || "-"} model=${asset.model || "-"} size=${asset.size_bytes || 0} bytes${styleText}`;
-      if (outputEl) {
-        outputEl.textContent = title;
-      }
-      if (htmlEl && asset.blob_url) {
-        if (action === "podcast") {
-          htmlEl.innerHTML = `
-            <article class="notice-render">
-              <h3>播客音频</h3>
-              <audio controls src="${escapeHtml(asset.blob_url)}"></audio>
-              <p><a href="${escapeHtml(asset.blob_url)}" target="_blank" rel="noreferrer">打开音频文件</a></p>
-            </article>
-          `;
-        } else if (action === "poster") {
-          htmlEl.innerHTML = `
-            <article class="notice-render">
-              <h3>海报图片</h3>
-              <img src="${escapeHtml(asset.blob_url)}" alt="poster">
-              <p><a href="${escapeHtml(asset.blob_url)}" target="_blank" rel="noreferrer">打开图片文件</a></p>
-            </article>
-          `;
-        } else {
-          htmlEl.innerHTML = `
-            <article class="notice-render">
-              <h3>博客网页</h3>
-              <iframe class="blog-frame" src="${escapeHtml(asset.blob_url)}"></iframe>
-              <p><a href="${escapeHtml(asset.blob_url)}" target="_blank" rel="noreferrer">打开博客网页</a></p>
-            </article>
-          `;
-        }
-      }
-    } catch (error) {
-      if (outputEl) {
-        outputEl.textContent = error.message;
-      } else {
-        window.alert(error.message);
-      }
-    } finally {
-      noticeAiBusy = false;
-      setNoticeActionsDisabled(false);
-    }
   }
 
   async function initNotice() {
@@ -1017,12 +931,6 @@
         loadNoticeRender(readNoticeFilters()).catch((error) => window.alert(error.message));
       });
     }
-
-    document.querySelectorAll("[data-ai-action]").forEach((button) => {
-      button.addEventListener("click", () => {
-        runNoticeAi(button.dataset.aiAction || "blog");
-      });
-    });
     await loadNoticeRender();
   }
 

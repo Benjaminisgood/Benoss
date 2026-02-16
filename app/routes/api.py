@@ -2004,9 +2004,13 @@ def generated_asset_blob(asset_id: int):
 @login_required()
 def home_today():
     user = g.get("user")
-
-    today = datetime.utcnow().date()
-    start, end = _day_bounds(today)
+    timezone_name = _digest_timezone()
+    try:
+        tz = ZoneInfo(timezone_name)
+    except Exception:
+        tz = timezone.utc
+    today = datetime.now(tz).date()
+    start, end = _utc_bounds_for_local_day(today, timezone_name)
 
     records = (
         _record_query_for(user, include_comments=False, public_only=True)
@@ -2020,21 +2024,31 @@ def home_today():
         records=records,
         scope="public",
         source="home_today",
-        timezone_name=_digest_timezone(),
+        timezone_name=timezone_name,
     )
     vector_state = index_meta()
     if not vector_state.get("ready"):
         vector_state = ensure_index()
+
+    digest_build_state = _maybe_auto_build_today_digest(
+        day_value=today,
+        timezone_name=timezone_name,
+        record_count=len(records),
+    )
+    daily_assets = _daily_digest_assets_for_day(today)
 
     ai_settings = _ai_provider_settings()
 
     return jsonify(
         {
             "date": today.isoformat(),
+            "timezone": timezone_name,
             "public_records": [
                 _record_payload(item, viewer=user, include_content=False, include_comments=False)
                 for item in records
             ],
+            "today_assets": [_generated_asset_payload(item) for item in daily_assets],
+            "digest_build": digest_build_state,
             "ai": {
                 "enabled": bool(ai_settings),
                 "message": (
