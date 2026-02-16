@@ -368,7 +368,8 @@
     }
     if (vectorStatusEl) {
       const vector = data.vector || {};
-      vectorStatusEl.textContent = `索引文档 ${vector.doc_count || 0} 条，语料文件 ${vector.archive_count || 0} 个`;
+      const base = `索引文档 ${vector.doc_count || 0} 条，语料文件 ${vector.archive_count || 0} 个`;
+      vectorStatusEl.textContent = vector.error ? `${base}（${vector.error}）` : base;
     }
     if (digestStatusEl) {
       const digest = data.digest_build || {};

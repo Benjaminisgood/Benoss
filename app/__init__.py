@@ -78,10 +78,11 @@ def create_app() -> Flask:
 
     @app.cli.command("vector-build")
     @click.option("--max-docs", default=0, type=int, help="Max docs for local vector index.")
-    def vector_build_command(max_docs: int):
+    @click.option("--force", is_flag=True, help="Force full rebuild instead of incremental upsert.")
+    def vector_build_command(max_docs: int, force: bool):
         with app.app_context():
             try:
-                result = build_index(max_docs=max_docs if max_docs > 0 else None)
+                result = build_index(max_docs=max_docs if max_docs > 0 else None, force=bool(force))
             except Exception as exc:
                 raise click.ClickException(str(exc)) from exc
             click.echo(json.dumps(result, ensure_ascii=False))

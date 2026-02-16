@@ -2028,7 +2028,12 @@ def home_today():
     )
     vector_state = index_meta()
     if not vector_state.get("ready"):
-        vector_state = ensure_index()
+        try:
+            vector_state = ensure_index()
+        except Exception as exc:
+            vector_state = index_meta()
+            vector_state["ready"] = False
+            vector_state["error"] = str(exc)
 
     digest_build_state = _maybe_auto_build_today_digest(
         day_value=today,
@@ -2081,8 +2086,17 @@ def _vector_chat_fallback_answer(query: str, hits: list[dict]) -> str:
 def vector_rebuild():
     payload = request.get_json(silent=True) or {}
     max_docs = payload.get("max_docs")
+    force = str(payload.get("force") or "0").strip().lower() in {"1", "true", "yes", "on"}
     try:
-        result = build_index(max_docs=int(max_docs) if max_docs not in (None, "") else None)
+        result = build_index(
+            max_docs=int(max_docs) if max_docs not in (None, "") else None,
+            force=force,
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        if "not configured" in message:
+            return jsonify({"error": message}), 501
+        return jsonify({"error": message}), 502
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
     return jsonify(result)
@@ -2104,7 +2118,13 @@ def vector_chat():
         "on",
     }
 
-    result = vector_search(query, top_k=top_k)
+    try:
+        result = vector_search(query, top_k=top_k)
+    except RuntimeError as exc:
+        message = str(exc)
+        if "not configured" in message:
+            return jsonify({"error": message}), 501
+        return jsonify({"error": message}), 502
     hits = result.get("hits") or []
     citations = [
         {

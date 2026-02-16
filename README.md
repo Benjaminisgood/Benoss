@@ -22,7 +22,7 @@ Benoss 是一个“学习记录流”应用：用户可以发布文本或文件�
   - AI 生成博客网页（html）；
   - AI 生成播客音频（本地脚本 + TTS，支持对话/演讲/访谈/播报风格）；
   - AI 生成海报图片（png）。
-  - 自动按天保存本地归档（JSON），支持后续向量索引构建。
+  - 自动按天保存本地归档（JSON），向量库采用本地持久化 + embedding 增量 upsert。
   - Home 页内置本地向量问答机器人（RAG 检索 + 可选 AI 回答）。
 
 ## 2. 技术栈与运行形态
@@ -408,6 +408,8 @@ python -m flask --app app run --debug --port 80
 python -m flask --app app digest-build
 # 手动重建本地向量索引
 python -m flask --app app vector-build
+# 强制全量重建（忽略增量缓存）
+python -m flask --app app vector-build --force
 ```
 
 打开浏览器访问：
@@ -484,7 +486,13 @@ benoss-sync pull --username alice --output ./pulled_records
 - `VECTOR_AUTO_REBUILD`
 - `VECTOR_TOP_K`
 - `VECTOR_MAX_DOCS`
+- `VECTOR_EMBEDDING_MODEL`
+- `VECTOR_EMBEDDING_BATCH_SIZE`
+- `VECTOR_EMBEDDING_MAX_INPUT_CHARS`
 - `DIGEST_TIMEZONE`（默认 `Asia/Shanghai`，用于“每日结束”切分日期）
+
+说明：
+- `VECTOR_EMBEDDING_MODEL` 需要与你当前 provider 兼容，否则向量重建/检索会返回模型错误。
 
 按 provider 分组：
 - `CHAT_ANYWHERE_API_KEY` / `CHAT_ANYWHERE_API_BASE_URL` / `CHAT_ANYWHERE_MODEL`
