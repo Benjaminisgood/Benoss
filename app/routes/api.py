@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from flask import Blueprint, Response, current_app, g, jsonify, request, url_for
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, not_, or_
 from sqlalchemy.orm import joinedload
 from werkzeug.utils import secure_filename
 
@@ -121,6 +121,10 @@ _TEXT_FILE_MIME_TYPES = {
     "application/x-sh",
     "application/x-httpd-php",
 }
+_IMAGE_FILE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg")
+_VIDEO_FILE_EXTENSIONS = (".mp4", ".mov", ".webm", ".mkv", ".avi")
+_AUDIO_FILE_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
+_ECHO_FILE_TYPES = {"text", "image", "video", "audio", "file"}
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -226,13 +230,133 @@ def _is_record_visible(record: Record, user: User) -> bool:
 def _content_media_type(content: Content) -> str:
     ctype = (content.content_type or "").lower()
     name = (content.filename or "").lower()
-    if ctype.startswith("image/") or name.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg")):
+    if ctype.startswith("image/") or name.endswith(_IMAGE_FILE_EXTENSIONS):
         return "image"
-    if ctype.startswith("video/") or name.endswith((".mp4", ".mov", ".webm", ".mkv", ".avi")):
+    if ctype.startswith("video/") or name.endswith(_VIDEO_FILE_EXTENSIONS):
         return "video"
-    if ctype.startswith("audio/") or name.endswith((".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")):
+    if ctype.startswith("audio/") or name.endswith(_AUDIO_FILE_EXTENSIONS):
         return "audio"
     if ctype.startswith("text/") or name.endswith((".txt", ".md", ".json", ".py", ".js", ".html", ".css", ".csv")):
+        return "text"
+    return "file"
+
+
+def _normalize_echo_file_type(raw: str | None) -> str:
+    value = str(raw or "").strip().lower()
+    if value in {"", "all"}:
+        return ""
+    if value not in _ECHO_FILE_TYPES:
+        raise ValueError("invalid file_type")
+    return value
+
+
+def _parse_iso_datetime(raw: str) -> datetime:
+    text = str(raw or "").strip()
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed.replace(tzinfo=None)
+
+
+def _suffix_like_filter(column, suffixes: tuple[str, ...]):
+    clauses = [column.like(f"%{suffix}") for suffix in suffixes]
+    if not clauses:
+        return column == "__never_match__"
+    return or_(*clauses)
+
+
+def _record_file_type_filter(file_type: str):
+    ctype = func.lower(func.coalesce(Content.content_type, ""))
+    filename = func.lower(func.coalesce(Content.filename, ""))
+    text_mime_values = tuple(sorted(_TEXT_FILE_MIME_TYPES))
+    text_suffix_values = tuple(sorted(_TEXT_FILE_EXTENSIONS))
+
+    image_match = or_(ctype.like("image/%"), _suffix_like_filter(filename, _IMAGE_FILE_EXTENSIONS))
+    video_match = or_(ctype.like("video/%"), _suffix_like_filter(filename, _VIDEO_FILE_EXTENSIONS))
+    audio_match = or_(ctype.like("audio/%"), _suffix_like_filter(filename, _AUDIO_FILE_EXTENSIONS))
+    text_match = or_(
+        ctype.like("text/%"),
+        ctype.in_(text_mime_values),
+        _suffix_like_filter(filename, text_suffix_values),
+    )
+
+    if file_type == "text":
+        return or_(
+            Content.kind == "text",
+            and_(Content.kind == "file", text_match),
+        )
+    if file_type == "image":
+        return and_(Content.kind == "file", image_match)
+    if file_type == "video":
+        return and_(Content.kind == "file", video_match)
+    if file_type == "audio":
+        return and_(Content.kind == "file", audio_match)
+    if file_type == "file":
+        return and_(
+            Content.kind == "file",
+            not_(or_(image_match, video_match, audio_match, text_match)),
+        )
+    return None
+
+
+def _asset_file_type_filter(file_type: str):
+    kind = func.lower(func.coalesce(GeneratedAsset.kind, ""))
+    ctype = func.lower(func.coalesce(GeneratedAsset.content_type, ""))
+    ext = func.lower(func.coalesce(GeneratedAsset.ext, ""))
+    text_mime_values = tuple(sorted(_TEXT_FILE_MIME_TYPES))
+    text_ext_values = tuple(sorted(_TEXT_FILE_EXTENSIONS))
+
+    image_match = or_(ctype.like("image/%"), ext.in_(_IMAGE_FILE_EXTENSIONS))
+    video_match = or_(ctype.like("video/%"), ext.in_(_VIDEO_FILE_EXTENSIONS))
+    audio_match = or_(ctype.like("audio/%"), ext.in_(_AUDIO_FILE_EXTENSIONS))
+    text_match = or_(
+        kind == "blog_html",
+        ctype.like("text/%"),
+        ctype.in_(text_mime_values),
+        ext.in_(text_ext_values),
+    )
+
+    if file_type == "text":
+        return text_match
+    if file_type == "image":
+        return image_match
+    if file_type == "video":
+        return video_match
+    if file_type == "audio":
+        return audio_match
+    if file_type == "file":
+        return and_(
+            kind != "blog_html",
+            not_(or_(image_match, video_match, audio_match, text_match)),
+        )
+    return None
+
+
+def _record_echo_file_type(record: Record) -> str:
+    if not record.content:
+        return "file"
+    if record.content.kind == "text":
+        return "text"
+    media = _content_media_type(record.content)
+    return media if media in _ECHO_FILE_TYPES else "file"
+
+
+def _asset_echo_file_type(asset: GeneratedAsset) -> str:
+    kind = str(asset.kind or "").strip().lower()
+    ctype = str(asset.content_type or "").split(";", 1)[0].strip().lower()
+    ext = str(asset.ext or "").strip().lower()
+
+    if kind == "blog_html":
+        return "text"
+    if ctype.startswith("image/") or ext in _IMAGE_FILE_EXTENSIONS:
+        return "image"
+    if ctype.startswith("video/") or ext in _VIDEO_FILE_EXTENSIONS:
+        return "video"
+    if ctype.startswith("audio/") or ext in _AUDIO_FILE_EXTENSIONS:
+        return "audio"
+    if ctype.startswith("text/") or ctype in _TEXT_FILE_MIME_TYPES or ext in _TEXT_FILE_EXTENSIONS:
         return "text"
     return "file"
 
@@ -490,16 +614,16 @@ def _render_notice_html(records: list[Record], *, day: str, user_id: str, tag: s
 
     lines: list[str] = [
         "<article class=\"notice-render\">",
-        "<header>",
+        "<header class=\"notice-render-summary\">",
         "<h2>Notice 内容拼接页</h2>",
-        f"<p>总记录数: {len(records)}</p>",
+        f"<p class=\"notice-summary-line\">总记录数: {len(records)}</p>",
     ]
 
     if filter_badges:
-        lines.append("<p>筛选条件: " + " | ".join(filter_badges) + "</p>")
+        lines.append("<p class=\"notice-summary-line\">筛选条件: " + " | ".join(filter_badges) + "</p>")
     if top_tags:
         lines.append(
-            "<p>高频标签: "
+            "<p class=\"notice-summary-line\">高频标签: "
             + ", ".join(f"#{html.escape(key)}" for key, _ in top_tags.most_common(10))
             + "</p>"
         )
@@ -512,22 +636,39 @@ def _render_notice_html(records: list[Record], *, day: str, user_id: str, tag: s
         if day_key != current_day:
             if current_day:
                 lines.append("</section>")
-            lines.append(f"<section class=\"notice-day\"><h3>{day_key}</h3>")
+            lines.append(f"<section class=\"notice-day\"><p class=\"notice-day-label\">{day_key}</p>")
             current_day = day_key
 
         user_name = html.escape(record.user.username if record.user else "")
         stamp = html.escape((record.created_at or datetime.utcnow()).strftime("%H:%M"))
-        tags_text = " ".join(f"<span class=\"tag-pill\">#{html.escape(t)}</span>" for t in record.get_tags())
-        if not tags_text:
-            tags_text = "<span class=\"muted\">无标签</span>"
+        visibility_text = html.escape(record.visibility or "")
+        tags = [f"#{html.escape(tag_text)}" for tag_text in record.get_tags()]
+
+        meta_parts: list[str] = []
+        if stamp:
+            meta_parts.append(f"<span>{stamp}</span>")
+        if user_name:
+            meta_parts.append(f"<span>{user_name}</span>")
+        if visibility_text:
+            meta_parts.append(f"<span>{visibility_text}</span>")
+        if tags:
+            meta_parts.append(f"<span class=\"notice-meta-tags\">{' '.join(tags)}</span>")
+        meta_html = " <span class=\"notice-meta-sep\">·</span> ".join(meta_parts) or "<span class=\"muted\">记录</span>"
+
+        preview_text = (record.preview or "").strip()
+        content_kind = (record.content.kind if record.content else "").strip().lower()
 
         lines.extend(
             [
                 "<article class=\"notice-block\">",
-                f"<div class=\"notice-block-head\"><strong>#{record.id}</strong><span>{user_name} · {stamp} · {html.escape(record.visibility)}</span></div>",
-                f"<p>{html.escape(record.preview or '')}</p>",
-                f"<div class=\"tag-line\">{tags_text}</div>",
-                _record_html_content(record.content),
+                f"<p class=\"notice-block-head\"><span class=\"notice-record-id\">#{record.id}</span>{meta_html}</p>",
+            ]
+        )
+        if preview_text and content_kind != "text":
+            lines.append(f"<p class=\"notice-preview\">{html.escape(preview_text)}</p>")
+        lines.extend(
+            [
+                f"<div class=\"notice-block-body\">{_record_html_content(record.content)}</div>",
                 "</article>",
             ]
         )
@@ -2110,11 +2251,16 @@ def board_day_records(day: str):
 @login_required()
 def echoes_feed():
     user = g.get("user")
-    query = _record_query_for(user, include_comments=False, public_only=True)
+    records_query = _record_query_for(user, include_comments=False, public_only=True)
+    assets_query = GeneratedAsset.query.options(joinedload(GeneratedAsset.user)).filter(
+        GeneratedAsset.visibility == "public",
+        GeneratedAsset.status == "ready",
+    )
 
     tag = str(request.args.get("tag") or "").strip()
     if tag:
-        query = query.filter(Record.tags_json.contains(f'"{tag}"'))
+        records_query = records_query.filter(Record.tags_json.contains(f'"{tag}"'))
+        assets_query = assets_query.filter(GeneratedAsset.source_filters_json.contains(f'"tag": "{tag}"'))
 
     day = str(request.args.get("day") or "").strip()
     day_value = None
@@ -2124,33 +2270,155 @@ def echoes_feed():
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         start, end = _day_bounds(day_value)
-        query = query.filter(Record.created_at >= start, Record.created_at < end)
-
-    page = max(int(request.args.get("page") or 1), 1)
-    per = min(max(int(request.args.get("per") or 40), 1), 100)
-
-    total = query.order_by(None).count()
-    records = query.order_by(Record.created_at.desc(), Record.id.desc()).offset((page - 1) * per).limit(per).all()
-    assets_query = GeneratedAsset.query.options(joinedload(GeneratedAsset.user)).filter(
-        GeneratedAsset.visibility == "public",
-        GeneratedAsset.status == "ready",
-    )
-    if day_value:
+        records_query = records_query.filter(Record.created_at >= start, Record.created_at < end)
         assets_query = assets_query.filter(GeneratedAsset.source_day == day_value)
-    if tag:
-        assets_query = assets_query.filter(GeneratedAsset.source_filters_json.contains(f'"tag": "{tag}"'))
-    assets = assets_query.order_by(GeneratedAsset.created_at.desc(), GeneratedAsset.id.desc()).limit(per).all()
+
+    try:
+        file_type = _normalize_echo_file_type(request.args.get("file_type"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    if file_type:
+        record_filter = _record_file_type_filter(file_type)
+        if record_filter is not None:
+            records_query = records_query.filter(Record.content.has(record_filter))
+        asset_filter = _asset_file_type_filter(file_type)
+        if asset_filter is not None:
+            assets_query = assets_query.filter(asset_filter)
+
+    limit = min(max(int(request.args.get("limit") or request.args.get("per") or 24), 1), 80)
+
+    cursor_time_raw = str(request.args.get("cursor_time") or "").strip()
+    cursor_kind = str(request.args.get("cursor_kind") or "").strip().lower()
+    cursor_id_raw = str(request.args.get("cursor_id") or "").strip()
+    cursor_time = None
+    cursor_id = 0
+
+    if cursor_time_raw or cursor_kind or cursor_id_raw:
+        if not (cursor_time_raw and cursor_kind and cursor_id_raw):
+            return jsonify({"error": "invalid cursor"}), 400
+        if cursor_kind not in {"record", "asset"}:
+            return jsonify({"error": "invalid cursor_kind"}), 400
+        if not cursor_id_raw.isdigit() or int(cursor_id_raw) <= 0:
+            return jsonify({"error": "invalid cursor_id"}), 400
+        cursor_id = int(cursor_id_raw)
+        try:
+            cursor_time = _parse_iso_datetime(cursor_time_raw)
+        except ValueError:
+            return jsonify({"error": "invalid cursor_time"}), 400
+
+    if cursor_time:
+        if cursor_kind == "record":
+            records_query = records_query.filter(
+                or_(
+                    Record.created_at < cursor_time,
+                    and_(Record.created_at == cursor_time, Record.id < cursor_id),
+                )
+            )
+            assets_query = assets_query.filter(GeneratedAsset.created_at <= cursor_time)
+        else:
+            records_query = records_query.filter(Record.created_at < cursor_time)
+            assets_query = assets_query.filter(
+                or_(
+                    GeneratedAsset.created_at < cursor_time,
+                    and_(GeneratedAsset.created_at == cursor_time, GeneratedAsset.id < cursor_id),
+                )
+            )
+
+    window_size = limit + 1
+    records = (
+        records_query.order_by(Record.created_at.desc(), Record.id.desc())
+        .limit(window_size)
+        .all()
+    )
+    assets = (
+        assets_query.order_by(GeneratedAsset.created_at.desc(), GeneratedAsset.id.desc())
+        .limit(window_size)
+        .all()
+    )
+
+    candidates = []
+    for item in records:
+        record_payload = _record_payload(item, viewer=user, include_content=True, include_comments=False)
+        candidates.append(
+            {
+                "entry_type": "record",
+                "id": item.id,
+                "created_at": item.created_at,
+                "file_type": _record_echo_file_type(item),
+                "record": record_payload,
+            }
+        )
+    for item in assets:
+        asset_payload = _generated_asset_payload(item)
+        candidates.append(
+            {
+                "entry_type": "asset",
+                "id": item.id,
+                "created_at": item.created_at,
+                "file_type": _asset_echo_file_type(item),
+                "asset": asset_payload,
+            }
+        )
+
+    candidates.sort(
+        key=lambda item: (
+            item["created_at"] or datetime.min,
+            -(0 if item["entry_type"] == "record" else 1),
+            item["id"],
+        ),
+        reverse=True,
+    )
+
+    selected = candidates[:limit]
+    has_more = len(candidates) > limit
+    next_cursor = None
+    if has_more and selected:
+        last = selected[-1]
+        next_cursor = {
+            "created_at": _iso(last["created_at"]),
+            "entry_type": last["entry_type"],
+            "id": int(last["id"]),
+        }
+
+    items_payload = []
+    assets_payload = []
+    entries_payload = []
+    for entry in selected:
+        if entry["entry_type"] == "record":
+            payload = entry["record"]
+            items_payload.append(payload)
+            entries_payload.append(
+                {
+                    "entry_type": "record",
+                    "id": int(entry["id"]),
+                    "created_at": _iso(entry["created_at"]),
+                    "file_type": entry["file_type"],
+                    "record": payload,
+                }
+            )
+        else:
+            payload = entry["asset"]
+            assets_payload.append(payload)
+            entries_payload.append(
+                {
+                    "entry_type": "asset",
+                    "id": int(entry["id"]),
+                    "created_at": _iso(entry["created_at"]),
+                    "file_type": entry["file_type"],
+                    "asset": payload,
+                }
+            )
 
     return jsonify(
         {
-            "items": [
-                _record_payload(item, viewer=user, include_content=True, include_comments=False)
-                for item in records
-            ],
-            "assets": [_generated_asset_payload(item) for item in assets],
-            "total": total,
-            "page": page,
-            "per": per,
+            "entries": entries_payload,
+            "items": items_payload,
+            "assets": assets_payload,
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+            "limit": limit,
+            "file_type": file_type or "all",
         }
     )
 

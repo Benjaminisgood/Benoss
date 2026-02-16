@@ -1,9 +1,33 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card">
-  <div class="section-head">
-    <h2>Echoes</h2>
+<section class="card echoes-shell">
+  <div class="section-head echoes-head">
+    <div>
+      <h2>Echoes</h2>
+      <p class="muted echoes-subtitle">公开记录与 AI 资产流</p>
+    </div>
+    <div class="echoes-meta">
+      <strong id="echoes-count">已显示 0 条</strong>
+      <span id="echoes-status" class="muted">准备加载</span>
+    </div>
   </div>
+
+  <div class="echoes-toolbar">
+    <div id="echoes-type-chips" class="echoes-type-chips" role="group" aria-label="文件类型筛选">
+      <button class="echoes-chip active" type="button" data-file-type="" aria-pressed="true">全部</button>
+      <button class="echoes-chip" type="button" data-file-type="text" aria-pressed="false">文本</button>
+      <button class="echoes-chip" type="button" data-file-type="image" aria-pressed="false">图片</button>
+      <button class="echoes-chip" type="button" data-file-type="video" aria-pressed="false">视频</button>
+      <button class="echoes-chip" type="button" data-file-type="audio" aria-pressed="false">音频</button>
+      <button class="echoes-chip" type="button" data-file-type="file" aria-pressed="false">文件</button>
+    </div>
+    <button id="echoes-refresh-btn" class="secondary" type="button">刷新</button>
+  </div>
+
   <div id="echoes-grid" class="echoes-grid"></div>
+  <p id="echoes-loading" class="echoes-loading muted" hidden>正在加载更多内容...</p>
+  <p id="echoes-empty" class="echoes-empty muted" hidden>暂无公开内容</p>
+  <p id="echoes-end" class="echoes-end muted" hidden>已加载全部内容</p>
+  <div id="echoes-sentinel" class="echoes-sentinel" aria-hidden="true"></div>
 </section>
 {% endblock %}
