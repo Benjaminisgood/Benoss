@@ -1222,6 +1222,78 @@ def _archive_and_index_records(
     }
 
 
+def _daily_digest_assets_for_day(day_value: date) -> list[GeneratedAsset]:
+    return (
+        GeneratedAsset.query.options(joinedload(GeneratedAsset.user))
+        .filter(
+            GeneratedAsset.visibility == "public",
+            GeneratedAsset.status == "ready",
+            GeneratedAsset.is_daily_digest.is_(True),
+            GeneratedAsset.source_day == day_value,
+        )
+        .order_by(GeneratedAsset.created_at.desc(), GeneratedAsset.id.desc())
+        .all()
+    )
+
+
+def _maybe_auto_build_today_digest(*, day_value: date, timezone_name: str, record_count: int) -> dict:
+    enabled = get_setting_bool("HOME_AUTO_BUILD_DAILY_ASSETS", default=True)
+    state = {
+        "enabled": bool(enabled),
+        "triggered": False,
+        "status": "disabled" if not enabled else "skipped",
+        "message": "auto build disabled" if not enabled else "",
+    }
+    if not enabled:
+        return state
+
+    if record_count <= 0:
+        state["status"] = "no_records"
+        state["message"] = "today has no public records"
+        return state
+
+    if not _ai_provider_settings():
+        state["status"] = "ai_not_configured"
+        state["message"] = "AI provider not configured"
+        return state
+
+    ready_assets = _daily_digest_assets_for_day(day_value)
+    ready_kinds = {item.kind for item in ready_assets}
+    required_kinds = {"blog_html", "podcast_audio", "poster_image"}
+    if required_kinds.issubset(ready_kinds):
+        state["status"] = "ready"
+        state["message"] = "assets already ready"
+        return state
+
+    retry_minutes = max(1, min(get_setting_int("HOME_DIGEST_RETRY_MINUTES", default=30), 720))
+    now = datetime.utcnow()
+    job = DailyDigestJob.query.filter_by(day=day_value, timezone=timezone_name).first()
+    if job and job.status == "running":
+        state["status"] = "running"
+        state["message"] = "daily digest job is running"
+        return state
+    if (
+        job
+        and job.status in {"failed", "partial"}
+        and job.finished_at
+        and (now - job.finished_at).total_seconds() < retry_minutes * 60
+    ):
+        state["status"] = job.status
+        state["message"] = f"recent {job.status}, retry later"
+        return state
+
+    try:
+        result = build_daily_public_digest(day_value=day_value, force=False, timezone_name=timezone_name)
+        state["triggered"] = True
+        state["status"] = str(result.get("status") or "ready")
+        state["message"] = str(result.get("error") or "").strip() or "daily digest updated"
+    except Exception as exc:
+        state["triggered"] = True
+        state["status"] = "error"
+        state["message"] = str(exc)
+    return state
+
+
 @api_bp.route("/api/push", methods=["POST"])
 @login_required()
 def push_record_alias():
