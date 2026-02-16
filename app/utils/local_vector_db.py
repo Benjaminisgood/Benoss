@@ -61,9 +61,9 @@ def _normalize_provider(value: str) -> str:
     return _PROVIDER_ALIASES.get(raw, raw)
 
 
-def _default_ai_provider() -> str:
-    primary = _normalize_provider(get_setting_str("AI_PRIMARY_PROVIDER", default=""))
-    return primary
+def _embedding_provider() -> str:
+    provider = _normalize_provider(get_setting_str("AI_EMBEDDING_PROVIDER", default=""))
+    return provider
 
 
 def _model_placeholder(value: str) -> bool:
@@ -84,7 +84,7 @@ def _embedding_model_for_provider(provider: str) -> str:
 
 
 def _embedding_provider_settings() -> dict | None:
-    provider = _default_ai_provider()
+    provider = _embedding_provider()
     if not provider:
         return None
 
@@ -508,7 +508,7 @@ def build_index(*, max_docs: int | None = None, force: bool = False) -> dict:
     existing_docs = _normalize_existing_documents(existing.get("documents"))
     existing_map = {str(item.get("id") or ""): item for item in existing_docs if str(item.get("id") or "")}
 
-    expected_provider = _default_ai_provider()
+    expected_provider = _embedding_provider()
     expected_model = _embedding_model_for_provider(expected_provider)
     existing_model = str((existing.get("embedding") or {}).get("model") or "").strip()
     existing_provider = str((existing.get("embedding") or {}).get("provider") or "").strip()

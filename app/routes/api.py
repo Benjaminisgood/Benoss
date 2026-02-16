@@ -682,7 +682,7 @@ def _render_notice_html(records: list[Record], *, day: str, user_id: str, tag: s
 
 
 def _ai_provider_settings() -> dict | None:
-    provider = _default_ai_provider()
+    provider = _chat_provider()
     return _provider_settings_for_chat(provider)
 
 
@@ -698,9 +698,9 @@ def _normalize_provider(raw: str) -> str:
     return aliases.get(value, value)
 
 
-def _default_ai_provider() -> str:
-    primary = _normalize_provider(get_setting_str("AI_PRIMARY_PROVIDER", default=""))
-    return primary
+def _chat_provider() -> str:
+    provider = _normalize_provider(get_setting_str("AI_CHAT_PROVIDER", default=""))
+    return provider
 
 
 def _provider_raw_config(provider: str) -> dict | None:
@@ -801,10 +801,12 @@ def _capability_provider_order(capability: str) -> list[str]:
         "image": "AI_IMAGE_PROVIDER",
     }.get(capability, "")
 
+    explicit_provider = _normalize_provider(get_setting_str(provider_key, default="")) if provider_key else ""
+    if not explicit_provider:
+        return []
+
     ordered: list[str] = []
-    if provider_key:
-        ordered.append(_normalize_provider(get_setting_str(provider_key, default="")))
-    ordered.append(_default_ai_provider())
+    ordered.append(explicit_provider)
     # Common fallback providers for media generation.
     ordered.extend(["openai", "chatanywhere", "aliyun", "deepseek"])
 

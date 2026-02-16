@@ -296,11 +296,11 @@ data/
 
 实现点：
 - `_render_notice_html`：把记录流按日期分组渲染为单页 HTML。
-- `_ai_provider_settings`：读取 `AI_PRIMARY_PROVIDER` 并解析聊天模型配置。
+- `_ai_provider_settings`：读取 `AI_CHAT_PROVIDER` 并解析聊天模型配置。
 - `_ai_chat`：调用 `/chat/completions`（博客/播客脚本/海报提示词都依赖这一步）。
 - `_records_for_ai_prompt`：构建 AI 上下文，优先注入记录全文；文本文件会尝试读取并提取正文（受长度/字节预算限制）。
 - `save_daily_archive`：将当天记录完整写入本地 JSON 归档（含文本全文、文件元信息、可提取文本）；该归档落在 `LOCAL_DAILY_ARCHIVE_DIR`，不是数据库表。
-- `_capability_settings_candidates`：按“能力分流 provider -> 主 provider -> 备用 provider”选择候选模型。
+- `_capability_settings_candidates`：按“能力 provider -> 备用 provider”选择候选模型。
 - `_generate_podcast_asset`：先生成多风格播客脚本，再调用 TTS；外部 TTS 全失败时可本机 `say` 兜底（`audio/aiff`）。
 - `_ai_generate_poster_image`：调用 `/images/generations`；外部图像接口全失败时可本地 SVG 兜底。
 - `_save_generated_asset`：将 AI 结果写入对象存储 + `GeneratedAsset` 表。
@@ -486,9 +486,10 @@ benoss-sync pull --username alice --output ./pulled_records
 
 ### 13.3 AI 配置
 
-- `AI_PRIMARY_PROVIDER`：`openai` / `chatanywhere` / `deepseek` / `aliyun`（推荐主键）
-- `AI_TTS_PROVIDER`（可选，留空则跟随 `AI_PRIMARY_PROVIDER`）
-- `AI_IMAGE_PROVIDER`（可选，留空则跟随 `AI_PRIMARY_PROVIDER`）
+- `AI_CHAT_PROVIDER`：聊天能力 provider（`openai` / `chatanywhere` / `deepseek` / `aliyun`）
+- `AI_EMBEDDING_PROVIDER`：向量 embedding provider（`openai` / `chatanywhere` / `deepseek` / `aliyun`）
+- `AI_TTS_PROVIDER`：TTS provider（留空表示不调用外部 TTS）
+- `AI_IMAGE_PROVIDER`：图片 provider（留空表示不调用外部图像模型）
 - `AI_REQUEST_TIMEOUT_SECONDS`
 - `AI_MAX_NOTICE_RECORDS`
 - `AI_NOTICE_CONTEXT_MAX_CHARS`
@@ -523,20 +524,20 @@ benoss-sync pull --username alice --output ./pulled_records
 - `unsupported/none` 等占位值会被视为“该 provider 该能力禁用”。
 
 能力路由规则（当前版本）：
-- 聊天（博客正文/播客脚本/海报提示词）只走 `AI_PRIMARY_PROVIDER`。
-- 向量 embedding 默认跟随 `AI_PRIMARY_PROVIDER`（读取该 provider 的 `*_EMBEDDING_MODEL`）。
-- TTS / 图片支持能力分流：优先 `AI_TTS_PROVIDER` / `AI_IMAGE_PROVIDER`，为空时跟随 `AI_PRIMARY_PROVIDER`，失败再尝试备用 provider。
+- 聊天（博客正文/播客脚本/海报提示词）只走 `AI_CHAT_PROVIDER`。
+- 向量 embedding 只走 `AI_EMBEDDING_PROVIDER`（读取该 provider 的 `*_EMBEDDING_MODEL`）。
+- TTS / 图片先走 `AI_TTS_PROVIDER` / `AI_IMAGE_PROVIDER`，失败再尝试备用 provider。
 - 若 `AI_TTS_FALLBACK_LOCAL=1`，外部 TTS 全失败时自动降级到本机 `say`（产物通常为 `.aiff`）。
 - 若 `AI_IMAGE_FALLBACK_LOCAL=1`，外部图像全失败时自动降级到本地 SVG 海报。
 
 ### 13.4 能力分流执行顺序（按代码真实行为）
 
 - 聊天（博客正文/播客脚本/海报提示词）：
-  - 只读取 `AI_PRIMARY_PROVIDER` 对应的聊天模型（`*_CHAT_MODEL`），不做 provider 级自动切换。
+  - 只读取 `AI_CHAT_PROVIDER` 对应的聊天模型（`*_CHAT_MODEL`），不做 provider 级自动切换。
 - 向量 embedding：
-  - 只读取 `AI_PRIMARY_PROVIDER` 对应 provider 的 `*_EMBEDDING_MODEL`，不做 provider 级自动切换。
+  - 只读取 `AI_EMBEDDING_PROVIDER` 对应 provider 的 `*_EMBEDDING_MODEL`，不做 provider 级自动切换。
 - TTS / 图片：
-  - provider 候选顺序：`AI_TTS_PROVIDER`/`AI_IMAGE_PROVIDER`（若设置） -> `AI_PRIMARY_PROVIDER` -> `openai` -> `chatanywhere` -> `aliyun` -> `deepseek`（去重后依次尝试）。
+  - provider 候选顺序：`AI_TTS_PROVIDER`/`AI_IMAGE_PROVIDER`（必填才会调用外部） -> `openai` -> `chatanywhere` -> `aliyun` -> `deepseek`（去重后依次尝试）。
   - model 选择顺序：每个 provider 只读取自己对应的 `*_TTS_MODEL` / `*_IMAGE_MODEL`。
   - 若模型值是 `unsupported/none` 等占位符，该 provider 会跳过该能力调用。
   - 全部外部 provider 失败后，若开启本地兜底：
@@ -551,14 +552,14 @@ benoss-sync pull --username alice --output ./pulled_records
 排查步骤：
 
 ```bash
-# 1) 先看“实际生效”的 provider 与对应 embedding model（含管理员后台覆盖）
+# 1) 先看“实际生效”的 embedding provider 与对应 model（含管理员后台覆盖）
 python - <<'PY'
 from app import create_app
 from app.utils.runtime_settings import get_setting_str
 
 app = create_app()
 with app.app_context():
-    provider = get_setting_str("AI_PRIMARY_PROVIDER").strip()
+    provider = get_setting_str("AI_EMBEDDING_PROVIDER").strip()
     mapping = {
         "openai": "OPENAI_EMBEDDING_MODEL",
         "chatanywhere": "CHAT_ANYWHERE_EMBEDDING_MODEL",
@@ -566,7 +567,7 @@ with app.app_context():
         "aliyun": "ALIYUN_AI_EMBEDDING_MODEL",
     }
     key = mapping.get(provider, "")
-    print("AI_PRIMARY_PROVIDER=", provider)
+    print("AI_EMBEDDING_PROVIDER=", provider)
     if key:
         print(f"{key}=", get_setting_str(key))
 PY
@@ -588,9 +589,10 @@ python -m flask --app app vector-build --force
 模板 A（全云端，一套 provider 跑全链路，推荐）：
 
 ```env
-AI_PRIMARY_PROVIDER=openai
-AI_TTS_PROVIDER=
-AI_IMAGE_PROVIDER=
+AI_CHAT_PROVIDER=openai
+AI_EMBEDDING_PROVIDER=openai
+AI_TTS_PROVIDER=openai
+AI_IMAGE_PROVIDER=openai
 OPENAI_CHAT_MODEL=gpt-4o-mini
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 OPENAI_TTS_MODEL=gpt-4o-mini-tts
@@ -602,9 +604,10 @@ AI_IMAGE_FALLBACK_LOCAL=0
 模板 B（主用阿里云，媒体走本地兜底）：
 
 ```env
-AI_PRIMARY_PROVIDER=aliyun
-AI_TTS_PROVIDER=
-AI_IMAGE_PROVIDER=
+AI_CHAT_PROVIDER=aliyun
+AI_EMBEDDING_PROVIDER=aliyun
+AI_TTS_PROVIDER=aliyun
+AI_IMAGE_PROVIDER=aliyun
 ALIYUN_AI_CHAT_MODEL=qwen-plus
 ALIYUN_AI_EMBEDDING_MODEL=text-embedding-v3
 ALIYUN_AI_TTS_MODEL=qwen3-tts-instruct-flash
@@ -614,7 +617,7 @@ AI_IMAGE_FALLBACK_LOCAL=1
 ```
 
 说明：
-- 模板 B 依赖“其他媒体 provider 不可用”时触发本地兜底；若同时配置了可用的 `OPENAI_*` 或 `CHAT_ANYWHERE_*`，TTS/图片仍可能先在备用 provider 成功。
+- 若你希望严格固定某个能力只走单一 provider，请只配置该 provider 的 key/base_url/model，其他 provider 相关 key 留空。
 
 ## 14. 面向未来的扩展方向
 
@@ -625,3 +628,5 @@ AI_IMAGE_FALLBACK_LOCAL=1
 3. AI 任务可异步化（队列 + worker），避免长请求占用 Web 线程。
 4. 可补充对象存储垃圾回收任务，定期校验“数据库记录 vs 实际文件”。
 5. 可增加审计日志和速率限制，强化多用户环境下的可观测性与安全性。
+6. 向量检索后端可从当前本地 `data/vector-store/index.json` 演进为专用向量数据库（如 `pgvector` / Milvus / OpenSearch 向量能力），并保留现有 `content_hash` 增量 upsert 语义与 `citations` 返回结构，降低迁移对前端和 API 的影响。
+7. OSS 可用于向量索引快照备份与分发，但不作为在线向量检索引擎；在线检索仍应由支持 ANN/过滤检索的向量数据库承担。

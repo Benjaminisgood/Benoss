@@ -274,23 +274,24 @@ AI provider 别名归一化：
 
 当前版本 provider 主键：
 
-- 使用 `AI_PRIMARY_PROVIDER` 作为全局主 provider（聊天 + 向量默认均跟随）。
-- `AI_TTS_PROVIDER` / `AI_IMAGE_PROVIDER` 为空时跟随 `AI_PRIMARY_PROVIDER`，不再使用旧键兼容逻辑。
+- 聊天：`AI_CHAT_PROVIDER`
+- 向量：`AI_EMBEDDING_PROVIDER`
+- TTS：`AI_TTS_PROVIDER`
+- 图片：`AI_IMAGE_PROVIDER`
 
 能力分流执行顺序（`app/routes/api.py` + `app/utils/local_vector_db.py`）：
 
 1. 聊天能力：
-   - `_ai_provider_settings()` 只读取 `AI_PRIMARY_PROVIDER` 对应配置，不做 provider 自动切换。
+   - `_ai_provider_settings()` 只读取 `AI_CHAT_PROVIDER` 对应配置，不做 provider 自动切换。
 2. 向量 embedding：
-   - `_embedding_provider_settings()` 只读取 `AI_PRIMARY_PROVIDER` 对应 provider 的 `*_EMBEDDING_MODEL`。
+   - `_embedding_provider_settings()` 只读取 `AI_EMBEDDING_PROVIDER` 对应 provider 的 `*_EMBEDDING_MODEL`。
 3. TTS/图片能力：
    - `_capability_settings_candidates()` 的 provider 顺序为：
-     - `AI_TTS_PROVIDER`/`AI_IMAGE_PROVIDER`（若设置）
-     - `AI_PRIMARY_PROVIDER`
+     - `AI_TTS_PROVIDER`/`AI_IMAGE_PROVIDER`（配置后才会调用外部）
      - 固定备用序：`openai -> chatanywhere -> aliyun -> deepseek`（去重后尝试）
    - model 顺序为：
      - 每个 provider 只读取自己的 `*_TTS_MODEL`/`*_IMAGE_MODEL`（排除 `unsupported/none` 等占位符）
-   - 结论：只要备用 provider 的 key/base_url 完整，TTS/图片就可能在备用 provider 上成功，不会强制停留在主 provider。
+   - 结论：只要主选 provider 及备用 provider 的 key/base_url 完整，TTS/图片就可能在备用 provider 上成功。
 
 ---
 
@@ -499,7 +500,7 @@ AI 生成链路：
 2. 博客：`_generate_blog_asset()` -> `chat/completions` -> 包装 HTML 文档
 3. 播客：`_generate_podcast_asset()` -> 先生成脚本再走 `/audio/speech`
 4. 海报：`_generate_poster_asset()` -> 先生成图像提示词再走 `/images/generations`
-5. TTS/图片会经 `_capability_settings_candidates()` 做候选 provider/model 路由（分流 provider -> 主 provider -> 备用 provider）
+5. TTS/图片会经 `_capability_settings_candidates()` 做候选 provider/model 路由（分流 provider -> 备用 provider）
 6. 若外部能力不可用：
    - `AI_TTS_FALLBACK_LOCAL=1` 时，播客音频降级到本机 `say`（通常输出 `.aiff`）
    - `AI_IMAGE_FALLBACK_LOCAL=1` 时，海报降级为本地 SVG
@@ -640,11 +641,11 @@ benoss-sync pull --username <user> --output ./pulled_records
 ## 13. 常见故障定位
 
 - `AI provider not configured`：
-  - 检查 `AI_PRIMARY_PROVIDER` 与对应 API KEY/base_url/`*_CHAT_MODEL`
+  - 检查 `AI_CHAT_PROVIDER` 与对应 API KEY/base_url/`*_CHAT_MODEL`
 - `embedding provider not configured`：
   - 向量重建依赖 provider + 对应 provider 的 `*_EMBEDDING_MODEL`
 - `embedding request failed (404) ... model_not_found`：
-  - 先检查生效配置（含 AppSetting 覆盖）：`AI_PRIMARY_PROVIDER` 与该 provider 的 `*_EMBEDDING_MODEL`
+  - 先检查生效配置（含 AppSetting 覆盖）：`AI_EMBEDDING_PROVIDER` 与该 provider 的 `*_EMBEDDING_MODEL`
   - 该报错通常表示“模型名与当前 provider 不匹配”，不是本地向量库损坏
   - 修正模型后执行 `python -m flask --app app vector-build --force` 重新构建
 - Home 没看到手动生成资产：
