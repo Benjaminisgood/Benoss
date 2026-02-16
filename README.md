@@ -290,7 +290,6 @@ data/
 
 入口：
 - `GET /api/notice/render`：按筛选直接拼 HTML。
-- `POST /api/notice/assets`：后端资产生成接口（当前不在 Notice 页面直接暴露）。
 - `GET /api/generated-assets`：查询资产列表（支持 `day/kind/visibility/daily_digest`）。
 - `GET /api/generated-assets/<id>/blob`：读取生成资产文件（`public` 资产对登录用户可读）。
 - `POST /api/digest/daily`：管理员触发“某天公开内容”的日报生成。
@@ -299,6 +298,8 @@ data/
 - `_render_notice_html`：把记录流按日期分组渲染为单页 HTML。
 - `_ai_provider_settings`：读取当前 provider 配置。
 - `_ai_chat`：调用 `/chat/completions`。
+- `_records_for_ai_prompt`：构建 AI 上下文，优先注入记录全文；文本文件会尝试读取并提取正文（受长度/字节预算限制）。
+- `save_daily_archive`：将当天记录完整写入本地 JSON 归档（含文本全文、文件元信息、可提取文本）；该归档落在 `LOCAL_DAILY_ARCHIVE_DIR`，不是数据库表。
 - `_generate_podcast_asset`：先生成多风格播客脚本，再调用 TTS 接口生成音频。
 - `_ai_generate_poster_image`：调用 `/images/generations`。
 - `_save_generated_asset`：将 AI 结果写入对象存储 + `GeneratedAsset` 表。
@@ -475,6 +476,12 @@ benoss-sync pull --username alice --output ./pulled_records
 - `AI_AUTOFILL_PROVIDER`：`chatanywhere` / `deepseek` / `aliyun`
 - `AI_REQUEST_TIMEOUT_SECONDS`
 - `AI_MAX_NOTICE_RECORDS`
+- `AI_NOTICE_CONTEXT_MAX_CHARS`
+- `AI_NOTICE_RECORD_MAX_CHARS`
+- `AI_NOTICE_FILE_READ_MAX_BYTES`
+- `AI_NOTICE_ATTACH_IMAGES`
+- `AI_NOTICE_MAX_IMAGE_ATTACHMENTS`
+- `AI_NOTICE_IMAGE_URL_EXPIRES_SECONDS`
 - `AI_IMAGE_MODEL`
 - `AI_TTS_MODEL`
 - `AI_TTS_VOICE`

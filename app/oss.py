@@ -43,11 +43,18 @@ def _safe_local_path(key: str) -> Path:
     return target
 
 
-def get_object_bytes(key: str) -> bytes:
+def get_object_bytes(key: str, *, max_bytes: int | None = None) -> bytes:
     if _has_remote_config():
         result = _get_bucket().get_object(key)
+        if max_bytes and int(max_bytes) > 0:
+            return result.read(int(max_bytes))
         return result.read()
-    return _safe_local_path(key).read_bytes()
+
+    path = _safe_local_path(key)
+    if max_bytes and int(max_bytes) > 0:
+        with path.open("rb") as fp:
+            return fp.read(int(max_bytes))
+    return path.read_bytes()
 
 
 def put_object_from_file(key: str, filename: str, content_type: Optional[str] = None) -> None:

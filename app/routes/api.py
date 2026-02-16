@@ -21,7 +21,7 @@ from ..extensions import db
 from ..models import Comment, Content, DailyDigestJob, GeneratedAsset, Record, User
 from ..oss import delete_object, get_object_bytes, put_object_bytes, put_object_from_file, sign_get_url
 from ..utils.ids import new_uuid
-from ..utils.local_archive import save_daily_archive
+from ..utils.local_archive import archive_file_path, load_archive, save_daily_archive
 from ..utils.local_vector_db import (
     build_chat_context,
     build_index,
@@ -55,6 +55,71 @@ _PODCAST_STYLE_GUIDE = {
     "speech": "演讲式：单人演讲结构，逻辑清晰，重点突出。",
     "interview": "访谈式：主持人提问、嘉宾回答，问题与观点递进。",
     "news": "播报式：新闻播报口吻，先摘要后分点，语言准确克制。",
+}
+_TEXT_FILE_EXTENSIONS = {
+    ".txt",
+    ".md",
+    ".markdown",
+    ".rst",
+    ".json",
+    ".jsonl",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".csv",
+    ".tsv",
+    ".xml",
+    ".html",
+    ".htm",
+    ".css",
+    ".js",
+    ".mjs",
+    ".cjs",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".py",
+    ".java",
+    ".go",
+    ".rs",
+    ".c",
+    ".h",
+    ".cpp",
+    ".hpp",
+    ".cc",
+    ".sql",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".ps1",
+    ".rb",
+    ".php",
+    ".swift",
+    ".kt",
+    ".kts",
+    ".dart",
+    ".vue",
+    ".svelte",
+    ".env",
+    ".log",
+}
+_TEXT_FILE_MIME_TYPES = {
+    "application/json",
+    "application/ld+json",
+    "application/xml",
+    "application/yaml",
+    "application/x-yaml",
+    "application/toml",
+    "application/x-toml",
+    "application/javascript",
+    "application/x-javascript",
+    "application/sql",
+    "application/csv",
+    "application/x-sh",
+    "application/x-httpd-php",
 }
 
 
@@ -518,6 +583,65 @@ def _ai_provider_settings() -> dict | None:
     }
 
 
+def _message_content_to_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                text = part.strip()
+                if text:
+                    chunks.append(text)
+                continue
+            if not isinstance(part, dict):
+                continue
+            part_type = str(part.get("type") or "").strip().lower()
+            if part_type == "text":
+                text = str(part.get("text") or "").strip()
+                if text:
+                    chunks.append(text)
+                continue
+            if part_type == "image_url":
+                image_payload = part.get("image_url") or {}
+                if isinstance(image_payload, dict):
+                    image_url = str(image_payload.get("url") or "").strip()
+                else:
+                    image_url = str(image_payload or "").strip()
+                if image_url:
+                    chunks.append(f"[IMAGE] {image_url}")
+                continue
+
+            text = str(part.get("text") or "").strip()
+            if text:
+                chunks.append(text)
+        return "\n".join(chunks).strip()
+    return str(content or "").strip()
+
+
+def _messages_have_non_text_content(messages: list[dict]) -> bool:
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and str(part.get("type") or "").strip().lower() != "text":
+                    return True
+    return False
+
+
+def _messages_to_text_only(messages: list[dict]) -> list[dict]:
+    compact: list[dict] = []
+    for message in messages:
+        role = str(message.get("role") or "user").strip() or "user"
+        compact.append(
+            {
+                "role": role,
+                "content": _message_content_to_text(message.get("content")),
+            }
+        )
+    return compact
+
+
 def _ai_chat(*, messages: list[dict], temperature: float = 0.2, max_tokens: int = 1800) -> tuple[str, dict]:
     settings = _ai_provider_settings()
     if not settings:
@@ -525,55 +649,294 @@ def _ai_chat(*, messages: list[dict], temperature: float = 0.2, max_tokens: int 
 
     endpoint = settings["base_url"] + "/chat/completions"
     timeout = get_setting_int("AI_REQUEST_TIMEOUT_SECONDS", default=45)
-    payload = {
-        "model": settings["model"],
-        "messages": messages,
-        "temperature": float(temperature),
-        "max_tokens": int(max_tokens),
-    }
     headers = {
         "Authorization": f"Bearer {settings['api_key']}",
         "Content-Type": "application/json",
     }
 
+    def _request_once(payload_messages: list[dict]) -> str:
+        payload = {
+            "model": settings["model"],
+            "messages": payload_messages,
+            "temperature": float(temperature),
+            "max_tokens": int(max_tokens),
+        }
+        try:
+            response = requests.post(endpoint, headers=headers, json=payload, timeout=timeout)
+        except requests.RequestException as exc:
+            raise RuntimeError(f"provider request error: {exc}") from exc
+        if not response.ok:
+            detail = response.text.strip().replace("\n", " ")
+            if len(detail) > 320:
+                detail = detail[:320] + "..."
+            raise RuntimeError(f"provider request failed ({response.status_code}): {detail}")
+
+        data = response.json()
+        choices = data.get("choices") or []
+        first = choices[0] if choices else {}
+        message = first.get("message") or {}
+        content = _message_content_to_text(message.get("content"))
+        content = str(content or "").strip()
+        if not content:
+            raise RuntimeError("provider returned empty content")
+        return content
+
     try:
-        response = requests.post(endpoint, headers=headers, json=payload, timeout=timeout)
-    except requests.RequestException as exc:
-        raise RuntimeError(f"provider request error: {exc}") from exc
-    if not response.ok:
-        detail = response.text.strip().replace("\n", " ")
-        if len(detail) > 320:
-            detail = detail[:320] + "..."
-        raise RuntimeError(f"provider request failed ({response.status_code}): {detail}")
+        output = _request_once(messages)
+    except RuntimeError as exc:
+        if not _messages_have_non_text_content(messages):
+            raise
+        fallback_messages = _messages_to_text_only(messages)
+        if fallback_messages == messages:
+            raise
+        current_app.logger.warning(
+            "chat request with media payload failed, retrying with text-only fallback: %s",
+            exc,
+        )
+        output = _request_once(fallback_messages)
 
-    data = response.json()
-    choices = data.get("choices") or []
-    first = choices[0] if choices else {}
-    message = first.get("message") or {}
-    content = str(message.get("content") or "").strip()
-    if not content:
-        raise RuntimeError("provider returned empty content")
-
-    return content, settings
+    return output, settings
 
 
-def _records_for_ai_prompt(records: list[Record], *, max_chars: int = 18000) -> str:
+def _normalize_prompt_text(value: str) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "")
+    return "\n".join(line.rstrip() for line in text.split("\n")).strip()
+
+
+def _trim_text_balanced(value: str, *, limit: int) -> str:
+    text = _normalize_prompt_text(value)
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+
+    if limit <= 360:
+        return text[:limit].rstrip()
+
+    head = int(limit * 0.72)
+    tail = max(120, limit - head - 48)
+    if head + tail >= len(text):
+        return text[:limit].rstrip()
+
+    omitted = len(text) - head - tail
+    return f"{text[:head].rstrip()}\n...[省略 {omitted} 字]...\n{text[-tail:].lstrip()}"
+
+
+def _is_text_like_content(content: Content) -> bool:
+    ctype = str(content.content_type or "").split(";", 1)[0].strip().lower()
+    filename = str(content.filename or "").lower()
+    suffix = Path(filename).suffix
+
+    if ctype.startswith("text/"):
+        return True
+    if ctype in _TEXT_FILE_MIME_TYPES:
+        return True
+    if suffix in _TEXT_FILE_EXTENSIONS:
+        return True
+    return False
+
+
+def _decoded_text_quality(text: str) -> float:
+    if not text:
+        return 0.0
+    probe = text[:4000]
+    if not probe:
+        return 0.0
+    readable = sum(1 for ch in probe if ch.isprintable() or ch in {"\n", "\t"})
+    return readable / max(1, len(probe))
+
+
+def _decode_text_bytes(raw: bytes) -> tuple[str, str]:
+    sample = raw[:4096]
+    if b"\x00" in sample:
+        return "", ""
+
+    for encoding in ("utf-8", "utf-8-sig", "gb18030", "gbk", "big5"):
+        try:
+            text = raw.decode(encoding)
+        except Exception:
+            continue
+        if _decoded_text_quality(text) >= 0.92:
+            return text, encoding
+
+    fallback = raw.decode("utf-8", errors="replace")
+    if _decoded_text_quality(fallback) >= 0.75:
+        return fallback, "utf-8-replace"
+    return "", ""
+
+
+def _extract_file_text_for_prompt(content: Content, *, max_bytes: int) -> tuple[str, str]:
+    filename = str(content.filename or "").strip() or "unknown"
+    ctype = str(content.content_type or "").split(";", 1)[0].strip().lower() or "application/octet-stream"
+
+    if not content.oss_key:
+        return "", f"[FILE] {filename} ({ctype})"
+    if not _is_text_like_content(content):
+        return "", f"[FILE] {filename} ({ctype})"
+
+    size_bytes = int(content.size_bytes or 0)
+
+    try:
+        raw = get_object_bytes(content.oss_key, max_bytes=max_bytes)
+    except Exception as exc:
+        current_app.logger.warning("failed to read record file for ai prompt: %s", exc)
+        return "", f"[FILE] {filename} ({ctype}) 读取失败。"
+
+    truncated = bool(size_bytes and size_bytes > len(raw))
+
+    decoded, encoding = _decode_text_bytes(raw)
+    if not decoded:
+        return "", f"[FILE] {filename} ({ctype}) 无法提取可读文本。"
+
+    body = _normalize_prompt_text(decoded)
+    if not body:
+        return "", f"[FILE] {filename} ({ctype}) 文本为空。"
+
+    title = f"[FILE-TEXT] {filename} ({ctype}; encoding={encoding})"
+    if truncated:
+        body = f"{body}\n...[文件内容按 {max_bytes} bytes 截断]..."
+    return f"{title}\n{body}", title
+
+
+def _record_full_text_for_prompt(record: Record, *, max_file_bytes: int) -> str:
+    if record.content.kind == "text":
+        text = _normalize_prompt_text(record.content.text_content or "")
+        return text or _normalize_prompt_text(record.preview or "")
+
+    preview = _normalize_prompt_text(record.preview or "")
+    extracted, fallback = _extract_file_text_for_prompt(record.content, max_bytes=max_file_bytes)
+    if extracted and preview:
+        return f"{preview}\n\n{extracted}"
+    if extracted:
+        return extracted
+    if preview and fallback:
+        return f"{fallback}\n{preview}"
+    return preview or fallback
+
+
+def _records_for_ai_prompt(records: list[Record], *, max_chars: int | None = None) -> str:
+    total_limit = int(max_chars or get_setting_int("AI_NOTICE_CONTEXT_MAX_CHARS", default=60000))
+    total_limit = max(8000, min(total_limit, 260000))
+    per_record_limit = get_setting_int("AI_NOTICE_RECORD_MAX_CHARS", default=3200)
+    per_record_limit = max(600, min(per_record_limit, 24000))
+    max_file_bytes = get_setting_int("AI_NOTICE_FILE_READ_MAX_BYTES", default=524288)
+    max_file_bytes = max(65536, min(max_file_bytes, 8 * 1024 * 1024))
+
     chunks: list[str] = []
+    used_chars = 0
     for record in records:
         tags = ",".join(record.get_tags()) or "-"
         created = (record.created_at or datetime.utcnow()).isoformat()
-        if record.content.kind == "text":
-            content_preview = (record.content.text_content or "").strip()
-        else:
-            content_preview = f"[FILE] {record.content.filename or 'unknown'}"
-        content_preview = content_preview[:450]
-        chunks.append(
-            f"[#{record.id}] user={record.user.username if record.user else record.user_id} "
-            f"time={created} visibility={record.visibility} tags={tags}\n{content_preview}"
+        username = record.user.username if record.user else record.user_id
+        header = (
+            f"[#{record.id}] user={username} "
+            f"time={created} visibility={record.visibility} tags={tags}"
         )
-        if sum(len(x) + 2 for x in chunks) > max_chars:
+
+        full_text = _record_full_text_for_prompt(record, max_file_bytes=max_file_bytes)
+        if not full_text:
+            full_text = _normalize_prompt_text(record.preview or "")
+        body = _trim_text_balanced(full_text, limit=per_record_limit)
+        if not body:
+            continue
+
+        separator = 2 if chunks else 0
+        allowed_body = total_limit - used_chars - separator - len(header) - 1
+        if allowed_body <= 0:
             break
+        if len(body) > allowed_body:
+            if allowed_body < 200:
+                break
+            body = _trim_text_balanced(body, limit=allowed_body)
+
+        block = f"{header}\n{body}"
+        chunks.append(block)
+        used_chars += len(block) + separator
+        if used_chars >= total_limit:
+            break
+
     return "\n\n".join(chunks)
+
+
+def _archive_rows_for_day(day_value: date) -> list[dict]:
+    payload = load_archive(archive_file_path(day_value))
+    rows = payload.get("records") or []
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _records_for_ai_prompt_from_archive(rows: list[dict], *, max_chars: int | None = None) -> str:
+    total_limit = int(max_chars or get_setting_int("AI_NOTICE_CONTEXT_MAX_CHARS", default=60000))
+    total_limit = max(8000, min(total_limit, 260000))
+    per_record_limit = get_setting_int("AI_NOTICE_RECORD_MAX_CHARS", default=3200)
+    per_record_limit = max(600, min(per_record_limit, 24000))
+
+    chunks: list[str] = []
+    used_chars = 0
+    for row in rows:
+        user = row.get("user") or {}
+        tags = [str(item).strip() for item in (row.get("tags") or []) if str(item).strip()]
+        tags_text = ",".join(tags) or "-"
+        created = str(row.get("created_at") or "").strip() or datetime.utcnow().isoformat()
+        visibility = str(row.get("visibility") or "public").strip() or "public"
+        username = str(user.get("username") or row.get("user_id") or "-")
+        record_id = int(row.get("id") or row.get("record_no") or 0)
+        header = f"[#{record_id}] user={username} time={created} visibility={visibility} tags={tags_text}"
+
+        full_text = _normalize_prompt_text(str(row.get("text") or row.get("preview") or ""))
+        body = _trim_text_balanced(full_text, limit=per_record_limit)
+        if not body:
+            continue
+
+        separator = 2 if chunks else 0
+        allowed_body = total_limit - used_chars - separator - len(header) - 1
+        if allowed_body <= 0:
+            break
+        if len(body) > allowed_body:
+            if allowed_body < 200:
+                break
+            body = _trim_text_balanced(body, limit=allowed_body)
+
+        block = f"{header}\n{body}"
+        chunks.append(block)
+        used_chars += len(block) + separator
+        if used_chars >= total_limit:
+            break
+
+    return "\n\n".join(chunks)
+
+
+def _notice_image_urls_from_archive_rows(rows: list[dict]) -> list[str]:
+    if not get_setting_bool("AI_NOTICE_ATTACH_IMAGES", default=True):
+        return []
+
+    max_images = max(0, min(get_setting_int("AI_NOTICE_MAX_IMAGE_ATTACHMENTS", default=6), 20))
+    if max_images <= 0:
+        return []
+    expires = max(300, min(get_setting_int("AI_NOTICE_IMAGE_URL_EXPIRES_SECONDS", default=1800), 86400))
+
+    urls: list[str] = []
+    seen_keys: set[str] = set()
+    for row in rows:
+        content = row.get("content") or {}
+        if not isinstance(content, dict):
+            continue
+        if str(content.get("kind") or "") != "file":
+            continue
+        if str(content.get("media_type") or "").lower() != "image":
+            continue
+        oss_key = str(content.get("oss_key") or "").strip()
+        if not oss_key or oss_key in seen_keys:
+            continue
+        signed = sign_get_url(oss_key, expires=expires)
+        if not signed:
+            continue
+        seen_keys.add(oss_key)
+        urls.append(signed)
+        if len(urls) >= max_images:
+            break
+    return urls
 
 
 def _normalize_podcast_style(raw) -> str:
@@ -600,7 +963,13 @@ def _normalize_podcast_style(raw) -> str:
     return "dialogue"
 
 
-def _build_notice_ai_prompt(action: str, records_text: str, *, podcast_style: str = "dialogue") -> list[dict]:
+def _build_notice_ai_prompt(
+    action: str,
+    records_text: str,
+    *,
+    podcast_style: str = "dialogue",
+    image_urls: list[str] | None = None,
+) -> list[dict]:
     if action == "blog":
         task = get_setting_str("PROMPT_NOTICE_BLOG_TASK", default=DEFAULT_NOTICE_BLOG_TASK)
     elif action == "podcast":
@@ -618,6 +987,28 @@ def _build_notice_ai_prompt(action: str, records_text: str, *, podcast_style: st
         task = "把输入记录整理成结构清晰的中文总结，准确且可读。"
 
     system_prompt = get_setting_str("PROMPT_NOTICE_SYSTEM", default=DEFAULT_NOTICE_SYSTEM_PROMPT)
+    user_text = f"{task}\n\n输入记录如下：\n{records_text}"
+    clean_urls = [str(url or "").strip() for url in (image_urls or []) if str(url or "").strip()]
+    user_content: str | list[dict] = user_text
+    if clean_urls:
+        content_parts: list[dict] = [
+            {
+                "type": "text",
+                "text": (
+                    f"{user_text}\n\n"
+                    "附加图片已一并提供。请仅基于可见证据写作，不要臆造图片中不存在的信息。"
+                ),
+            }
+        ]
+        for image_url in clean_urls:
+            content_parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": image_url},
+                }
+            )
+        user_content = content_parts
+
     return [
         {
             "role": "system",
@@ -625,7 +1016,7 @@ def _build_notice_ai_prompt(action: str, records_text: str, *, podcast_style: st
         },
         {
             "role": "user",
-            "content": f"{task}\n\n输入记录如下：\n{records_text}",
+            "content": user_content,
         },
     ]
 
@@ -902,13 +1293,18 @@ def _generate_blog_asset(
     *,
     user: User,
     records_text: str,
+    image_urls: list[str] | None,
     filters: dict,
     title: str,
     visibility: str,
     source_day: date | None = None,
     is_daily_digest: bool = False,
 ) -> tuple[GeneratedAsset, str]:
-    output, settings = _ai_chat(messages=_build_notice_ai_prompt("blog", records_text), temperature=0.25, max_tokens=2000)
+    output, settings = _ai_chat(
+        messages=_build_notice_ai_prompt("blog", records_text, image_urls=image_urls),
+        temperature=0.25,
+        max_tokens=2000,
+    )
     html_doc = _wrap_blog_html_document(output, title=title)
     asset = _save_generated_asset(
         user=user,
@@ -931,6 +1327,7 @@ def _generate_podcast_asset(
     *,
     user: User,
     records_text: str,
+    image_urls: list[str] | None,
     filters: dict,
     title: str,
     visibility: str,
@@ -940,7 +1337,7 @@ def _generate_podcast_asset(
 ) -> tuple[GeneratedAsset, str]:
     style = _normalize_podcast_style(podcast_style)
     script, script_info = _ai_chat(
-        messages=_build_notice_ai_prompt("podcast", records_text, podcast_style=style),
+        messages=_build_notice_ai_prompt("podcast", records_text, podcast_style=style, image_urls=image_urls),
         temperature=0.42,
         max_tokens=1900,
     )
@@ -966,6 +1363,7 @@ def _generate_poster_asset(
     *,
     user: User,
     records_text: str,
+    image_urls: list[str] | None,
     filters: dict,
     title: str,
     visibility: str,
@@ -978,6 +1376,21 @@ def _generate_poster_asset(
         default=DEFAULT_POSTER_USER_TEMPLATE,
     )
     poster_user_prompt = format_prompt_template(poster_user_template, records_text=records_text)
+    poster_user_content: str | list[dict] = poster_user_prompt
+    clean_urls = [str(url or "").strip() for url in (image_urls or []) if str(url or "").strip()]
+    if clean_urls:
+        parts: list[dict] = [
+            {
+                "type": "text",
+                "text": (
+                    f"{poster_user_prompt}\n\n"
+                    "附加图片已提供，可辅助理解场景。请严格基于图片可见信息与记录内容，不要臆造。"
+                ),
+            }
+        ]
+        for image_url in clean_urls:
+            parts.append({"type": "image_url", "image_url": {"url": image_url}})
+        poster_user_content = parts
     poster_prompt_messages = [
         {
             "role": "system",
@@ -985,7 +1398,7 @@ def _generate_poster_asset(
         },
         {
             "role": "user",
-            "content": poster_user_prompt,
+            "content": poster_user_content,
         },
     ]
     poster_prompt, prompt_settings = _ai_chat(
@@ -1025,7 +1438,6 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
     db.session.add(job)
     db.session.commit()
 
-    limit = get_setting_int("AI_MAX_NOTICE_RECORDS", default=180)
     records = (
         Record.query.options(joinedload(Record.user), joinedload(Record.content))
         .filter(
@@ -1034,7 +1446,6 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
             Record.created_at < end,
         )
         .order_by(Record.created_at.asc(), Record.id.asc())
-        .limit(max(20, min(limit, 500)))
         .all()
     )
     if not records:
@@ -1059,8 +1470,14 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
         source="daily_digest",
         timezone_name=tz_name,
     )
-
-    records_text = _records_for_ai_prompt(records)
+    archive_rows = _archive_rows_for_day(day_value)
+    generation_limit = max(20, min(get_setting_int("AI_MAX_NOTICE_RECORDS", default=180), 500))
+    rows_for_generation = archive_rows[:generation_limit] if archive_rows else []
+    records_text = _records_for_ai_prompt_from_archive(rows_for_generation)
+    image_urls = _notice_image_urls_from_archive_rows(rows_for_generation)
+    record_count_total = len(archive_rows) if archive_rows else len(records)
+    if not records_text:
+        records_text = _records_for_ai_prompt(records[:generation_limit])
     if not records_text:
         job.status = "failed"
         job.finished_at = datetime.utcnow()
@@ -1070,7 +1487,7 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
         return {
             "day": day_value.isoformat(),
             "timezone": tz_name,
-            "record_count": len(records),
+            "record_count": record_count_total,
             "status": job.status,
             "error": job.error,
             "assets": [],
@@ -1129,6 +1546,7 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
                 asset, _ = _generate_blog_asset(
                     user=owner,
                     records_text=records_text,
+                    image_urls=image_urls,
                     filters=base_filters,
                     title=meta["title"],
                     visibility="public",
@@ -1139,6 +1557,7 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
                 asset, _ = _generate_podcast_asset(
                     user=owner,
                     records_text=records_text,
+                    image_urls=image_urls,
                     filters=base_filters,
                     title=meta["title"],
                     visibility="public",
@@ -1150,6 +1569,7 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
                 asset, _ = _generate_poster_asset(
                     user=owner,
                     records_text=records_text,
+                    image_urls=image_urls,
                     filters=base_filters,
                     title=meta["title"],
                     visibility="public",
@@ -1178,7 +1598,7 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
     return {
         "day": day_value.isoformat(),
         "timezone": tz_name,
-        "record_count": len(records),
+        "record_count": record_count_total,
         "status": job.status,
         "error": job.error,
         "assets": [_generated_asset_payload(item) for item in ordered_assets],
@@ -1771,125 +2191,6 @@ def notice_render():
             ],
         }
     )
-
-
-@api_bp.route("/api/notice/ai", methods=["POST"])
-@login_required()
-def notice_ai():
-    return jsonify({"error": "deprecated endpoint: use /api/notice/assets with action=blog"}), 410
-
-
-@api_bp.route("/api/notice/assets", methods=["POST"])
-@login_required()
-def notice_assets():
-    user = g.get("user")
-    payload = request.get_json(silent=True) or {}
-    action = str(payload.get("action") or "").strip().lower()
-    if action not in {"blog", "podcast", "poster"}:
-        return jsonify({"error": "invalid action"}), 400
-
-    visibility = _normalize_visibility(payload.get("visibility"), default="private")
-    public_only = str(payload.get("public_only") or "0").strip().lower() in {"1", "true", "yes", "on"}
-    filters = payload.get("filters") or {}
-    user_id = str(filters.get("user_id") or "").strip()
-    tag = str(filters.get("tag") or "").strip()
-    day = str(filters.get("day") or "").strip()
-    source_day = None
-    order = str(filters.get("order") or "asc").strip().lower()
-    podcast_style = _normalize_podcast_style(payload.get("podcast_style"))
-
-    query = _record_query_for(user, include_comments=False, public_only=public_only)
-    try:
-        query = _apply_filter_values(query, user_id=user_id, tag=tag, day=day)
-        source_day = _parse_day(day) if day else None
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-
-    if order == "desc":
-        query = query.order_by(Record.created_at.desc(), Record.id.desc())
-    else:
-        query = query.order_by(Record.created_at.asc(), Record.id.asc())
-
-    limit = get_setting_int("AI_MAX_NOTICE_RECORDS", default=180)
-    records = query.limit(max(20, min(limit, 500))).all()
-    records_text = _records_for_ai_prompt(records)
-    if not records_text:
-        return jsonify({"error": "no records for current filters"}), 400
-
-    asset_filters = dict(filters)
-    asset_filters["public_only"] = bool(public_only)
-    if action == "podcast":
-        asset_filters["podcast_style"] = podcast_style
-        if public_only:
-            archive_day = source_day or datetime.utcnow().date()
-            _archive_and_index_records(
-                day_value=archive_day,
-                records=records,
-                scope="public",
-                source="notice_assets",
-                timezone_name=_digest_timezone(),
-            )
-
-    try:
-        if action == "blog":
-            asset, blog_html = _generate_blog_asset(
-                user=user,
-                records_text=records_text,
-                filters=asset_filters,
-                title=f"Notice Blog {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
-                visibility=visibility,
-                source_day=source_day,
-            )
-            return jsonify(
-                {
-                    "action": action,
-                    "record_count": len(records),
-                    "asset": _generated_asset_payload(asset),
-                    "blog_html": blog_html,
-                }
-            )
-
-        if action == "podcast":
-            asset, script = _generate_podcast_asset(
-                user=user,
-                records_text=records_text,
-                filters=asset_filters,
-                title=f"Notice Podcast {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
-                visibility=visibility,
-                podcast_style=podcast_style,
-                source_day=source_day,
-            )
-            return jsonify(
-                {
-                    "action": action,
-                    "record_count": len(records),
-                    "podcast_style": podcast_style,
-                    "asset": _generated_asset_payload(asset),
-                    "transcript": script,
-                }
-            )
-
-        asset, poster_prompt = _generate_poster_asset(
-            user=user,
-            records_text=records_text,
-            filters=asset_filters,
-            title=f"Notice Poster {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
-            visibility=visibility,
-            source_day=source_day,
-        )
-        return jsonify(
-            {
-                "action": action,
-                "record_count": len(records),
-                "asset": _generated_asset_payload(asset),
-                "poster_prompt": poster_prompt,
-            }
-        )
-    except RuntimeError as exc:
-        message = str(exc)
-        if "not configured" in message:
-            return jsonify({"error": message}), 501
-        return jsonify({"error": message}), 502
 
 
 @api_bp.route("/api/generated-assets", methods=["GET"])
