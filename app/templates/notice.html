@@ -28,15 +28,15 @@
   </form>
 
   <p class="muted" id="notice-render-meta" hidden></p>
-  <div class="notice-actions" id="notice-actions" hidden>
-    <button type="button" data-ai-action="optimize">AI 优化当前内容</button>
-    <button type="button" data-ai-action="podcast">AI 生成播客音频</button>
-    <button type="button" data-ai-action="poster">AI 生成海报图片</button>
-  </div>
-  <pre id="notice-ai-output" class="ai-output" hidden></pre>
 </section>
 
 <section class="card" id="notice-render-panel" hidden>
   <article id="notice-render-html" class="optimized-html"></article>
+  <div class="notice-actions" id="notice-actions" hidden>
+    <button type="button" data-ai-action="blog">AI 生成博客网页</button>
+    <button type="button" data-ai-action="podcast">AI 生成播客音频</button>
+    <button type="button" data-ai-action="poster">AI 生成海报图片</button>
+  </div>
+  <pre id="notice-ai-output" class="ai-output" hidden></pre>
 </section>
 {% endblock %}

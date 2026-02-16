@@ -458,10 +458,16 @@ button.secondary {
 
 .notice-render img,
 .notice-render video,
-.notice-render audio {
+.notice-render audio,
+.notice-render iframe {
   width: 100%;
   border-radius: 0.6rem;
   background: #f2f6f9;
+}
+
+.blog-frame {
+  min-height: 420px;
+  border: 1px solid var(--line);
 }
 
 .notice-block {
@@ -509,7 +515,8 @@ button.secondary {
 
 .echo-card img,
 .echo-card video,
-.echo-card audio {
+.echo-card audio,
+.echo-card iframe {
   width: 100%;
   border-radius: 0.6rem;
   background: #f2f6f9;

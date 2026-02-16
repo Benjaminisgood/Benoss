@@ -52,6 +52,7 @@ class Config:
     AI_TTS_MODEL = _env("AI_TTS_MODEL", "gpt-4o-mini-tts")
     AI_TTS_VOICE = _env("AI_TTS_VOICE", "alloy")
     AI_IMAGE_MODEL = _env("AI_IMAGE_MODEL", "gpt-image-1")
+    DIGEST_TIMEZONE = _env("DIGEST_TIMEZONE", "Asia/Shanghai")
 
     CHAT_ANYWHERE_API_KEY = _env("CHAT_ANYWHERE_API_KEY")
     CHAT_ANYWHERE_API_BASE_URL = _env("CHAT_ANYWHERE_API_BASE_URL", "https://api.chatanywhere.tech/v1")

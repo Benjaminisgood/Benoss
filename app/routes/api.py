@@ -7,8 +7,9 @@ import json
 import mimetypes
 import re
 from collections import Counter
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 from flask import Blueprint, Response, current_app, g, jsonify, request, url_for
@@ -17,7 +18,7 @@ from sqlalchemy.orm import joinedload
 from werkzeug.utils import secure_filename
 
 from ..extensions import db
-from ..models import Comment, Content, GeneratedAsset, Record, User
+from ..models import Comment, Content, DailyDigestJob, GeneratedAsset, Record, User
 from ..oss import delete_object, get_object_bytes, put_object_bytes, put_object_from_file, sign_get_url
 from ..utils.ids import new_uuid
 from ..utils.oss_paths import generated_asset_key, record_content_key
@@ -88,6 +89,34 @@ def _day_bounds(day_value: date) -> tuple[datetime, datetime]:
     start = datetime(day_value.year, day_value.month, day_value.day)
     end = start + timedelta(days=1)
     return start, end
+
+
+def _digest_timezone() -> str:
+    raw = str(current_app.config.get("DIGEST_TIMEZONE") or "Asia/Shanghai").strip()
+    return raw or "Asia/Shanghai"
+
+
+def _utc_bounds_for_local_day(day_value: date, timezone_name: str) -> tuple[datetime, datetime]:
+    try:
+        tz = ZoneInfo(timezone_name)
+    except Exception:
+        tz = timezone.utc
+
+    local_start = datetime(day_value.year, day_value.month, day_value.day, tzinfo=tz)
+    local_end = local_start + timedelta(days=1)
+    utc_start = local_start.astimezone(timezone.utc).replace(tzinfo=None)
+    utc_end = local_end.astimezone(timezone.utc).replace(tzinfo=None)
+    return utc_start, utc_end
+
+
+def _digest_owner_user() -> User:
+    admin = User.query.filter(User.role == "admin", User.is_active.is_(True)).order_by(User.id.asc()).first()
+    if admin:
+        return admin
+    fallback = User.query.order_by(User.id.asc()).first()
+    if fallback:
+        return fallback
+    raise RuntimeError("no user found for digest assets")
 
 
 def _visible_filter(user_id: int, *, public_only: bool = False):
@@ -521,16 +550,18 @@ def _records_for_ai_prompt(records: list[Record], *, max_chars: int = 18000) -> 
 
 
 def _build_notice_ai_prompt(action: str, records_text: str) -> list[dict]:
-    if action == "podcast":
+    if action == "blog":
+        task = (
+            "把输入记录整理成一篇中文博客 HTML，输出必须是纯 HTML（不要 markdown 代码块）。"
+            "结构包含：标题、导语、按主题分节的小标题、结语。"
+            "保留关键事实和时间线，语言自然可读，避免空泛。"
+        )
+    elif action == "podcast":
         task = "把输入记录整理成一个 3-5 分钟中文播客稿，分段清晰，有开场、主体、结尾。"
     elif action == "poster":
         task = "把输入记录提炼成一份中文海报文案，包含标题、3-6 个重点、结语。"
     else:
-        task = (
-            "把输入记录生成一段可直接插入网页的 HTML 片段。"
-            "必须返回纯 HTML（不要 markdown 代码块），结构清晰，按时间顺序，"
-            "并尽量保留每条记录的核心内容。"
-        )
+        task = "把输入记录整理成结构清晰的中文总结，准确且可读。"
 
     return [
         {
@@ -668,9 +699,19 @@ def _generated_asset_payload(asset: GeneratedAsset) -> dict:
         "id": asset.id,
         "kind": asset.kind,
         "title": asset.title,
+        "visibility": asset.visibility or "private",
+        "status": asset.status or "ready",
+        "is_daily_digest": bool(asset.is_daily_digest),
+        "source_day": asset.source_day.isoformat() if asset.source_day else None,
         "provider": asset.provider,
         "model": asset.model,
         "content_type": asset.content_type,
+        "ext": asset.ext,
+        "sha256": asset.sha256,
+        "user": {
+            "id": asset.user.id if asset.user else asset.user_id,
+            "username": asset.user.username if asset.user else "",
+        },
         "size_bytes": int(asset.size_bytes or 0),
         "created_at": _iso(asset.created_at),
         "blob_url": url_for("api.generated_asset_blob", asset_id=asset.id),
@@ -688,6 +729,10 @@ def _save_generated_asset(
     ext: str,
     data: bytes,
     filters: dict,
+    visibility: str = "private",
+    source_day: date | None = None,
+    is_daily_digest: bool = False,
+    status: str = "ready",
 ) -> GeneratedAsset:
     safe_ext = ext if ext.startswith(".") else f".{ext}"
     filename = f"asset{safe_ext}"
@@ -701,6 +746,10 @@ def _save_generated_asset(
         title=(title or "").strip()[:255],
         provider=(provider or "").strip()[:64],
         model=(model or "").strip()[:128],
+        visibility=_normalize_visibility(visibility, default="private"),
+        status=(status or "ready").strip()[:16] or "ready",
+        is_daily_digest=bool(is_daily_digest),
+        source_day=source_day,
         content_type=(content_type or "").strip()[:255],
         ext=safe_ext[:16],
         size_bytes=len(data),
@@ -711,6 +760,302 @@ def _save_generated_asset(
     db.session.add(asset)
     db.session.commit()
     return asset
+
+
+def _wrap_blog_html_document(body_html: str, *, title: str) -> str:
+    raw = str(body_html or "").strip()
+    if "<html" in raw.lower():
+        return raw
+    safe_title = html.escape(title or "Daily Digest")
+    return (
+        "<!doctype html>\n"
+        "<html lang=\"zh-CN\">\n"
+        "<head>\n"
+        "  <meta charset=\"utf-8\">\n"
+        "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+        f"  <title>{safe_title}</title>\n"
+        "  <style>\n"
+        "    body { margin: 0; font-family: \"Noto Sans SC\", \"PingFang SC\", sans-serif; background: #f4f8fb; color: #1b2430; }\n"
+        "    main { width: min(980px, 94vw); margin: 28px auto; background: #fff; border: 1px solid #d2dee8; border-radius: 14px; padding: 18px 20px; }\n"
+        "    h1, h2, h3 { line-height: 1.35; }\n"
+        "    pre { white-space: pre-wrap; }\n"
+        "    img, video, audio { max-width: 100%; border-radius: 10px; }\n"
+        "  </style>\n"
+        "</head>\n"
+        "<body>\n"
+        "  <main>\n"
+        f"{raw}\n"
+        "  </main>\n"
+        "</body>\n"
+        "</html>\n"
+    )
+
+
+def _generate_blog_asset(
+    *,
+    user: User,
+    records_text: str,
+    filters: dict,
+    title: str,
+    visibility: str,
+    source_day: date | None = None,
+    is_daily_digest: bool = False,
+) -> tuple[GeneratedAsset, str]:
+    output, settings = _ai_chat(messages=_build_notice_ai_prompt("blog", records_text), temperature=0.25, max_tokens=2000)
+    html_doc = _wrap_blog_html_document(output, title=title)
+    asset = _save_generated_asset(
+        user=user,
+        kind="blog_html",
+        title=title,
+        provider=settings["provider"],
+        model=settings["model"],
+        content_type="text/html; charset=utf-8",
+        ext=".html",
+        data=html_doc.encode("utf-8"),
+        filters=filters,
+        visibility=visibility,
+        source_day=source_day,
+        is_daily_digest=is_daily_digest,
+    )
+    return asset, output
+
+
+def _generate_podcast_asset(
+    *,
+    user: User,
+    records_text: str,
+    filters: dict,
+    title: str,
+    visibility: str,
+    source_day: date | None = None,
+    is_daily_digest: bool = False,
+) -> tuple[GeneratedAsset, str]:
+    script, script_settings = _ai_chat(messages=_build_notice_ai_prompt("podcast", records_text), temperature=0.4, max_tokens=1400)
+    audio_bytes, audio_type, tts_info = _ai_tts_audio(script)
+    asset = _save_generated_asset(
+        user=user,
+        kind="podcast_audio",
+        title=title,
+        provider=script_settings["provider"],
+        model=f"{script_settings['model']} + {tts_info['model']}",
+        content_type=audio_type,
+        ext=".mp3",
+        data=audio_bytes,
+        filters=filters,
+        visibility=visibility,
+        source_day=source_day,
+        is_daily_digest=is_daily_digest,
+    )
+    return asset, script
+
+
+def _generate_poster_asset(
+    *,
+    user: User,
+    records_text: str,
+    filters: dict,
+    title: str,
+    visibility: str,
+    source_day: date | None = None,
+    is_daily_digest: bool = False,
+) -> tuple[GeneratedAsset, str]:
+    poster_prompt_messages = [
+        {
+            "role": "system",
+            "content": "你是视觉总监，请把学习记录提炼成适合图像模型的一段海报提示词。",
+        },
+        {
+            "role": "user",
+            "content": (
+                "请输出一段 200-450 字中文提示词，用于生成学习小组海报。"
+                "包含主题、排版、颜色、风格、元素。只输出提示词本身。\n\n"
+                f"记录输入：\n{records_text}"
+            ),
+        },
+    ]
+    poster_prompt, prompt_settings = _ai_chat(
+        messages=poster_prompt_messages,
+        temperature=0.45,
+        max_tokens=700,
+    )
+    image_bytes, image_type, ext, image_info = _ai_generate_poster_image(poster_prompt)
+    asset = _save_generated_asset(
+        user=user,
+        kind="poster_image",
+        title=title,
+        provider=image_info["provider"],
+        model=f"{prompt_settings['model']} + {image_info['model']}",
+        content_type=image_type,
+        ext=ext,
+        data=image_bytes,
+        filters=filters,
+        visibility=visibility,
+        source_day=source_day,
+        is_daily_digest=is_daily_digest,
+    )
+    return asset, poster_prompt
+
+
+def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_name: str | None = None) -> dict:
+    tz_name = str(timezone_name or _digest_timezone()).strip() or "Asia/Shanghai"
+    start, end = _utc_bounds_for_local_day(day_value, tz_name)
+
+    job = DailyDigestJob.query.filter_by(day=day_value, timezone=tz_name).first()
+    if not job:
+        job = DailyDigestJob(day=day_value, timezone=tz_name)
+    job.status = "running"
+    job.started_at = datetime.utcnow()
+    job.finished_at = None
+    job.error = ""
+    db.session.add(job)
+    db.session.commit()
+
+    limit = int(current_app.config.get("AI_MAX_NOTICE_RECORDS") or 180)
+    records = (
+        Record.query.options(joinedload(Record.user), joinedload(Record.content))
+        .filter(
+            Record.visibility == "public",
+            Record.created_at >= start,
+            Record.created_at < end,
+        )
+        .order_by(Record.created_at.asc(), Record.id.asc())
+        .limit(max(20, min(limit, 500)))
+        .all()
+    )
+    if not records:
+        job.status = "ready"
+        job.finished_at = datetime.utcnow()
+        job.error = "no public records"
+        db.session.add(job)
+        db.session.commit()
+        return {
+            "day": day_value.isoformat(),
+            "timezone": tz_name,
+            "record_count": 0,
+            "status": job.status,
+            "error": job.error,
+            "assets": [],
+        }
+
+    records_text = _records_for_ai_prompt(records)
+    if not records_text:
+        job.status = "failed"
+        job.finished_at = datetime.utcnow()
+        job.error = "public records are empty after prompt reduction"
+        db.session.add(job)
+        db.session.commit()
+        return {
+            "day": day_value.isoformat(),
+            "timezone": tz_name,
+            "record_count": len(records),
+            "status": job.status,
+            "error": job.error,
+            "assets": [],
+        }
+
+    owner = _digest_owner_user()
+    base_filters = {
+        "day": day_value.isoformat(),
+        "scope": "public",
+        "timezone": tz_name,
+        "job": "daily_digest",
+    }
+
+    kind_map = {
+        "blog_html": {
+            "title": f"Daily Digest Blog {day_value.isoformat()}",
+            "job_field": "blog_asset_id",
+        },
+        "podcast_audio": {
+            "title": f"Daily Digest Podcast {day_value.isoformat()}",
+            "job_field": "podcast_asset_id",
+        },
+        "poster_image": {
+            "title": f"Daily Digest Poster {day_value.isoformat()}",
+            "job_field": "poster_asset_id",
+        },
+    }
+    assets: dict[str, GeneratedAsset] = {}
+    errors: list[str] = []
+
+    for kind, meta in kind_map.items():
+        existing = None
+        if not force:
+            existing = (
+                GeneratedAsset.query.options(joinedload(GeneratedAsset.user))
+                .filter(
+                    GeneratedAsset.kind == kind,
+                    GeneratedAsset.visibility == "public",
+                    GeneratedAsset.status == "ready",
+                    GeneratedAsset.is_daily_digest.is_(True),
+                    GeneratedAsset.source_day == day_value,
+                )
+                .order_by(GeneratedAsset.created_at.desc(), GeneratedAsset.id.desc())
+                .first()
+            )
+        if existing:
+            assets[kind] = existing
+            setattr(job, meta["job_field"], existing.id)
+            continue
+
+        try:
+            if kind == "blog_html":
+                asset, _ = _generate_blog_asset(
+                    user=owner,
+                    records_text=records_text,
+                    filters=base_filters,
+                    title=meta["title"],
+                    visibility="public",
+                    source_day=day_value,
+                    is_daily_digest=True,
+                )
+            elif kind == "podcast_audio":
+                asset, _ = _generate_podcast_asset(
+                    user=owner,
+                    records_text=records_text,
+                    filters=base_filters,
+                    title=meta["title"],
+                    visibility="public",
+                    source_day=day_value,
+                    is_daily_digest=True,
+                )
+            else:
+                asset, _ = _generate_poster_asset(
+                    user=owner,
+                    records_text=records_text,
+                    filters=base_filters,
+                    title=meta["title"],
+                    visibility="public",
+                    source_day=day_value,
+                    is_daily_digest=True,
+                )
+            assets[kind] = asset
+            setattr(job, meta["job_field"], asset.id)
+        except RuntimeError as exc:
+            errors.append(f"{kind}: {exc}")
+        except Exception as exc:
+            errors.append(f"{kind}: {exc}")
+
+    if len(assets) == len(kind_map):
+        job.status = "ready"
+    elif assets:
+        job.status = "partial"
+    else:
+        job.status = "failed"
+    job.finished_at = datetime.utcnow()
+    job.error = " | ".join(errors)[:4000] if errors else ""
+    db.session.add(job)
+    db.session.commit()
+
+    ordered_assets = sorted(assets.values(), key=lambda item: item.created_at or datetime.utcnow(), reverse=True)
+    return {
+        "day": day_value.isoformat(),
+        "timezone": tz_name,
+        "record_count": len(records),
+        "status": job.status,
+        "error": job.error,
+        "assets": [_generated_asset_payload(item) for item in ordered_assets],
+    }
 
 
 @api_bp.route("/api/push", methods=["POST"])
@@ -1116,6 +1461,7 @@ def echoes_feed():
         query = query.filter(Record.tags_json.contains(f'"{tag}"'))
 
     day = str(request.args.get("day") or "").strip()
+    day_value = None
     if day:
         try:
             day_value = _parse_day(day)
@@ -1129,6 +1475,15 @@ def echoes_feed():
 
     total = query.order_by(None).count()
     records = query.order_by(Record.created_at.desc(), Record.id.desc()).offset((page - 1) * per).limit(per).all()
+    assets_query = GeneratedAsset.query.options(joinedload(GeneratedAsset.user)).filter(
+        GeneratedAsset.visibility == "public",
+        GeneratedAsset.status == "ready",
+    )
+    if day_value:
+        assets_query = assets_query.filter(GeneratedAsset.source_day == day_value)
+    if tag:
+        assets_query = assets_query.filter(GeneratedAsset.source_filters_json.contains(f'"tag": "{tag}"'))
+    assets = assets_query.order_by(GeneratedAsset.created_at.desc(), GeneratedAsset.id.desc()).limit(per).all()
 
     return jsonify(
         {
@@ -1136,6 +1491,7 @@ def echoes_feed():
                 _record_payload(item, viewer=user, include_content=True, include_comments=False)
                 for item in records
             ],
+            "assets": [_generated_asset_payload(item) for item in assets],
             "total": total,
             "page": page,
             "per": per,
@@ -1184,53 +1540,7 @@ def notice_render():
 @api_bp.route("/api/notice/ai", methods=["POST"])
 @login_required()
 def notice_ai():
-    user = g.get("user")
-    payload = request.get_json(silent=True) or {}
-    action = str(payload.get("action") or "optimize").strip().lower()
-    if action != "optimize":
-        return jsonify({"error": "action must be optimize; use /api/notice/assets for podcast/poster"}), 400
-
-    filters = payload.get("filters") or {}
-    user_id = str(filters.get("user_id") or "").strip()
-    tag = str(filters.get("tag") or "").strip()
-    day = str(filters.get("day") or "").strip()
-    order = str(filters.get("order") or "asc").strip().lower()
-
-    query = _record_query_for(user, include_comments=False, public_only=False)
-    try:
-        query = _apply_filter_values(query, user_id=user_id, tag=tag, day=day)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-
-    if order == "desc":
-        query = query.order_by(Record.created_at.desc(), Record.id.desc())
-    else:
-        query = query.order_by(Record.created_at.asc(), Record.id.asc())
-
-    limit = int(current_app.config.get("AI_MAX_NOTICE_RECORDS") or 180)
-    records = query.limit(max(20, min(limit, 500))).all()
-    records_text = _records_for_ai_prompt(records)
-    if not records_text:
-        return jsonify({"error": "no records for current filters"}), 400
-
-    messages = _build_notice_ai_prompt("optimize", records_text)
-    try:
-        output, settings = _ai_chat(messages=messages)
-    except RuntimeError as exc:
-        message = str(exc)
-        if "not configured" in message:
-            return jsonify({"error": message}), 501
-        return jsonify({"error": message}), 502
-
-    return jsonify(
-        {
-            "action": action,
-            "provider": settings["provider"],
-            "model": settings["model"],
-            "record_count": len(records),
-            "output": output,
-        }
-    )
+    return jsonify({"error": "deprecated endpoint: use /api/notice/assets with action=blog"}), 410
 
 
 @api_bp.route("/api/notice/assets", methods=["POST"])
@@ -1239,18 +1549,22 @@ def notice_assets():
     user = g.get("user")
     payload = request.get_json(silent=True) or {}
     action = str(payload.get("action") or "").strip().lower()
-    if action not in {"podcast", "poster"}:
+    if action not in {"blog", "podcast", "poster"}:
         return jsonify({"error": "invalid action"}), 400
 
+    visibility = _normalize_visibility(payload.get("visibility"), default="private")
+    public_only = str(payload.get("public_only") or "0").strip().lower() in {"1", "true", "yes", "on"}
     filters = payload.get("filters") or {}
     user_id = str(filters.get("user_id") or "").strip()
     tag = str(filters.get("tag") or "").strip()
     day = str(filters.get("day") or "").strip()
+    source_day = None
     order = str(filters.get("order") or "asc").strip().lower()
 
-    query = _record_query_for(user, include_comments=False, public_only=False)
+    query = _record_query_for(user, include_comments=False, public_only=public_only)
     try:
         query = _apply_filter_values(query, user_id=user_id, tag=tag, day=day)
+        source_day = _parse_day(day) if day else None
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -1265,21 +1579,36 @@ def notice_assets():
     if not records_text:
         return jsonify({"error": "no records for current filters"}), 400
 
+    asset_filters = dict(filters)
+    asset_filters["public_only"] = bool(public_only)
+
     try:
-        if action == "podcast":
-            script_messages = _build_notice_ai_prompt("podcast", records_text)
-            script, script_settings = _ai_chat(messages=script_messages, temperature=0.4, max_tokens=1400)
-            audio_bytes, audio_type, tts_info = _ai_tts_audio(script)
-            asset = _save_generated_asset(
+        if action == "blog":
+            asset, blog_html = _generate_blog_asset(
                 user=user,
-                kind="podcast_audio",
+                records_text=records_text,
+                filters=asset_filters,
+                title=f"Notice Blog {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
+                visibility=visibility,
+                source_day=source_day,
+            )
+            return jsonify(
+                {
+                    "action": action,
+                    "record_count": len(records),
+                    "asset": _generated_asset_payload(asset),
+                    "blog_html": blog_html,
+                }
+            )
+
+        if action == "podcast":
+            asset, script = _generate_podcast_asset(
+                user=user,
+                records_text=records_text,
+                filters=asset_filters,
                 title=f"Notice Podcast {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
-                provider=script_settings["provider"],
-                model=f"{script_settings['model']} + {tts_info['model']}",
-                content_type=audio_type,
-                ext=".mp3",
-                data=audio_bytes,
-                filters=filters,
+                visibility=visibility,
+                source_day=source_day,
             )
             return jsonify(
                 {
@@ -1290,36 +1619,13 @@ def notice_assets():
                 }
             )
 
-        poster_prompt_messages = [
-            {
-                "role": "system",
-                "content": "你是视觉总监，请把学习记录提炼成适合图像模型的一段海报提示词。",
-            },
-            {
-                "role": "user",
-                "content": (
-                    "请输出一段 200-450 字中文提示词，用于生成学习小组海报。"
-                    "包含主题、排版、颜色、风格、元素。只输出提示词本身。\n\n"
-                    f"记录输入：\n{records_text}"
-                ),
-            },
-        ]
-        poster_prompt, prompt_settings = _ai_chat(
-            messages=poster_prompt_messages,
-            temperature=0.45,
-            max_tokens=700,
-        )
-        image_bytes, image_type, ext, image_info = _ai_generate_poster_image(poster_prompt)
-        asset = _save_generated_asset(
+        asset, poster_prompt = _generate_poster_asset(
             user=user,
-            kind="poster_image",
+            records_text=records_text,
+            filters=asset_filters,
             title=f"Notice Poster {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
-            provider=image_info["provider"],
-            model=f"{prompt_settings['model']} + {image_info['model']}",
-            content_type=image_type,
-            ext=ext,
-            data=image_bytes,
-            filters=filters,
+            visibility=visibility,
+            source_day=source_day,
         )
         return jsonify(
             {
@@ -1336,12 +1642,100 @@ def notice_assets():
         return jsonify({"error": message}), 502
 
 
+@api_bp.route("/api/generated-assets", methods=["GET"])
+@login_required()
+def generated_assets():
+    user = g.get("user")
+    visibility = str(request.args.get("visibility") or "").strip().lower()
+    if visibility and visibility not in _VALID_VISIBILITY:
+        return jsonify({"error": "invalid visibility"}), 400
+
+    day = str(request.args.get("day") or "").strip()
+    kind = str(request.args.get("kind") or "").strip()
+    daily_digest = str(request.args.get("daily_digest") or "0").strip().lower() in {"1", "true", "yes", "on"}
+    page = max(int(request.args.get("page") or 1), 1)
+    per = min(max(int(request.args.get("per") or 40), 1), 200)
+
+    query = GeneratedAsset.query.options(joinedload(GeneratedAsset.user))
+    if visibility == "public":
+        query = query.filter(GeneratedAsset.visibility == "public")
+    elif visibility == "private":
+        query = query.filter(GeneratedAsset.user_id == user.id)
+    else:
+        query = query.filter(or_(GeneratedAsset.visibility == "public", GeneratedAsset.user_id == user.id))
+
+    if kind:
+        query = query.filter(GeneratedAsset.kind == kind)
+    if day:
+        try:
+            day_value = _parse_day(day)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        query = query.filter(GeneratedAsset.source_day == day_value)
+    if daily_digest:
+        query = query.filter(GeneratedAsset.is_daily_digest.is_(True))
+
+    total = query.order_by(None).count()
+    assets = (
+        query.order_by(GeneratedAsset.created_at.desc(), GeneratedAsset.id.desc())
+        .offset((page - 1) * per)
+        .limit(per)
+        .all()
+    )
+
+    return jsonify(
+        {
+            "items": [_generated_asset_payload(item) for item in assets],
+            "total": total,
+            "page": page,
+            "per": per,
+        }
+    )
+
+
+@api_bp.route("/api/digest/daily", methods=["POST"])
+@login_required()
+def digest_daily():
+    user = g.get("user")
+    if user.role != "admin":
+        return jsonify({"error": "forbidden"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    day_raw = str(payload.get("day") or "").strip()
+    timezone_name = str(payload.get("timezone") or _digest_timezone()).strip() or _digest_timezone()
+    force = str(payload.get("force") or "0").strip().lower() in {"1", "true", "yes", "on"}
+
+    if day_raw:
+        try:
+            day_value = _parse_day(day_raw)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+    else:
+        try:
+            tz = ZoneInfo(timezone_name)
+        except Exception:
+            tz = timezone.utc
+        day_value = datetime.now(tz).date() - timedelta(days=1)
+
+    try:
+        result = build_daily_public_digest(day_value=day_value, force=force, timezone_name=timezone_name)
+    except RuntimeError as exc:
+        message = str(exc)
+        if "not configured" in message:
+            return jsonify({"error": message}), 501
+        return jsonify({"error": message}), 502
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    return jsonify(result)
+
+
 @api_bp.route("/api/generated-assets/<int:asset_id>/blob", methods=["GET"])
 @login_required()
 def generated_asset_blob(asset_id: int):
     user = g.get("user")
     asset = GeneratedAsset.query.get_or_404(asset_id)
-    if asset.user_id != user.id:
+    if asset.visibility != "public" and asset.user_id != user.id:
         return jsonify({"error": "forbidden"}), 403
 
     try:

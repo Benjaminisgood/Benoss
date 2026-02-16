@@ -5,6 +5,7 @@
   const dialogTitle = document.getElementById("record-dialog-title");
 
   let usersCache = null;
+  let noticeAiBusy = false;
 
   function escapeHtml(value) {
     return String(value || "")
@@ -652,6 +653,48 @@
     `;
   }
 
+  function echoAssetCardHtml(asset) {
+    const src = asset.blob_url || "";
+    const contentType = String(asset.content_type || "").toLowerCase();
+
+    let mediaHtml = "";
+    if (asset.kind === "blog_html" || contentType.includes("text/html")) {
+      mediaHtml = src
+        ? `<p><a href="${escapeHtml(src)}" target="_blank" rel="noreferrer">打开博客网页</a></p>`
+        : `<p class="muted">博客内容不可用</p>`;
+    } else if (src && contentType.startsWith("image/")) {
+      mediaHtml = `<img src="${escapeHtml(src)}" alt="${escapeHtml(asset.title || "poster")}">`;
+    } else if (src && contentType.startsWith("audio/")) {
+      mediaHtml = `<audio controls src="${escapeHtml(src)}"></audio>`;
+    } else if (src && contentType.startsWith("video/")) {
+      mediaHtml = `<video controls src="${escapeHtml(src)}"></video>`;
+    } else if (src) {
+      mediaHtml = `<p><a href="${escapeHtml(src)}" target="_blank" rel="noreferrer">打开 AI 资产</a></p>`;
+    } else {
+      mediaHtml = `<p class="muted">资产不可用</p>`;
+    }
+
+    const meta = [];
+    if (asset.source_day) {
+      meta.push(`归档日期: ${escapeHtml(asset.source_day)}`);
+    }
+    if (asset.is_daily_digest) {
+      meta.push("日报归档");
+    }
+    if (asset.user?.username) {
+      meta.push(`发布者: ${escapeHtml(asset.user.username)}`);
+    }
+    meta.push(`生成时间: ${escapeHtml(formatTime(asset.created_at))}`);
+
+    return `
+      <article class="echo-card">
+        <p><strong>${escapeHtml(asset.title || asset.kind || "AI 资产")}</strong></p>
+        ${mediaHtml}
+        <p class="muted">${meta.join(" | ")}</p>
+      </article>
+    `;
+  }
+
   async function loadEchoes() {
     const query = buildQuery({
       page: 1,
@@ -660,15 +703,26 @@
 
     const data = await api(`/api/echoes?${query}`);
     const items = data.items || [];
+    const assets = data.assets || [];
     const grid = qs("#echoes-grid");
     if (!grid) {
       return;
     }
-    if (!items.length) {
+    const merged = [
+      ...items.map((item) => ({ type: "record", created_at: item.created_at, payload: item })),
+      ...assets.map((item) => ({ type: "asset", created_at: item.created_at, payload: item })),
+    ].sort((a, b) => {
+      const tsA = Number(new Date(a.created_at || 0).getTime()) || 0;
+      const tsB = Number(new Date(b.created_at || 0).getTime()) || 0;
+      return tsB - tsA;
+    });
+    if (!merged.length) {
       grid.innerHTML = `<p class="muted">暂无公开内容</p>`;
       return;
     }
-    grid.innerHTML = items.map((item) => echoCardHtml(item)).join("");
+    grid.innerHTML = merged
+      .map((item) => (item.type === "record" ? echoCardHtml(item.payload) : echoAssetCardHtml(item.payload)))
+      .join("");
   }
 
   async function initEchoes() {
@@ -686,8 +740,10 @@
     };
   }
 
-  function hasNoticeRealFilter(filters) {
-    return Boolean((filters?.day || "").trim() || (filters?.user_id || "").trim() || (filters?.tag || "").trim());
+  function setNoticeActionsDisabled(disabled) {
+    document.querySelectorAll("#notice-actions [data-ai-action]").forEach((button) => {
+      button.disabled = Boolean(disabled);
+    });
   }
 
   function setNoticeResultsVisible(visible) {
@@ -727,16 +783,13 @@
     }
     setNoticeResultsVisible(false);
     setNoticeAiOutputVisible(false);
+    setNoticeActionsDisabled(false);
   }
 
   async function loadNoticeRender(filters = readNoticeFilters()) {
-    if (!hasNoticeRealFilter(filters)) {
-      clearNoticeRender();
-      return;
-    }
-
     const query = buildQuery(filters);
-    const data = await api(`/api/notice/render?${query}`);
+    const path = query ? `/api/notice/render?${query}` : "/api/notice/render";
+    const data = await api(path);
 
     const metaEl = qs("#notice-render-meta");
     const htmlEl = qs("#notice-render-html");
@@ -755,22 +808,21 @@
   }
 
   async function runNoticeAi(action) {
+    if (noticeAiBusy) {
+      return;
+    }
     const filters = readNoticeFilters();
     const outputEl = qs("#notice-ai-output");
     const htmlEl = qs("#notice-render-html");
-    if (!hasNoticeRealFilter(filters)) {
-      clearNoticeRender();
-      window.alert("请先至少填写一个筛选条件（日期/用户/标签）。");
-      return;
-    }
     setNoticeResultsVisible(true);
     setNoticeAiOutputVisible(true);
+    noticeAiBusy = true;
+    setNoticeActionsDisabled(true);
     if (outputEl) {
       outputEl.textContent = "AI 处理中...";
     }
     try {
-      const endpoint = action === "optimize" ? "/api/notice/ai" : "/api/notice/assets";
-      const data = await api(endpoint, {
+      const data = await api("/api/notice/assets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -779,19 +831,9 @@
         }),
       });
 
-      if (action === "optimize") {
-        if (htmlEl) {
-          htmlEl.innerHTML = data.output || "";
-        }
-        if (outputEl) {
-          const title = `provider=${data.provider || "-"} model=${data.model || "-"} records=${data.record_count || 0}`;
-          outputEl.textContent = `${title}\n\n${data.output || ""}`;
-        }
-        return;
-      }
-
       const asset = data.asset || {};
-      const title = `${action === "podcast" ? "播客音频" : "海报图片"} 已生成\nprovider=${asset.provider || "-"} model=${asset.model || "-"} size=${asset.size_bytes || 0} bytes`;
+      const actionTitle = action === "blog" ? "博客网页" : action === "podcast" ? "播客音频" : "海报图片";
+      const title = `${actionTitle} 已生成\nprovider=${asset.provider || "-"} model=${asset.model || "-"} size=${asset.size_bytes || 0} bytes`;
       if (outputEl) {
         outputEl.textContent = title;
       }
@@ -804,12 +846,20 @@
               <p><a href="${escapeHtml(asset.blob_url)}" target="_blank" rel="noreferrer">打开音频文件</a></p>
             </article>
           `;
-        } else {
+        } else if (action === "poster") {
           htmlEl.innerHTML = `
             <article class="notice-render">
               <h3>海报图片</h3>
               <img src="${escapeHtml(asset.blob_url)}" alt="poster">
               <p><a href="${escapeHtml(asset.blob_url)}" target="_blank" rel="noreferrer">打开图片文件</a></p>
+            </article>
+          `;
+        } else {
+          htmlEl.innerHTML = `
+            <article class="notice-render">
+              <h3>博客网页</h3>
+              <iframe class="blog-frame" src="${escapeHtml(asset.blob_url)}"></iframe>
+              <p><a href="${escapeHtml(asset.blob_url)}" target="_blank" rel="noreferrer">打开博客网页</a></p>
             </article>
           `;
         }
@@ -820,6 +870,9 @@
       } else {
         window.alert(error.message);
       }
+    } finally {
+      noticeAiBusy = false;
+      setNoticeActionsDisabled(false);
     }
   }
 
@@ -835,21 +888,16 @@
     if (form) {
       form.addEventListener("submit", (event) => {
         event.preventDefault();
-        const filters = readNoticeFilters();
-        if (!hasNoticeRealFilter(filters)) {
-          clearNoticeRender();
-          return;
-        }
-        loadNoticeRender(filters).catch((error) => window.alert(error.message));
+        loadNoticeRender(readNoticeFilters()).catch((error) => window.alert(error.message));
       });
     }
 
     document.querySelectorAll("[data-ai-action]").forEach((button) => {
       button.addEventListener("click", () => {
-        runNoticeAi(button.dataset.aiAction || "optimize");
+        runNoticeAi(button.dataset.aiAction || "blog");
       });
     });
-    clearNoticeRender();
+    await loadNoticeRender();
   }
 
   function initDialogControls() {

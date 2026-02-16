@@ -1,72 +1,467 @@
-# Benoss (Tag-Driven)
+# Benoss
 
-Benoss 当前是一个以 `Record / Content / Comment` 为核心、按 `Tag` 组织内容的学习记录平台。
+Benoss 是一个“学习记录流”应用：用户可以发布文本或文件记录，按标签筛选、评论互动，并在 Notice 页面把记录聚合成整页内容，或进一步生成 AI 博客网页、播客音频、海报图片。
 
-## 核心特性
+项目当前是一个完整的 Flask 单体应用（Web 页面 + API + 数据库 + 对象存储 + AI 调用），适合从 0 开始理解“一个可运行后端是怎么组织起来的”。
 
-- `push`：发布文本或文件记录（可公开/私密）
-- `pull`：拉取当前用户可见记录（本人私密 + 所有公开）
-- 文件落 OSS（文本直接入库）
-- 评论系统：对可见记录评论，作者可编辑记录
-- 页面：`Home / Board / Echoes / Notice`
+## 1. 现在能做什么
 
-## 数据模型
+- 账号系统：注册、登录、退出、会话登录态。
+- 记录系统：
+  - 发布文本记录或上传文件记录；
+  - 每条记录可设置 `public/private`；
+  - 可打标签（如 `math,python`）；
+  - 作者可编辑或删除自己的记录。
+- 评论系统：对“你有权限看到”的记录发表评论。
+- 看板视图：
+  - `Home`：今天公开记录概览 + 快速发布；
+  - `Board`：按用户 × 日期统计热力表 以及记录查看；
+  - `Echoes`：公开内容流；
+  - `Notice`：按筛选条件拼接整页内容，支持 AI 二次生成资产。
+- 资产生成（可选）：
+  - AI 生成博客网页（html）；
+  - AI 生成播客音频（mp3）；
+  - AI 生成海报图片（png）。
 
-- `User`
-- `Record`：编号、用户、创建/编辑时间、格式、公私、标签、内容编号
-- `Content`：文本内容或 OSS 文件指针
-- `Comment`
+## 2. 技术栈与运行形态
 
-## 运行
+- 后端框架：Flask（`app/__init__.py`）
+- ORM：Flask-SQLAlchemy（`app/extensions.py`, `app/models.py`）
+- 数据库：默认 SQLite（`data/benoss.sqlite`）
+- 对象存储：
+  - 远端 OSS（阿里云 OSS 兼容）
+  - 或本地落盘目录（`data/oss-local/`）
+- 前端：Jinja 模板 + 原生 JS（`app/templates/*`, `app/static/js/site.js`）
+- AI 接入：OpenAI 兼容 API（通过 `requests` 调用）
+
+## 3. 代码目录（先看这个）
+
+```text
+app/
+  __init__.py              # 应用创建、初始化数据库、注入当前用户、健康检查
+  config.py                # 全部环境变量配置（数据库/OSS/AI/会话等）
+  extensions.py            # db = SQLAlchemy()
+  models.py                # 核心数据模型（User/Content/Record/Comment/GeneratedAsset/DailyDigestJob）
+  oss.py                   # 对象存储抽象（远端 OSS + 本地文件兜底）
+  routes/
+    site.py                # 页面路由：/ /board /echoes /notice /login /register
+    account.py             # 账户相关 API：当前用户、用户列表、简介更新
+    api.py                 # 核心业务 API：记录、评论、board、notice、AI、资产
+  utils/
+    session_auth.py        # 登录态读取、登录校验装饰器
+    oss_paths.py           # OSS key 命名规则
+    ids.py                 # UUID 生成
+  cli/
+    sync.py                # benoss-sync 命令行工具（pull/push/status）
+data/
+  benoss.sqlite            # 默认数据库文件
+  oss-local/               # 未配置远端 OSS 时的本地对象存储目录
+  uploads/                 # 文件上传临时目录
+```
+
+## 4. 数据结构（重点，面向小白）
+
+数据模型定义在 `app/models.py`。可以把它理解成 5 张核心表：
+
+### 4.1 `User`（用户表）
+
+字段：
+- `id`：主键。
+- `username`：唯一用户名。
+- `password_hash`：密码哈希，不存明文。
+- `role`：角色，默认 `user`，可有 `admin`。
+- `is_active`：是否可登录。
+- `description`：个人简介。
+- `created_at`, `updated_at`：创建/更新时间（来自 `TimestampMixin`）。
+
+关键方法：
+- `set_password(password)`：生成哈希。
+- `check_password(password)`：校验登录密码。
+
+### 4.2 `Content`（内容实体表）
+
+`Record` 不直接存大内容，而是关联一个 `Content`。这样文本和文件能统一处理。
+
+字段：
+- `id`：主键。
+- `kind`：`text` 或 `file`。
+- `text_content`：文本内容（当 `kind=text` 时使用）。
+- `oss_key`：文件在对象存储中的路径 key（当 `kind=file` 时使用）。
+- `filename`, `content_type`, `size_bytes`, `sha256`：文件元信息。
+- `created_at`, `updated_at`。
+
+### 4.3 `Record`（记录主表）
+
+这是业务主对象，页面里看到的“每一条记录”就是它。
+
+字段：
+- `id`：主键（也作为记录号）。
+- `user_id`：记录作者。
+- `content_id`：关联 `Content`，并且 `unique=True`，表示“一条记录对应一个内容实体”。
+- `format`：展示格式提示（如 `text/image/audio/video/document/file`）。
+- `visibility`：`public` 或 `private`。
+- `tags_json`：标签 JSON 字符串（例如 `["math","python"]`）。
+- `preview`：预览文本。
+- `created_at`, `updated_at`。
+
+标签处理（非常重要）：
+- `set_tags()` 会做清洗：
+  - 去空；
+  - 忽略大小写去重；
+  - 保留输入顺序；
+  - 最终存成 JSON 字符串到 `tags_json`。
+- `get_tags()` 负责把 `tags_json` 安全解析为列表。
+
+### 4.4 `Comment`（评论表）
+
+字段：
+- `id`
+- `record_id`：评论属于哪条记录。
+- `user_id`：评论作者。
+- `body`：评论正文。
+- `created_at`, `updated_at`。
+
+关系：
+- `Record.comments` 使用 `cascade="all, delete-orphan"`，删除记录时评论会一起删掉。
+
+### 4.5 `GeneratedAsset`（AI 生成资产表）
+
+用于保存 Notice 页与日报任务产出的博客/音频/图片等文件元信息。
+
+字段：
+- `id`
+- `user_id`：哪个用户生成的。
+- `kind`：如 `blog_html` / `podcast_audio` / `poster_image`。
+- `title`：资产标题。
+- `provider`, `model`：生成所用模型信息。
+- `visibility`：`public/private`。
+- `status`：生成状态，默认 `ready`。
+- `is_daily_digest`：是否日报自动产物。
+- `source_day`：资产归档日期（可为空）。
+- `content_type`, `ext`, `size_bytes`, `oss_key`, `sha256`：文件信息。
+- `source_filters_json`：当时使用的筛选条件（JSON）。
+- `created_at`, `updated_at`。
+
+### 4.6 `DailyDigestJob`（日报任务表）
+
+用于记录每天公开内容的自动汇总任务状态与产物关联。
+
+字段：
+- `day`：汇总哪一天（按 `DIGEST_TIMEZONE` 切分）。
+- `timezone`：任务所用时区。
+- `status`：`running/ready/partial/failed`。
+- `started_at`, `finished_at`, `error`：任务执行信息。
+- `blog_asset_id`, `podcast_asset_id`, `poster_asset_id`：关联 `GeneratedAsset`。
+
+### 4.7 模型关系图（文字版）
+
+- `User 1 -> N Record`
+- `Record 1 -> 1 Content`
+- `Record 1 -> N Comment`
+- `User 1 -> N Comment`
+- `User 1 -> N GeneratedAsset`
+- `DailyDigestJob 1 -> 0..3 GeneratedAsset`
+
+## 5. 后端请求是怎么跑起来的
+
+### 5.1 应用启动：`app/__init__.py`
+
+`create_app()` 做了这些事：
+
+1. 加载 `Config`。
+2. 初始化 `db`。
+3. 注册蓝图（`site/account/api`）。
+4. 在应用上下文中：
+   - `db.create_all()` 建表；
+   - `_ensure_schema_shape()` 做表结构校验；
+   - `_seed_admin()` 按环境变量创建或升级管理员账号。
+5. `before_request` 把当前会话用户挂到 `g.user`。
+6. 提供 `/health` 健康检查。
+
+### 5.2 登录态与权限：`app/utils/session_auth.py`
+
+- `login_user()` 把 `user_id/username/role` 放到 `session`。
+- `load_current_user()` 每次请求从 session 读用户并挂载到 `g.user`。
+- `login_required()`：
+  - 未登录访问 API 返回 `401` JSON；
+  - 未登录访问页面会重定向到登录页；
+  - 角色不匹配返回 `403` 或跳转。
+
+### 5.3 路由分层
+
+- 页面路由：`app/routes/site.py`
+  - 负责返回 HTML 模板。
+- 业务 API：`app/routes/api.py`
+  - 负责校验参数、读写数据库、读写 OSS、返回 JSON。
+- 账户 API：`app/routes/account.py`
+  - 用户列表、当前用户、简介更新。
+
+## 6. 记录系统的后端实现（最关键流程）
+
+### 6.1 发布记录（文本或文件）
+
+入口：
+- `POST /api/push`（别名）
+- `POST /api/records`（标准接口）
+
+核心函数：`app/routes/api.py::_create_record_for_user`
+
+流程：
+1. 读取 JSON/Form 参数。
+2. 解析标签（`_parse_tags`）与可见性（`_normalize_visibility`）。
+3. 判断是否上传文件：
+   - 有文件：走 `_file_to_content`，先保存到临时目录 `data/uploads/`，计算 `sha256`，上传到 OSS（或本地对象目录），生成 `Content(kind=file)`。
+   - 无文件：要求 `text` 非空，生成 `Content(kind=text)`。
+4. 创建 `Record` 并关联 `Content`，写入 `preview/format/tags/visibility`。
+5. `db.session.commit()`。
+6. 返回记录摘要 JSON。
+
+### 6.2 读取记录列表
+
+入口：`GET /api/pull`、`GET /api/records`、`GET /api/echoes`
+
+关键点：
+- 可见性过滤在 `_visible_filter`：
+  - 默认“公开 + 自己私密”；
+  - `public_only=1` 时仅公开。
+- 支持按 `user_id/tag/day` 过滤（`_apply_filter_values`）。
+- 返回结构由 `_record_payload` 统一组装。
+
+### 6.3 更新记录
+
+入口：`PATCH /api/records/<id>`
+
+规则：
+- 只有作者可改（`record.user_id == current_user.id`）。
+- 可改 `visibility/tags/text/format/file`。
+- 若替换文件，会删除旧对象存储文件（尽力删除，失败不阻塞主流程）。
+
+### 6.4 删除记录
+
+入口：`DELETE /api/records/<id>`
+
+动作：
+1. 校验作者权限。
+2. 删除 `Record` 和关联 `Content`。
+3. 若是文件记录，尝试删除 OSS 对象。
+
+### 6.5 评论
+
+- `GET /api/records/<id>/comments`：列出评论。
+- `POST /api/records/<id>/comments`：发布评论。
+
+规则：
+- 必须“能看到该记录”才可评论；
+- 评论长度限制 `<=2000`。
+
+## 7. Board / Echoes / Notice 后端逻辑
+
+### 7.1 Board（统计矩阵）
+
+入口：
+- `GET /api/board`：返回日期列表、用户列表、统计矩阵 `matrix`。
+- `GET /api/board/cell`：某用户某天记录。
+- `GET /api/board/user/<id>/records`：某用户可见记录。
+- `GET /api/board/date/<day>`：某天公开记录。
+
+实现点：
+- 用 SQL 聚合 `count(record.id)`；
+- 前端再渲染成热力表（`app/static/js/site.js`）。
+
+### 7.2 Echoes（公开流）
+
+入口：`GET /api/echoes`
+
+实现点：
+- 查公开记录 + 公开 AI 资产；
+- 支持分页；
+- 返回内容 payload，可直接渲染图片/音频/视频/文件链接；
+- 公开博客网页（HTML）会以链接方式展示。
+
+### 7.3 Notice（整页拼接 + AI）
+
+入口：
+- `GET /api/notice/render`：按筛选直接拼 HTML。
+- `POST /api/notice/assets`：`action=blog/podcast/poster`，生成真实资产并入库（支持 `visibility`）。
+- `GET /api/generated-assets`：查询资产列表（支持 `day/kind/visibility/daily_digest`）。
+- `GET /api/generated-assets/<id>/blob`：读取生成资产文件（`public` 资产对登录用户可读）。
+- `POST /api/digest/daily`：管理员触发“某天公开内容”的日报生成。
+
+实现点：
+- `_render_notice_html`：把记录流按日期分组渲染为单页 HTML。
+- `_ai_provider_settings`：读取当前 provider 配置。
+- `_ai_chat`：调用 `/chat/completions`。
+- `_ai_tts_audio`：调用 `/audio/speech`。
+- `_ai_generate_poster_image`：调用 `/images/generations`。
+- `_save_generated_asset`：将 AI 结果写入对象存储 + `GeneratedAsset` 表。
+- `build_daily_public_digest`：按日汇总公开内容，产出博客/播客/海报并归档。
+
+## 8. 对象存储设计（OSS 与本地兜底）
+
+代码：`app/oss.py`, `app/utils/oss_paths.py`
+
+统一接口：
+- `put_object_from_file`
+- `put_object_bytes`
+- `get_object_bytes`
+- `delete_object`
+- `sign_get_url`
+
+行为：
+- 配置了远端 OSS 参数时，走 `oss2` 直连 bucket。
+- 未配置时，自动落到 `data/oss-local/`，开发机可直接跑通。
+
+命名规则（key）：
+- 记录文件：`{prefix}/records/{YYYY-MM-DD}/objects/{uuid}.{ext}`
+- 生成资产：`{prefix}/generated/{YYYY-MM-DD}/user-{id}/{kind}/{uuid}.{ext}`
+
+## 9. API 返回结构（你会经常看到的字段）
+
+`Record` payload 典型结构：
+
+```json
+{
+  "id": 12,
+  "record_no": 12,
+  "format": "text",
+  "visibility": "public",
+  "tags": ["math", "algebra"],
+  "preview": "今天完成了线性代数习题...",
+  "created_at": "2026-02-16T01:23:45.000000Z",
+  "updated_at": "2026-02-16T01:23:45.000000Z",
+  "can_edit": true,
+  "can_comment": true,
+  "user": { "id": 2, "username": "alice" },
+  "content": {
+    "id": 33,
+    "kind": "text",
+    "text": "完整文本..."
+  }
+}
+```
+
+文件内容 `content` 额外字段：
+- `filename`
+- `content_type`
+- `size_bytes`
+- `sha256`
+- `media_type`（`image/video/audio/text/file`）
+- `blob_url`（通过后端鉴权下载）
+- `signed_url`（有配置时可用签名直链）
+
+## 10. 前端如何连接后端（页面到代码文件）
+
+- 页面模板：`app/templates/*.html`
+- 统一前端脚本：`app/static/js/site.js`
+
+对应关系：
+- Home 页面：
+  - 拉取今日公开记录：`GET /api/home/today`
+  - 快速发布：`POST /api/push`
+- Board 页面：
+  - 主表：`GET /api/board`
+  - 点击行/列/单元格触发对应详情 API
+- Echoes 页面：
+  - `GET /api/echoes`（记录 + 公开资产）
+- Notice 页面：
+  - `GET /api/users` 填充用户筛选；
+  - `GET /api/notice/render` 直接渲染；
+  - `POST /api/notice/assets` 触发博客/播客/海报生成。
+
+## 11. 本地运行（开发）
+
+### 11.1 最小步骤
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e .
+cp .env.example .env
 python -m flask --app app init-db
 python -m flask --app app run --debug --port 80
+# 手动触发日报（默认按 DIGEST_TIMEZONE 跑昨天）
+python -m flask --app app digest-build
 ```
 
-## API
+打开浏览器访问：
+- `http://127.0.0.1:80/login`
 
-- `POST /api/push` 创建记录
-- `GET /api/pull` 拉取记录（支持 `tag/day`）
-- `GET /api/records` 筛选记录
-- `PATCH /api/records/<id>` 编辑记录
-- `POST /api/records/<id>/comments` 评论
-- `GET /api/board` Board 统计（可按 tag）
-- `GET /api/echoes` 公开瀑布流
-- `GET /api/notice/render` 按筛选直接返回整页拼接 HTML
+### 11.2 管理账号
 
-## Notice AI
+在 `.env` 中配置：
 
-- `POST /api/notice/ai` 仅用于 `optimize`（返回 HTML）
-- `POST /api/notice/assets` 支持 `podcast / poster`，返回真实音频/图片资产
-- 默认走 OpenAI 兼容协议，可选 provider：`chatanywhere / deepseek / aliyun`
-- 如果未配置有效 key/base/model，接口会返回 `501`
+```env
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=change-me
+```
 
-## benoss-sync
+应用启动时会自动确保该账号存在且角色为 `admin`。
+
+### 11.3 文件上传限制
+
+- `MAX_CONTENT_LENGTH` 默认 `1073741824`（1GB）。
+
+## 12. `benoss-sync` 命令行（对接外部目录）
+
+入口文件：`app/cli/sync.py`
+
+安装后可用命令：
 
 ```bash
-python -m app.cli.sync init --base-url http://127.0.0.1:80 --default-tag math
-python -m app.cli.sync status --username alice
-python -m app.cli.sync push --username alice --text "today progress" --visibility public
-python -m app.cli.sync pull --username alice --output ./pulled_records
+benoss-sync init --base-url http://127.0.0.1:80 --default-tag math
+benoss-sync status --username alice
+benoss-sync push --username alice --text "today progress" --visibility public
+benoss-sync pull --username alice --output ./pulled_records
 ```
 
-## OSS 变量
+说明：
+- 会在当前目录写入 `.benoss/config.json` 保存 base_url 和默认 tag。
+- `pull` 会把每条记录写成独立目录（含 `record.json` 与内容文件）。
+
+## 13. 环境变量说明
+
+配置定义位置：`app/config.py`，示例文件：`.env.example`。
+
+### 13.1 基础配置
+
+- `SECRET_KEY`
+- `DATABASE_URL`（默认 SQLite）
+- `REMEMBER_DAYS`
+- `SESSION_COOKIE_SAMESITE`
+- `SESSION_COOKIE_SECURE`
+- `BOARD_DEFAULT_DAYS`
+
+### 13.2 OSS 配置
 
 - `ALIYUN_OSS_ENDPOINT`
 - `ALIYUN_OSS_ACCESS_KEY_ID`
 - `ALIYUN_OSS_ACCESS_KEY_SECRET`
 - `ALIYUN_OSS_BUCKET`
 - `ALIYUN_OSS_PREFIX`
+- `ALIYUN_OSS_PUBLIC_BASE_URL`
+- `ALIYUN_OSS_ASSUME_PUBLIC`
 
-未配置 OSS 时自动退化到本地对象存储目录：`data/oss-local/`。
-
-## AI 变量
+### 13.3 AI 配置
 
 - `AI_AUTOFILL_PROVIDER`：`chatanywhere` / `deepseek` / `aliyun`
+- `AI_REQUEST_TIMEOUT_SECONDS`
+- `AI_MAX_NOTICE_RECORDS`
+- `AI_TTS_MODEL`
+- `AI_TTS_VOICE`
+- `AI_IMAGE_MODEL`
+- `DIGEST_TIMEZONE`（默认 `Asia/Shanghai`，用于“每日结束”切分日期）
+
+按 provider 分组：
 - `CHAT_ANYWHERE_API_KEY` / `CHAT_ANYWHERE_API_BASE_URL` / `CHAT_ANYWHERE_MODEL`
 - `DEEPSEEK_API_KEY` / `DEEPSEEK_API_BASE_URL` / `DEEPSEEK_MODEL`
 - `ALIYUN_AI_API_KEY` / `ALIYUN_AI_API_BASE_URL` / `ALIYUN_AI_MODEL`
+
+## 14. 面向未来的扩展方向
+
+这个项目现在已经能稳定承载“记录流 + 资产生成”的核心闭环，后续可以沿这些方向自然演进：
+
+1. 数据层可演进为显式迁移（如 Alembic），让生产升级更可控。
+2. 标签可从 `tags_json` 升级为独立标签表 + 关联表，提升复杂检索能力。
+3. AI 任务可异步化（队列 + worker），避免长请求占用 Web 线程。
+4. 可补充对象存储垃圾回收任务，定期校验“数据库记录 vs 实际文件”。
+5. 可增加审计日志和速率限制，强化多用户环境下的可观测性与安全性。

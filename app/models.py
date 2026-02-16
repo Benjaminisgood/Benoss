@@ -106,10 +106,14 @@ class GeneratedAsset(db.Model, TimestampMixin):
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
     user = db.relationship("User", backref=db.backref("generated_assets", lazy=True))
 
-    kind = db.Column(db.String(32), nullable=False)  # podcast_audio | poster_image | poster_pdf
+    kind = db.Column(db.String(32), nullable=False)  # blog_html | podcast_audio | poster_image
     title = db.Column(db.String(255), nullable=False, default="")
     provider = db.Column(db.String(64), nullable=False, default="")
     model = db.Column(db.String(128), nullable=False, default="")
+    visibility = db.Column(db.String(16), nullable=False, default="private")  # public | private
+    status = db.Column(db.String(16), nullable=False, default="ready")
+    is_daily_digest = db.Column(db.Boolean, nullable=False, default=False)
+    source_day = db.Column(db.Date, nullable=True, index=True)
 
     content_type = db.Column(db.String(255), nullable=False, default="")
     ext = db.Column(db.String(16), nullable=False, default="")
@@ -120,7 +124,29 @@ class GeneratedAsset(db.Model, TimestampMixin):
     source_filters_json = db.Column(db.Text, nullable=False, default="{}")
 
 
+class DailyDigestJob(db.Model, TimestampMixin):
+    id = db.Column(db.Integer, primary_key=True)
+
+    day = db.Column(db.Date, nullable=False, index=True)
+    timezone = db.Column(db.String(64), nullable=False, default="Asia/Shanghai")
+    status = db.Column(db.String(16), nullable=False, default="running")  # running | ready | partial | failed
+
+    started_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    finished_at = db.Column(db.DateTime, nullable=True)
+    error = db.Column(db.Text, nullable=False, default="")
+
+    blog_asset_id = db.Column(db.Integer, db.ForeignKey("generated_asset.id"), nullable=True)
+    podcast_asset_id = db.Column(db.Integer, db.ForeignKey("generated_asset.id"), nullable=True)
+    poster_asset_id = db.Column(db.Integer, db.ForeignKey("generated_asset.id"), nullable=True)
+
+    blog_asset = db.relationship("GeneratedAsset", foreign_keys=[blog_asset_id], lazy="joined")
+    podcast_asset = db.relationship("GeneratedAsset", foreign_keys=[podcast_asset_id], lazy="joined")
+    poster_asset = db.relationship("GeneratedAsset", foreign_keys=[poster_asset_id], lazy="joined")
+
+
 Index("ix_record_user_created", Record.user_id, Record.created_at)
 Index("ix_record_visibility_created", Record.visibility, Record.created_at)
 Index("ix_comment_record_created", Comment.record_id, Comment.created_at)
 Index("ix_generated_asset_user_created", GeneratedAsset.user_id, GeneratedAsset.created_at)
+Index("ix_generated_asset_public_day_created", GeneratedAsset.visibility, GeneratedAsset.source_day, GeneratedAsset.created_at)
+Index("ux_daily_digest_day_tz", DailyDigestJob.day, DailyDigestJob.timezone, unique=True)
