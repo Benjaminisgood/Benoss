@@ -798,6 +798,17 @@ button.secondary {
   margin: 0;
 }
 
+.admin-field-warning {
+  margin: 0;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid #e7c7a7;
+  border-radius: 0.5rem;
+  background: #fff6ee;
+  color: #8a3b00;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
 .admin-field textarea {
   min-height: 120px;
 }
@@ -1045,6 +1056,12 @@ button.echoes-chip.active {
   color: #3e4fa4;
 }
 
+.echo-badge.file-web {
+  background: #eef6ff;
+  border-color: #d2e5ff;
+  color: #2f5383;
+}
+
 .echo-badge.file-image {
   background: #f2fff8;
   border-color: #d6f2e5;
@@ -1061,6 +1078,30 @@ button.echoes-chip.active {
   background: #edf9ff;
   border-color: #d1ebf8;
   color: #1f5f78;
+}
+
+.echo-badge.file-log {
+  background: #fff8ed;
+  border-color: #f5e0c5;
+  color: #8b5b2a;
+}
+
+.echo-badge.file-database {
+  background: #eef8f4;
+  border-color: #d2ece2;
+  color: #1e6448;
+}
+
+.echo-badge.file-archive {
+  background: #f5f3ff;
+  border-color: #e1ddff;
+  color: #4d43a1;
+}
+
+.echo-badge.file-document {
+  background: #f6f8fa;
+  border-color: #dfe5eb;
+  color: #3d5567;
 }
 
 .echo-badge.file-file {

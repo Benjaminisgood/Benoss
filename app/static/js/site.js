@@ -22,11 +22,47 @@
   };
   const echoFileTypeLabels = Object.freeze({
     text: "文本",
+    web: "网页",
     image: "图片",
     video: "视频",
     audio: "音频",
+    log: "日志",
+    database: "数据库",
+    archive: "压缩包",
+    document: "文档",
     file: "文件",
   });
+  const webContentTypes = new Set(["text/html", "application/xhtml+xml"]);
+  const webFileExtensions = [".html", ".htm", ".xhtml"];
+  const logFileExtensions = [".log", ".out", ".err"];
+  const databaseContentTypes = new Set(["application/x-sqlite3", "application/vnd.sqlite3"]);
+  const databaseFileExtensions = [".db", ".sqlite", ".sqlite3", ".db3"];
+  const archiveContentTypes = new Set([
+    "application/zip",
+    "application/x-zip-compressed",
+    "application/x-tar",
+    "application/gzip",
+    "application/x-gzip",
+    "application/x-7z-compressed",
+    "application/vnd.rar",
+    "application/x-rar-compressed",
+    "application/x-bzip2",
+    "application/x-xz",
+  ]);
+  const archiveFileExtensions = [".zip", ".tar", ".gz", ".tgz", ".bz2", ".tbz", ".tbz2", ".xz", ".txz", ".7z", ".rar"];
+  const documentContentTypes = new Set([
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.oasis.opendocument.text",
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "application/vnd.oasis.opendocument.presentation",
+  ]);
+  const documentFileExtensions = [".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".odt", ".ods", ".odp"];
   const echoesState = {
     fileType: "",
     cursor: null,
@@ -465,11 +501,16 @@
     }
     if (archiveStatusEl) {
       const archive = data.archive || {};
+      const retention = archive.retention || {};
+      const deletedDays = Number(retention.deleted_count || 0);
+      const cleanupText = deletedDays > 0 ? `，自动清理 ${deletedDays} 天过期归档` : "";
       if (archive.saved && archive.archive) {
         const changedText = archive.archive.changed ? "已更新" : "无变更";
-        archiveStatusEl.textContent = `归档${changedText}：${archive.archive.day || "-"}，记录 ${archive.archive.record_count || 0} 条`;
+        archiveStatusEl.textContent = `归档${changedText}：${archive.archive.day || "-"}，记录 ${archive.archive.record_count || 0} 条${cleanupText}`;
       } else if (archive.reason) {
-        archiveStatusEl.textContent = `归档状态：${archive.reason}`;
+        archiveStatusEl.textContent = `归档状态：${archive.reason}${cleanupText}`;
+      } else if (cleanupText) {
+        archiveStatusEl.textContent = `归档状态：无更新${cleanupText}`;
       } else {
         archiveStatusEl.textContent = "归档状态：无更新";
       }
@@ -568,6 +609,12 @@
           fileLabel: "",
           fileHint: "",
           accept: "",
+        },
+        html: {
+          useFile: true,
+          fileLabel: "上传网页文件",
+          fileHint: "支持 html/htm/xhtml 网页文件",
+          accept: ".html,.htm,.xhtml,text/html,application/xhtml+xml",
         },
         image: {
           useFile: true,
@@ -897,10 +944,59 @@
     return Object.prototype.hasOwnProperty.call(echoFileTypeLabels, normalized) ? normalized : "";
   }
 
+  function isWebType(contentType, filenameOrExt = "") {
+    const normalizedType = String(contentType || "").split(";", 1)[0].trim().toLowerCase();
+    const normalizedName = String(filenameOrExt || "").trim().toLowerCase();
+    if (webContentTypes.has(normalizedType)) {
+      return true;
+    }
+    return webFileExtensions.some((ext) => normalizedName.endsWith(ext) || normalizedName === ext);
+  }
+
+  function mimeMatch(normalizedType, candidates) {
+    if (candidates.has(normalizedType)) {
+      return true;
+    }
+    for (const mime of candidates) {
+      if (normalizedType.startsWith(`${mime};`)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function detectEchoFileTypeFromMeta(contentType, filenameOrExt = "") {
+    const normalizedType = String(contentType || "").split(";", 1)[0].trim().toLowerCase();
+    const normalizedName = String(filenameOrExt || "").trim().toLowerCase();
+    if (!normalizedType && !normalizedName) {
+      return "";
+    }
+    if (isWebType(normalizedType, normalizedName)) {
+      return "web";
+    }
+    if (logFileExtensions.some((ext) => normalizedName.endsWith(ext))) {
+      return "log";
+    }
+    if (mimeMatch(normalizedType, databaseContentTypes) || databaseFileExtensions.some((ext) => normalizedName.endsWith(ext))) {
+      return "database";
+    }
+    if (mimeMatch(normalizedType, archiveContentTypes) || archiveFileExtensions.some((ext) => normalizedName.endsWith(ext))) {
+      return "archive";
+    }
+    if (mimeMatch(normalizedType, documentContentTypes) || documentFileExtensions.some((ext) => normalizedName.endsWith(ext))) {
+      return "document";
+    }
+    return "";
+  }
+
   function echoFileTypeFromRecord(record) {
     const content = record?.content || {};
     if (content.kind === "text") {
       return "text";
+    }
+    const fileLikeType = detectEchoFileTypeFromMeta(content.content_type, content.filename);
+    if (fileLikeType) {
+      return fileLikeType;
     }
     const mediaType = normalizeEchoFileType(content.media_type || "");
     if (mediaType) {
@@ -926,7 +1022,11 @@
   function echoFileTypeFromAsset(asset) {
     const kind = String(asset.kind || "").toLowerCase();
     if (kind === "blog_html") {
-      return "text";
+      return "web";
+    }
+    const fileLikeType = detectEchoFileTypeFromMeta(asset.content_type, asset.ext);
+    if (fileLikeType) {
+      return fileLikeType;
     }
 
     const contentType = String(asset.content_type || "").toLowerCase();
@@ -1133,7 +1233,7 @@
     const fileType = normalizeEchoFileType(entry.file_type || echoFileTypeFromAsset(asset)) || "file";
 
     let mediaHtml = "";
-    if (asset.kind === "blog_html" || contentType.includes("text/html")) {
+    if (fileType === "web") {
       mediaHtml = src
         ? `<p><a href="${escapeHtml(src)}" target="_blank" rel="noreferrer">打开博客网页</a></p>`
         : `<p class="muted">博客内容不可用</p>`;

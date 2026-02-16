@@ -57,6 +57,46 @@ def get_object_bytes(key: str, *, max_bytes: int | None = None) -> bytes:
     return path.read_bytes()
 
 
+def get_object_to_file(key: str, filename: str, *, max_bytes: int | None = None) -> int:
+    target = Path(filename)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    if _has_remote_config():
+        result = _get_bucket().get_object(key)
+        total = 0
+        remaining = int(max_bytes) if max_bytes and int(max_bytes) > 0 else None
+        with target.open("wb") as fp:
+            while True:
+                chunk_size = 65536 if remaining is None else min(65536, remaining)
+                if chunk_size <= 0:
+                    break
+                chunk = result.read(chunk_size)
+                if not chunk:
+                    break
+                fp.write(chunk)
+                total += len(chunk)
+                if remaining is not None:
+                    remaining -= len(chunk)
+        return total
+
+    source = _safe_local_path(key)
+    total = 0
+    remaining = int(max_bytes) if max_bytes and int(max_bytes) > 0 else None
+    with source.open("rb") as src, target.open("wb") as dst:
+        while True:
+            chunk_size = 65536 if remaining is None else min(65536, remaining)
+            if chunk_size <= 0:
+                break
+            chunk = src.read(chunk_size)
+            if not chunk:
+                break
+            dst.write(chunk)
+            total += len(chunk)
+            if remaining is not None:
+                remaining -= len(chunk)
+    return total
+
+
 def put_object_from_file(key: str, filename: str, content_type: Optional[str] = None) -> None:
     if _has_remote_config():
         headers = {"Content-Type": content_type} if content_type else None

@@ -106,7 +106,7 @@ data/
 - `id`：主键（也作为记录号）。
 - `user_id`：记录作者。
 - `content_id`：关联 `Content`，并且 `unique=True`，表示“一条记录对应一个内容实体”。
-- `format`：展示格式提示（如 `text/image/audio/video/document/file`）。
+- `format`：展示格式提示（如 `text/html/image/audio/video/log/database/archive/document/file`）。
 - `visibility`：`public` 或 `private`。
 - `tags_json`：标签 JSON 字符串（例如 `["math","python"]`）。
 - `preview`：预览文本。
@@ -224,6 +224,19 @@ data/
 5. `db.session.commit()`。
 6. 返回记录摘要 JSON。
 
+`format` 判定规则（`_detect_format`）：
+- 若请求显式传 `format`，优先使用；其中 `web/html` 会归一化为 `html`（仅在 HTML 内容场景下）。
+- 若请求传的是 `format=file`（通用文件），会按真实文件元数据自动推断更具体格式。
+- `kind=text` 且未显式指定时，默认 `text`。
+- 文件记录命中 HTML 特征（`text/html` / `application/xhtml+xml` / `.html/.htm/.xhtml`）时，自动记为 `html`。
+- 其他文件按 `_detect_file_format` 推断为：
+  - `image/video/audio/text`
+  - `log`（如 `.log/.out/.err`）
+  - `database`（如 `.db/.sqlite/.sqlite3`）
+  - `archive`（如 `.zip/.tar/.gz/.7z/.rar`）
+  - `document`（如 `.pdf/.docx/.pptx/.xlsx/.odt`）
+  - 兜底 `file`
+
 ### 6.2 读取记录列表
 
 入口：`GET /api/pull`、`GET /api/records`、`GET /api/echoes`
@@ -262,6 +275,26 @@ data/
 - 必须“能看到该记录”才可评论；
 - 评论长度限制 `<=2000`。
 
+### 6.6 媒体区分机制（业务层）
+
+这是最容易混淆的点，当前实现分三层：
+
+1. 存储层（DB）：
+   - `Content.kind` 只有 `text | file`，表示“存储形态”而不是媒体类型。
+2. 记录层（Record）：
+   - `Record.format` 表示业务展示格式，可是 `text/html/image/audio/video/log/database/archive/document/file` 等。
+3. 渲染/筛选层（Echoes）：
+   - 通过 MIME + 后缀 + 资产 `kind` 计算 `file_type`，用于筛选和徽标展示。
+   - 目前分类为：`text/web/image/video/audio/log/database/archive/document/file`。
+
+代码对应：
+- 文件格式推断（复用入口）：`app/routes/api.py::_detect_file_format`
+- 通用媒体推断（渲染用）：`app/routes/api.py::_content_media_type`
+- 记录格式判定：`app/routes/api.py::_detect_format`
+- Echoes 记录/资产分类：`app/routes/api.py::_record_echo_file_type`、`_asset_echo_file_type`
+- Echoes 后端筛选：`app/routes/api.py::_record_file_type_filter`、`_asset_file_type_filter`
+- Echoes 前端标签映射：`app/static/js/site.js` 中 `echoFileTypeLabels`
+
 ## 7. Board / Echoes / Notice 后端逻辑
 
 ### 7.1 Board（统计矩阵）
@@ -283,8 +316,9 @@ data/
 实现点：
 - 查公开记录 + 公开 AI 资产；
 - 支持分页；
+- 支持按 `file_type` 过滤（`text/web/image/video/audio/log/database/archive/document/file`）；
 - 返回内容 payload，可直接渲染图片/音频/视频/文件链接；
-- 公开博客网页（HTML）会以链接方式展示。
+- 公开博客网页（HTML）归类为 `web`，并以链接方式展示。
 
 ### 7.3 Notice（整页拼接）
 
@@ -358,6 +392,10 @@ data/
 - `media_type`（`image/video/audio/text/file`）
 - `blob_url`（通过后端鉴权下载）
 - `signed_url`（有配置时可用签名直链）
+
+Echoes 的 `entries[]` 额外字段：
+- `entry_type`：`record | asset`
+- `file_type`：`text/web/image/video/audio/log/database/archive/document/file`（用于 Echoes 分类筛选与徽标）
 
 ## 10. 前端如何连接后端（页面到代码文件）
 
@@ -498,6 +536,9 @@ benoss-sync pull --username alice --output ./pulled_records
 - `AI_NOTICE_ATTACH_IMAGES`
 - `AI_NOTICE_MAX_IMAGE_ATTACHMENTS`
 - `AI_NOTICE_IMAGE_URL_EXPIRES_SECONDS`
+- `AI_ARCHIVE_MULTIMODAL_PARSE`（归档阶段非文本文件多模态解析开关）
+- `AI_ARCHIVE_PARSE_MAX_CHARS`（多模态解析文本上限）
+- `AI_ARCHIVE_PARSE_TIMEOUT_SECONDS`
 - `AI_TTS_VOICE`
 - `AI_TTS_RESPONSE_FORMAT`
 - `AI_TTS_MAX_INPUT_CHARS`
@@ -512,12 +553,14 @@ benoss-sync pull --username alice --output ./pulled_records
 - `VECTOR_EMBEDDING_BATCH_SIZE`
 - `VECTOR_EMBEDDING_MAX_INPUT_CHARS`
 - `DIGEST_TIMEZONE`（默认 `Asia/Shanghai`，用于“每日结束”切分日期）
+- `ARCHIVE_RETENTION_DAYS`（默认 `7`，`0` 表示永久保留）
+- `ARCHIVE_STORE_FILE_BLOB`（是否在本地归档保存文件本体副本）
 
-按 provider 分组（聊天/向量/TTS/图片）：
-- `OPENAI_API_KEY` / `OPENAI_API_BASE_URL` / `OPENAI_CHAT_MODEL` / `OPENAI_EMBEDDING_MODEL` / `OPENAI_TTS_MODEL` / `OPENAI_IMAGE_MODEL`
-- `CHAT_ANYWHERE_API_KEY` / `CHAT_ANYWHERE_API_BASE_URL` / `CHAT_ANYWHERE_CHAT_MODEL` / `CHAT_ANYWHERE_EMBEDDING_MODEL` / `CHAT_ANYWHERE_TTS_MODEL` / `CHAT_ANYWHERE_IMAGE_MODEL`
-- `DEEPSEEK_API_KEY` / `DEEPSEEK_API_BASE_URL` / `DEEPSEEK_CHAT_MODEL` / `DEEPSEEK_EMBEDDING_MODEL` / `DEEPSEEK_TTS_MODEL` / `DEEPSEEK_IMAGE_MODEL`
-- `ALIYUN_AI_API_KEY` / `ALIYUN_AI_API_BASE_URL` / `ALIYUN_AI_CHAT_MODEL` / `ALIYUN_AI_EMBEDDING_MODEL` / `ALIYUN_AI_TTS_MODEL` / `ALIYUN_AI_IMAGE_MODEL`
+按 provider 分组（聊天/向量/TTS/图片/转写）：
+- `OPENAI_API_KEY` / `OPENAI_API_BASE_URL` / `OPENAI_CHAT_MODEL` / `OPENAI_EMBEDDING_MODEL` / `OPENAI_TTS_MODEL` / `OPENAI_IMAGE_MODEL` / `OPENAI_TRANSCRIBE_MODEL`
+- `CHAT_ANYWHERE_API_KEY` / `CHAT_ANYWHERE_API_BASE_URL` / `CHAT_ANYWHERE_CHAT_MODEL` / `CHAT_ANYWHERE_EMBEDDING_MODEL` / `CHAT_ANYWHERE_TTS_MODEL` / `CHAT_ANYWHERE_IMAGE_MODEL` / `CHAT_ANYWHERE_TRANSCRIBE_MODEL`
+- `DEEPSEEK_API_KEY` / `DEEPSEEK_API_BASE_URL` / `DEEPSEEK_CHAT_MODEL` / `DEEPSEEK_EMBEDDING_MODEL` / `DEEPSEEK_TTS_MODEL` / `DEEPSEEK_IMAGE_MODEL` / `DEEPSEEK_TRANSCRIBE_MODEL`
+- `ALIYUN_AI_API_KEY` / `ALIYUN_AI_API_BASE_URL` / `ALIYUN_AI_CHAT_MODEL` / `ALIYUN_AI_EMBEDDING_MODEL` / `ALIYUN_AI_TTS_MODEL` / `ALIYUN_AI_IMAGE_MODEL` / `ALIYUN_AI_TRANSCRIBE_MODEL`
 
 说明：
 - 媒体与向量模型现在都是“每个 provider 独立配置”，不再使用全局 `AI_TTS_MODEL` / `AI_IMAGE_MODEL` / `VECTOR_EMBEDDING_MODEL`。

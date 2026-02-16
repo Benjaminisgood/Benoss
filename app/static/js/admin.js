@@ -78,6 +78,22 @@
     return item.value;
   }
 
+  function fieldWarningHtml(item) {
+    const key = String(item?.key || "");
+    if (key !== "ARCHIVE_RETENTION_DAYS") {
+      return "";
+    }
+    const raw = String(currentItemValue(item) ?? "").trim();
+    if (raw !== "0") {
+      return "";
+    }
+    return `
+      <p class="admin-field-warning">
+        当前为“永久保留”。归档与文件本体会持续增长，可能导致磁盘快速膨胀，请确认有容量监控和清理策略。
+      </p>
+    `;
+  }
+
   function itemMatches(item, groupName, query, onlyOverrides) {
     if (onlyOverrides && item.source !== "override" && !pendingReset.has(item.key)) {
       return false;
@@ -238,6 +254,7 @@
                 <span class="muted">${escapeHtml(item.description || "")}</span>
                 ${inputHtml(item)}
                 <p class="admin-field-default muted">默认值：${escapeHtml(valuePreview(item, item.default))}</p>
+                ${fieldWarningHtml(item)}
                 <button class="secondary admin-reset" type="button" data-reset-key="${escapeHtml(item.key || "")}">${pendingReset.has(item.key || "") ? "已标记回退" : "回退默认"}</button>
               </article>
             `,

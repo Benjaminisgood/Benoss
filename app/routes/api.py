@@ -24,7 +24,7 @@ from ..extensions import db
 from ..models import Comment, Content, DailyDigestJob, GeneratedAsset, Record, User
 from ..oss import delete_object, get_object_bytes, put_object_bytes, put_object_from_file, sign_get_url
 from ..utils.ids import new_uuid
-from ..utils.local_archive import archive_file_path, load_archive, save_daily_archive
+from ..utils.local_archive import apply_archive_retention_policy, archive_file_path, load_archive, save_daily_archive
 from ..utils.local_vector_db import (
     build_chat_context,
     build_index,
@@ -124,10 +124,64 @@ _TEXT_FILE_MIME_TYPES = {
     "application/x-sh",
     "application/x-httpd-php",
 }
+_WEB_FILE_EXTENSIONS = (".html", ".htm", ".xhtml")
+_WEB_FILE_MIME_TYPES = {"text/html", "application/xhtml+xml"}
 _IMAGE_FILE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg")
 _VIDEO_FILE_EXTENSIONS = (".mp4", ".mov", ".webm", ".mkv", ".avi")
 _AUDIO_FILE_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
-_ECHO_FILE_TYPES = {"text", "image", "video", "audio", "file"}
+_LOG_FILE_EXTENSIONS = (".log", ".out", ".err")
+_DATABASE_FILE_EXTENSIONS = (".db", ".sqlite", ".sqlite3", ".db3")
+_DATABASE_FILE_MIME_TYPES = {"application/x-sqlite3", "application/vnd.sqlite3"}
+_ARCHIVE_FILE_EXTENSIONS = (
+    ".zip",
+    ".tar",
+    ".gz",
+    ".tgz",
+    ".bz2",
+    ".tbz",
+    ".tbz2",
+    ".xz",
+    ".txz",
+    ".7z",
+    ".rar",
+)
+_ARCHIVE_FILE_MIME_TYPES = {
+    "application/zip",
+    "application/x-zip-compressed",
+    "application/x-tar",
+    "application/gzip",
+    "application/x-gzip",
+    "application/x-7z-compressed",
+    "application/vnd.rar",
+    "application/x-rar-compressed",
+    "application/x-bzip2",
+    "application/x-xz",
+}
+_DOCUMENT_FILE_EXTENSIONS = (
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".ppt",
+    ".pptx",
+    ".xls",
+    ".xlsx",
+    ".odt",
+    ".ods",
+    ".odp",
+)
+_DOCUMENT_FILE_MIME_TYPES = {
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.oasis.opendocument.text",
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "application/vnd.oasis.opendocument.presentation",
+}
+_ECHO_FILE_TYPES = {"text", "web", "image", "video", "audio", "log", "database", "archive", "document", "file"}
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -230,16 +284,49 @@ def _is_record_visible(record: Record, user: User) -> bool:
     return bool(user and record.user_id == user.id)
 
 
-def _content_media_type(content: Content) -> str:
-    ctype = (content.content_type or "").lower()
-    name = (content.filename or "").lower()
-    if ctype.startswith("image/") or name.endswith(_IMAGE_FILE_EXTENSIONS):
+def _normalized_file_meta(content_type: str | None, filename_or_ext: str | None) -> tuple[str, str, str]:
+    ctype = str(content_type or "").split(";", 1)[0].strip().lower()
+    name = str(filename_or_ext or "").strip().lower()
+    suffix = Path(name).suffix.lower() if name else ""
+    return ctype, name, suffix
+
+
+def _detect_file_format(content_type: str | None, filename_or_ext: str | None) -> str:
+    ctype, name, suffix = _normalized_file_meta(content_type, filename_or_ext)
+
+    if ctype.startswith("image/") or suffix in _IMAGE_FILE_EXTENSIONS:
         return "image"
-    if ctype.startswith("video/") or name.endswith(_VIDEO_FILE_EXTENSIONS):
+    if ctype.startswith("video/") or suffix in _VIDEO_FILE_EXTENSIONS:
         return "video"
-    if ctype.startswith("audio/") or name.endswith(_AUDIO_FILE_EXTENSIONS):
+    if ctype.startswith("audio/") or suffix in _AUDIO_FILE_EXTENSIONS:
         return "audio"
-    if ctype.startswith("text/") or name.endswith((".txt", ".md", ".json", ".py", ".js", ".html", ".css", ".csv")):
+    if (
+        ctype in _WEB_FILE_MIME_TYPES
+        or ctype.startswith("text/html")
+        or ctype.startswith("application/xhtml+xml")
+        or suffix in _WEB_FILE_EXTENSIONS
+        or name.endswith(_WEB_FILE_EXTENSIONS)
+    ):
+        return "html"
+    if suffix in _LOG_FILE_EXTENSIONS:
+        return "log"
+    if ctype in _DATABASE_FILE_MIME_TYPES or suffix in _DATABASE_FILE_EXTENSIONS:
+        return "database"
+    if ctype in _ARCHIVE_FILE_MIME_TYPES or suffix in _ARCHIVE_FILE_EXTENSIONS:
+        return "archive"
+    if ctype in _DOCUMENT_FILE_MIME_TYPES or suffix in _DOCUMENT_FILE_EXTENSIONS:
+        return "document"
+    if ctype.startswith("text/") or ctype in _TEXT_FILE_MIME_TYPES or suffix in _TEXT_FILE_EXTENSIONS:
+        return "text"
+    return "file"
+
+
+def _content_media_type(content: Content) -> str:
+    inferred = _detect_file_format(content.content_type, content.filename)
+    if inferred in {"image", "video", "audio", "text"}:
+        return inferred
+    if inferred in {"html", "log"}:
+        # HTML/log keep file rendering but are still text-like for format inference and extraction.
         return "text"
     return "file"
 
@@ -270,19 +357,53 @@ def _suffix_like_filter(column, suffixes: tuple[str, ...]):
     return or_(*clauses)
 
 
+def _mime_match_filter(column, mime_values: tuple[str, ...]):
+    clauses = [column.in_(mime_values)]
+    clauses.extend(column.like(f"{value};%") for value in mime_values)
+    if not clauses:
+        return column == "__never_match__"
+    return or_(*clauses)
+
+
 def _record_file_type_filter(file_type: str):
     ctype = func.lower(func.coalesce(Content.content_type, ""))
     filename = func.lower(func.coalesce(Content.filename, ""))
     text_mime_values = tuple(sorted(_TEXT_FILE_MIME_TYPES))
     text_suffix_values = tuple(sorted(_TEXT_FILE_EXTENSIONS))
+    web_mime_values = tuple(sorted(_WEB_FILE_MIME_TYPES))
+    database_mime_values = tuple(sorted(_DATABASE_FILE_MIME_TYPES))
+    archive_mime_values = tuple(sorted(_ARCHIVE_FILE_MIME_TYPES))
+    document_mime_values = tuple(sorted(_DOCUMENT_FILE_MIME_TYPES))
 
     image_match = or_(ctype.like("image/%"), _suffix_like_filter(filename, _IMAGE_FILE_EXTENSIONS))
     video_match = or_(ctype.like("video/%"), _suffix_like_filter(filename, _VIDEO_FILE_EXTENSIONS))
     audio_match = or_(ctype.like("audio/%"), _suffix_like_filter(filename, _AUDIO_FILE_EXTENSIONS))
-    text_match = or_(
-        ctype.like("text/%"),
-        ctype.in_(text_mime_values),
-        _suffix_like_filter(filename, text_suffix_values),
+    web_match = or_(
+        _mime_match_filter(ctype, web_mime_values),
+        ctype.like("text/html%"),
+        ctype.like("application/xhtml+xml%"),
+        _suffix_like_filter(filename, _WEB_FILE_EXTENSIONS),
+    )
+    log_match = _suffix_like_filter(filename, _LOG_FILE_EXTENSIONS)
+    database_match = or_(
+        _mime_match_filter(ctype, database_mime_values),
+        _suffix_like_filter(filename, _DATABASE_FILE_EXTENSIONS),
+    )
+    archive_match = or_(
+        _mime_match_filter(ctype, archive_mime_values),
+        _suffix_like_filter(filename, _ARCHIVE_FILE_EXTENSIONS),
+    )
+    document_match = or_(
+        _mime_match_filter(ctype, document_mime_values),
+        _suffix_like_filter(filename, _DOCUMENT_FILE_EXTENSIONS),
+    )
+    text_match = and_(
+        or_(
+            ctype.like("text/%"),
+            _mime_match_filter(ctype, text_mime_values),
+            _suffix_like_filter(filename, text_suffix_values),
+        ),
+        not_(web_match),
     )
 
     if file_type == "text":
@@ -290,16 +411,26 @@ def _record_file_type_filter(file_type: str):
             Content.kind == "text",
             and_(Content.kind == "file", text_match),
         )
+    if file_type == "web":
+        return and_(Content.kind == "file", web_match)
     if file_type == "image":
         return and_(Content.kind == "file", image_match)
     if file_type == "video":
         return and_(Content.kind == "file", video_match)
     if file_type == "audio":
         return and_(Content.kind == "file", audio_match)
+    if file_type == "log":
+        return and_(Content.kind == "file", log_match)
+    if file_type == "database":
+        return and_(Content.kind == "file", database_match)
+    if file_type == "archive":
+        return and_(Content.kind == "file", archive_match)
+    if file_type == "document":
+        return and_(Content.kind == "file", document_match)
     if file_type == "file":
         return and_(
             Content.kind == "file",
-            not_(or_(image_match, video_match, audio_match, text_match)),
+            not_(or_(image_match, video_match, audio_match, web_match, text_match)),
         )
     return None
 
@@ -310,29 +441,65 @@ def _asset_file_type_filter(file_type: str):
     ext = func.lower(func.coalesce(GeneratedAsset.ext, ""))
     text_mime_values = tuple(sorted(_TEXT_FILE_MIME_TYPES))
     text_ext_values = tuple(sorted(_TEXT_FILE_EXTENSIONS))
+    web_mime_values = tuple(sorted(_WEB_FILE_MIME_TYPES))
+    database_mime_values = tuple(sorted(_DATABASE_FILE_MIME_TYPES))
+    archive_mime_values = tuple(sorted(_ARCHIVE_FILE_MIME_TYPES))
+    document_mime_values = tuple(sorted(_DOCUMENT_FILE_MIME_TYPES))
 
     image_match = or_(ctype.like("image/%"), ext.in_(_IMAGE_FILE_EXTENSIONS))
     video_match = or_(ctype.like("video/%"), ext.in_(_VIDEO_FILE_EXTENSIONS))
     audio_match = or_(ctype.like("audio/%"), ext.in_(_AUDIO_FILE_EXTENSIONS))
-    text_match = or_(
+    web_match = or_(
         kind == "blog_html",
-        ctype.like("text/%"),
-        ctype.in_(text_mime_values),
-        ext.in_(text_ext_values),
+        _mime_match_filter(ctype, web_mime_values),
+        ctype.like("text/html%"),
+        ctype.like("application/xhtml+xml%"),
+        ext.in_(_WEB_FILE_EXTENSIONS),
+    )
+    log_match = ext.in_(_LOG_FILE_EXTENSIONS)
+    database_match = or_(
+        _mime_match_filter(ctype, database_mime_values),
+        ext.in_(_DATABASE_FILE_EXTENSIONS),
+    )
+    archive_match = or_(
+        _mime_match_filter(ctype, archive_mime_values),
+        ext.in_(_ARCHIVE_FILE_EXTENSIONS),
+    )
+    document_match = or_(
+        _mime_match_filter(ctype, document_mime_values),
+        ext.in_(_DOCUMENT_FILE_EXTENSIONS),
+    )
+    text_match = and_(
+        or_(
+            ctype.like("text/%"),
+            _mime_match_filter(ctype, text_mime_values),
+            ext.in_(text_ext_values),
+        ),
+        not_(web_match),
     )
 
     if file_type == "text":
         return text_match
+    if file_type == "web":
+        return web_match
     if file_type == "image":
         return image_match
     if file_type == "video":
         return video_match
     if file_type == "audio":
         return audio_match
+    if file_type == "log":
+        return log_match
+    if file_type == "database":
+        return database_match
+    if file_type == "archive":
+        return archive_match
+    if file_type == "document":
+        return document_match
     if file_type == "file":
         return and_(
             kind != "blog_html",
-            not_(or_(image_match, video_match, audio_match, text_match)),
+            not_(or_(image_match, video_match, audio_match, web_match, text_match)),
         )
     return None
 
@@ -342,25 +509,23 @@ def _record_echo_file_type(record: Record) -> str:
         return "file"
     if record.content.kind == "text":
         return "text"
-    media = _content_media_type(record.content)
-    return media if media in _ECHO_FILE_TYPES else "file"
+    inferred = _detect_file_format(record.content.content_type, record.content.filename)
+    if inferred == "html":
+        return "web"
+    if inferred in _ECHO_FILE_TYPES:
+        return inferred
+    return "file"
 
 
 def _asset_echo_file_type(asset: GeneratedAsset) -> str:
     kind = str(asset.kind or "").strip().lower()
-    ctype = str(asset.content_type or "").split(";", 1)[0].strip().lower()
-    ext = str(asset.ext or "").strip().lower()
-
     if kind == "blog_html":
-        return "text"
-    if ctype.startswith("image/") or ext in _IMAGE_FILE_EXTENSIONS:
-        return "image"
-    if ctype.startswith("video/") or ext in _VIDEO_FILE_EXTENSIONS:
-        return "video"
-    if ctype.startswith("audio/") or ext in _AUDIO_FILE_EXTENSIONS:
-        return "audio"
-    if ctype.startswith("text/") or ctype in _TEXT_FILE_MIME_TYPES or ext in _TEXT_FILE_EXTENSIONS:
-        return "text"
+        return "web"
+    inferred = _detect_file_format(asset.content_type, asset.ext)
+    if inferred == "html":
+        return "web"
+    if inferred in _ECHO_FILE_TYPES:
+        return inferred
     return "file"
 
 
@@ -455,12 +620,17 @@ def _form_or_json_payload() -> dict:
 
 
 def _detect_format(content: Content, requested: str | None) -> str:
+    inferred = "text" if content.kind == "text" else _detect_file_format(content.content_type, content.filename)
+
     candidate = str(requested or "").strip().lower()
     if candidate:
+        if candidate in {"web", "html"}:
+            return "html" if inferred == "html" or content.kind == "text" else inferred
+        if candidate == "file" and content.kind == "file":
+            # "file" means generic upload type; keep format adaptive for downstream display/filtering.
+            return inferred
         return candidate[:32]
-    if content.kind == "text":
-        return "text"
-    return _content_media_type(content)
+    return inferred
 
 
 def _record_query_for(user: User, *, include_comments: bool = False, public_only: bool = False):
@@ -1005,17 +1175,8 @@ def _trim_text_balanced(value: str, *, limit: int) -> str:
 
 
 def _is_text_like_content(content: Content) -> bool:
-    ctype = str(content.content_type or "").split(";", 1)[0].strip().lower()
-    filename = str(content.filename or "").lower()
-    suffix = Path(filename).suffix
-
-    if ctype.startswith("text/"):
-        return True
-    if ctype in _TEXT_FILE_MIME_TYPES:
-        return True
-    if suffix in _TEXT_FILE_EXTENSIONS:
-        return True
-    return False
+    inferred = _detect_file_format(content.content_type, content.filename)
+    return inferred in {"text", "html", "log"}
 
 
 def _decoded_text_quality(text: str) -> float:
@@ -1890,6 +2051,16 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
         .all()
     )
     if not records:
+        retention_info = apply_archive_retention_policy()
+        vector_info = index_meta()
+        if (
+            int(retention_info.get("deleted_count") or 0) > 0
+            and get_setting_bool("VECTOR_AUTO_REBUILD", default=True)
+        ):
+            try:
+                vector_info = build_index(max_docs=get_setting_int("VECTOR_MAX_DOCS", default=4000))
+            except Exception as exc:
+                current_app.logger.warning("vector rebuild failed after retention cleanup: %s", exc)
         job.status = "ready"
         job.finished_at = datetime.utcnow()
         job.error = "no public records"
@@ -1902,6 +2073,8 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
             "status": job.status,
             "error": job.error,
             "assets": [],
+            "retention": retention_info,
+            "vector": vector_info,
         }
 
     _archive_and_index_records(
@@ -2054,8 +2227,25 @@ def _archive_and_index_records(
     source: str,
     timezone_name: str,
 ) -> dict:
+    retention_info = apply_archive_retention_policy()
+    vector_info = index_meta()
+
     if not records:
-        return {"saved": False, "reason": "no_records"}
+        if (
+            scope == "public"
+            and int(retention_info.get("deleted_count") or 0) > 0
+            and get_setting_bool("VECTOR_AUTO_REBUILD", default=True)
+        ):
+            try:
+                vector_info = build_index(max_docs=get_setting_int("VECTOR_MAX_DOCS", default=4000))
+            except Exception as exc:
+                current_app.logger.warning("vector rebuild failed after retention cleanup: %s", exc)
+        return {
+            "saved": False,
+            "reason": "no_records",
+            "retention": retention_info,
+            "vector": vector_info,
+        }
 
     try:
         archive_info = save_daily_archive(
@@ -2067,10 +2257,23 @@ def _archive_and_index_records(
         )
     except Exception as exc:
         current_app.logger.warning("daily archive save failed: %s", exc)
-        return {"saved": False, "reason": str(exc)}
+        return {
+            "saved": False,
+            "reason": str(exc),
+            "retention": retention_info,
+            "vector": vector_info,
+        }
 
-    vector_info = index_meta()
-    if scope == "public" and archive_info.get("changed") and get_setting_bool("VECTOR_AUTO_REBUILD", default=True):
+    retention_after = archive_info.get("retention") or {}
+    if retention_after:
+        merged_days = sorted(
+            set((retention_info.get("deleted_days") or []) + (retention_after.get("deleted_days") or []))
+        )
+        retention_info = dict(retention_after)
+        retention_info["deleted_days"] = merged_days
+        retention_info["deleted_count"] = len(merged_days)
+    should_rebuild = bool(archive_info.get("changed")) or int(retention_info.get("deleted_count") or 0) > 0
+    if scope == "public" and should_rebuild and get_setting_bool("VECTOR_AUTO_REBUILD", default=True):
         try:
             vector_info = build_index(max_docs=get_setting_int("VECTOR_MAX_DOCS", default=4000))
         except Exception as exc:
@@ -2079,6 +2282,7 @@ def _archive_and_index_records(
     return {
         "saved": True,
         "archive": archive_info,
+        "retention": retention_info,
         "vector": vector_info,
     }
 

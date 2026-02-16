@@ -33,7 +33,7 @@ Benoss 是一个 Flask 单体应用，核心能力：
 - API 层：Flask Blueprint (`site`, `account`, `api`)
 - 数据层：SQLAlchemy + SQLite（默认）
 - 对象存储层：阿里云 OSS（可选）/本地目录兜底
-- AI 层：OpenAI 兼容接口（chat/embeddings/tts/images）
+- AI 层：OpenAI 兼容接口（chat/embeddings/tts/images/transcriptions）
 
 ---
 
@@ -54,7 +54,7 @@ app/
   utils/
     session_auth.py         # 登录态与鉴权装饰器
     runtime_settings.py     # 运行时配置定义、校验、持久化覆盖
-    local_archive.py        # 每日归档 JSON（schema_version=2）
+    local_archive.py        # 每日归档 JSON + 文件本体副本（schema_version=2）
     local_vector_db.py      # 本地向量索引构建/检索
     oss_paths.py            # OSS key 规则
     ids.py                  # UUID
@@ -66,6 +66,7 @@ data/
   oss-local/
   uploads/
   daily-archive/
+  daily-archive/_objects/
   vector-store/
 ```
 
@@ -208,9 +209,14 @@ data/
 - `user: {id, username}`
 - `content`:
   - 文本：`{kind: "text", text, media_type: "text"}`
-  - 文件：`{kind: "file", filename, content_type, media_type, size_bytes, sha256, oss_key}`
-- `extraction`: `{status, text, encoding, truncated, bytes_read, message}`
+  - 文件：`{kind: "file", filename, content_type, media_type, size_bytes, sha256, oss_key, archive_blob_relpath?, archive_blob_size_bytes?, archive_blob_sha256?, archive_blob_message?}`
+- `extraction`: `{status, text, encoding, truncated, bytes_read, message}`（常见 `status`：`ok`、`ok_ai_image`、`ok_ai_transcribe`、`inline_text`、`skipped_non_text`、`parse_unavailable`、`parse_failed`、`read_failed`、`decode_failed`、`empty_text`）
 - `text`（该记录用于下游检索/生成的归一化文本）
+
+补充：
+
+- 归档文件本体默认落地到 `data/daily-archive/_objects/YYYY-MM-DD/...`（可通过 `ARCHIVE_STORE_FILE_BLOB` 关闭）。
+- 归档写入后会立即执行保留策略清理（`ARCHIVE_RETENTION_DAYS`）。
 
 ---
 
@@ -279,6 +285,16 @@ AI provider 别名归一化：
 - TTS：`AI_TTS_PROVIDER`
 - 图片：`AI_IMAGE_PROVIDER`
 
+归档与保留关键配置：
+
+- `ARCHIVE_RETENTION_DAYS`：默认 `7`，`0` 表示永久保留（不自动删除归档 JSON 与 `_objects` 文件副本）。
+- `ARCHIVE_STORE_FILE_BLOB`：是否把文件记录本体归档到本地 `_objects`。
+- `AI_ARCHIVE_MULTIMODAL_PARSE`：是否对非文本文件调用模型做解析。
+- `AI_ARCHIVE_PARSE_MAX_CHARS`：归档解析结果最大保留字符数。
+- `AI_ARCHIVE_PARSE_TIMEOUT_SECONDS`：归档解析接口超时。
+- provider 专属转写模型键：`OPENAI_TRANSCRIBE_MODEL`、`CHAT_ANYWHERE_TRANSCRIBE_MODEL`、`ALIYUN_AI_TRANSCRIBE_MODEL`、`DEEPSEEK_TRANSCRIBE_MODEL`。
+- 管理员页在 `ARCHIVE_RETENTION_DAYS=0`（永久）时会显示容量风险提醒。
+
 能力分流执行顺序（`app/routes/api.py` + `app/utils/local_vector_db.py`）：
 
 1. 聊天能力：
@@ -292,6 +308,11 @@ AI provider 别名归一化：
    - model 顺序为：
      - 每个 provider 只读取自己的 `*_TTS_MODEL`/`*_IMAGE_MODEL`（排除 `unsupported/none` 等占位符）
    - 结论：只要主选 provider 及备用 provider 的 key/base_url 完整，TTS/图片就可能在备用 provider 上成功。
+4. 归档多模态解析：
+   - provider 跟随 `AI_CHAT_PROVIDER`（使用该 provider 的 key/base_url/chat model）。
+   - 图片解析走 `/chat/completions`（视觉输入）。
+   - 音频/视频解析走 `/audio/transcriptions`，模型取该 provider 的 `*_TRANSCRIBE_MODEL`。
+   - 若转写模型填 `unsupported`（或占位符），对应 provider 的音视频解析会跳过并标记 `parse_unavailable`。
 
 ---
 
@@ -331,6 +352,7 @@ AI provider 别名归一化：
 - `put_object_from_file`
 - `put_object_bytes`
 - `get_object_bytes`
+- `get_object_to_file`
 - `delete_object`
 - `copy_object`
 - `sign_get_url`
@@ -516,12 +538,15 @@ AI 生成链路：
 
 1. 以 `day + timezone` 创建或更新 `DailyDigestJob`，置 `running`
 2. 查询该本地日窗口内公开记录（按 timezone 转换为 UTC 边界）
-3. 归档并按需重建向量索引（`_archive_and_index_records`）
-4. 准备 AI 输入文本和图片附件 URL
-5. 检查是否已有同日 `ready` 资产（`force=False` 时复用）
-6. 分别生成 `blog_html/podcast_audio/poster_image`
-7. 根据成功数把任务状态设为 `ready/partial/failed`
-8. 写回资产关联 ID 和错误信息
+3. 先执行归档保留策略清理（会删除过期 `daily-archive/*.json` 与 `_objects/<day>/`）
+4. 保存当日公开记录归档；若归档有变化或清理删了历史天，会按需重建向量索引（`_archive_and_index_records`）
+5. 准备 AI 输入文本和图片附件 URL
+6. 检查是否已有同日 `ready` 资产（`force=False` 时复用）
+7. 分别生成 `blog_html/podcast_audio/poster_image`
+8. 根据成功数把任务状态设为 `ready/partial/failed`
+9. 写回资产关联 ID 和错误信息
+
+无公开记录时也会执行一次保留清理；若清理删除了历史天且 `VECTOR_AUTO_REBUILD=1`，仍会触发向量重建。
 
 ---
 
@@ -533,10 +558,11 @@ AI 生成链路：
 
 1. 计算 digest timezone 下的“今天”
 2. 查询今天公开记录
-3. 保存本地归档并触发可选向量自动重建
-4. 返回向量索引状态（必要时自动 `ensure_index`）
-5. 根据配置尝试自动补齐今日日报资产（可限流重试）
-6. 返回 `public_records + today_assets + digest_build + ai + archive + vector`
+3. 执行归档保留策略清理（按 `ARCHIVE_RETENTION_DAYS`）
+4. 保存今天公开记录归档；若归档变化或清理删除历史天，则在 `VECTOR_AUTO_REBUILD=1` 时重建向量索引
+5. 返回向量索引状态（必要时自动 `ensure_index`）
+6. 根据配置尝试自动补齐今日日报资产（可限流重试）
+7. 返回 `public_records + today_assets + digest_build + ai + archive + vector`（`archive` 内含 `retention` 结果与删除天数）
 
 这是前端 Home 页和自动学习/管理流程的核心汇总接口。
 
@@ -648,11 +674,20 @@ benoss-sync pull --username <user> --output ./pulled_records
   - 先检查生效配置（含 AppSetting 覆盖）：`AI_EMBEDDING_PROVIDER` 与该 provider 的 `*_EMBEDDING_MODEL`
   - 该报错通常表示“模型名与当前 provider 不匹配”，不是本地向量库损坏
   - 修正模型后执行 `python -m flask --app app vector-build --force` 重新构建
+- `transcription failed (...)` / 音视频解析异常：
+  - 先检查 `AI_CHAT_PROVIDER` 与该 provider 的 `*_TRANSCRIBE_MODEL`（如 `OPENAI_TRANSCRIBE_MODEL`）
+  - 若 provider 不支持转写，可把该 `*_TRANSCRIBE_MODEL` 设为 `unsupported`，系统会跳过音视频转写并保留文件本体归档
 - Home 没看到手动生成资产：
   - Home `today_assets` 仅展示 `public + is_daily_digest=true + source_day=今天` 的资产
   - 手动脚本默认常用 `visibility=private`，不会出现在 Home 卡片
 - `content unavailable` / `asset unavailable`：
   - 检查 `oss_key`、OSS 凭据或本地 `data/oss-local` 文件
+- 磁盘占用持续增长：
+  - 检查 `ARCHIVE_RETENTION_DAYS` 是否被设为 `0`（永久保留）
+  - 检查 `ARCHIVE_STORE_FILE_BLOB` 是否开启（开启后会把文件本体落地到 `data/daily-archive/_objects`）
+- OSS 里有历史文件但向量检索不到：
+  - 向量库只基于本地归档 JSON，不会直接扫描 OSS
+  - 需先补齐对应日期归档（例如触发该日 digest/home 归档流程）再重建向量
 - Digest 长期 `partial/failed`：
   - 查看 `daily_digest_job.error`
   - 若错误出现在 `chat/completions` 阶段，博客/播客/海报都会受影响（脚本/提示词前置失败）
@@ -675,6 +710,10 @@ benoss-sync pull --username <user> --output ./pulled_records
 - 默认 DB：`data/benoss.sqlite`
 - 默认最大上传：1GB（`MAX_CONTENT_LENGTH`）
 - 所有时间归档按 `DIGEST_TIMEZONE` 切日
+- 默认归档保留：7 天（`ARCHIVE_RETENTION_DAYS=7`）
+- `ARCHIVE_RETENTION_DAYS=0` 表示永久保留，归档 JSON 与 `_objects` 文件副本不会被自动清理
+- 归档文件本体默认保存到 `data/daily-archive/_objects`（`ARCHIVE_STORE_FILE_BLOB=1`）
 - 归档是事实来源之一，向量索引由归档构建，不直接扫数据库
+- 非文本归档解析跟随 `AI_CHAT_PROVIDER`，音视频转写模型按 provider 的 `*_TRANSCRIBE_MODEL` 读取
 - Home 页面是自动化入口：会触发归档、向量状态检查、可选日报自动补齐
 - Home 的 `today_assets` 不等于“今天新生成的所有资产”，只展示公开且标记为日报产物的资产
