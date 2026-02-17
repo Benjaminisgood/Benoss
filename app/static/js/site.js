@@ -130,6 +130,69 @@
     return root.querySelector(selector);
   }
 
+  function markFeedbackEl(el, tone = "neutral") {
+    if (!(el instanceof HTMLElement)) {
+      return;
+    }
+    el.classList.add("feedback-inline");
+    el.dataset.tone = String(tone || "neutral");
+  }
+
+  function setFeedback(el, text, tone = "neutral") {
+    if (!(el instanceof HTMLElement)) {
+      return;
+    }
+    markFeedbackEl(el, tone);
+    el.textContent = String(text || "");
+  }
+
+  function setButtonBusy(button, busy, options = {}) {
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+    const isBusy = Boolean(busy);
+    const busyText = String(options.busyText || "处理中...");
+    if (isBusy) {
+      if (!button.dataset.busyLabel) {
+        button.dataset.busyLabel = button.textContent || "";
+      }
+      button.classList.add("is-busy");
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      if (options.keepLabel !== true) {
+        button.textContent = busyText;
+      }
+      return;
+    }
+    button.classList.remove("is-busy");
+    button.removeAttribute("aria-busy");
+    if (options.keepLabel !== true && button.dataset.busyLabel) {
+      button.textContent = button.dataset.busyLabel;
+    }
+    if (!options.keepDisabled) {
+      button.disabled = false;
+    }
+    delete button.dataset.busyLabel;
+  }
+
+  function initStatusDecorators() {
+    const ids = [
+      "quick-publish-msg",
+      "vector-status",
+      "archive-status",
+      "digest-status",
+      "echoes-status",
+      "notice-render-meta",
+      "admin-settings-status",
+    ];
+    ids.forEach((id) => {
+      const el = qs(`#${id}`);
+      if (el) {
+        markFeedbackEl(el, "neutral");
+      }
+    });
+  }
+
   function setHeaderMenuOpen(value) {
     if (!siteHeader || !siteNavToggle || !siteHeaderRight) {
       return;
