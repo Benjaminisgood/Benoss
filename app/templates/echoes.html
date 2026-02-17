@@ -1,10 +1,18 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card echoes-shell" data-reveal>
+<section class="hero-card echoes-hero" data-reveal>
+  <div>
+    <p class="muted">Public Timeline</p>
+    <h1>Echoes 公开内容流</h1>
+    <p class="muted">聚合公开记录与 AI 资产，支持按类型筛选并持续滚动浏览。</p>
+  </div>
+</section>
+
+<section class="card echoes-shell" data-reveal="80">
   <div class="section-head echoes-head">
     <div>
-      <h2>Echoes</h2>
-      <p class="muted echoes-subtitle">公开记录与 AI 资产流</p>
+      <h2>筛选与内容区</h2>
+      <p class="muted echoes-subtitle">选择类型后，内容区会自动刷新并继续向下加载。</p>
     </div>
     <div class="echoes-meta">
       <strong id="echoes-count">已显示 0 条</strong>

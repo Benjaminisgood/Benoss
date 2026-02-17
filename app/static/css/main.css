@@ -2857,6 +2857,10 @@ button.echoes-chip.active {
   padding: 0.2rem 0.58rem;
 }
 
+.feedback-inline[hidden] {
+  display: none !important;
+}
+
 .feedback-inline::before {
   content: "";
   width: 0.42rem;
