@@ -75,9 +75,24 @@
     visibleCount: 0,
     observer: null,
     pageSize: 24,
+    density: "cozy",
   };
   const homePanelStorageKey = "benoss.home.active_panel";
+  const echoesDensityStorageKey = "benoss.echoes.density";
+  const noticeReaderStorageKey = "benoss.notice.reader";
   const validVisibilityValues = new Set(["public", "private"]);
+  const validEchoesDensity = new Set(["cozy", "compact"]);
+  const defaultNoticeReaderPrefs = Object.freeze({
+    font: "md",
+    width: "normal",
+    media: "expand",
+  });
+  const validNoticeFontValues = new Set(["md", "lg"]);
+  const validNoticeWidthValues = new Set(["normal", "wide"]);
+  const validNoticeMediaValues = new Set(["expand", "collapse"]);
+  let noticeReaderPrefs = {
+    ...defaultNoticeReaderPrefs,
+  };
   const dialogState = {
     record: null,
     mode: "view",
@@ -211,6 +226,133 @@
     );
 
     revealBlocks.forEach((block) => observer.observe(block));
+  }
+
+  function normalizeEchoesDensity(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    return validEchoesDensity.has(normalized) ? normalized : "cozy";
+  }
+
+  function readStoredEchoesDensity() {
+    try {
+      return normalizeEchoesDensity(window.localStorage.getItem(echoesDensityStorageKey));
+    } catch (_error) {
+      return "cozy";
+    }
+  }
+
+  function saveEchoesDensity(value) {
+    try {
+      window.localStorage.setItem(echoesDensityStorageKey, normalizeEchoesDensity(value));
+    } catch (_error) {
+      // Ignore storage failures.
+    }
+  }
+
+  function applyEchoesDensity(value, opts = {}) {
+    const mode = normalizeEchoesDensity(value);
+    echoesState.density = mode;
+
+    const grid = qs("#echoes-grid");
+    if (grid) {
+      grid.classList.toggle("is-compact", mode === "compact");
+    }
+
+    const buttons = document.querySelectorAll("[data-echoes-density]");
+    buttons.forEach((button) => {
+      if (!(button instanceof HTMLButtonElement)) {
+        return;
+      }
+      const isActive = normalizeEchoesDensity(button.dataset.echoesDensity) === mode;
+      button.classList.toggle("is-active", isActive);
+      button.setAttribute("aria-pressed", isActive ? "true" : "false");
+    });
+
+    if (opts.persist !== false) {
+      saveEchoesDensity(mode);
+    }
+  }
+
+  function normalizeNoticeReaderPrefs(value) {
+    const raw = value && typeof value === "object" ? value : {};
+    const font = validNoticeFontValues.has(String(raw.font || "").trim().toLowerCase())
+      ? String(raw.font).trim().toLowerCase()
+      : defaultNoticeReaderPrefs.font;
+    const width = validNoticeWidthValues.has(String(raw.width || "").trim().toLowerCase())
+      ? String(raw.width).trim().toLowerCase()
+      : defaultNoticeReaderPrefs.width;
+    const media = validNoticeMediaValues.has(String(raw.media || "").trim().toLowerCase())
+      ? String(raw.media).trim().toLowerCase()
+      : defaultNoticeReaderPrefs.media;
+    return { font, width, media };
+  }
+
+  function readStoredNoticeReaderPrefs() {
+    try {
+      const raw = window.localStorage.getItem(noticeReaderStorageKey);
+      if (!raw) {
+        return { ...defaultNoticeReaderPrefs };
+      }
+      const parsed = JSON.parse(raw);
+      return normalizeNoticeReaderPrefs(parsed);
+    } catch (_error) {
+      return { ...defaultNoticeReaderPrefs };
+    }
+  }
+
+  function saveNoticeReaderPrefs(value) {
+    try {
+      const normalized = normalizeNoticeReaderPrefs(value);
+      window.localStorage.setItem(noticeReaderStorageKey, JSON.stringify(normalized));
+    } catch (_error) {
+      // Ignore storage failures.
+    }
+  }
+
+  function applyNoticeReaderPrefs(value, opts = {}) {
+    noticeReaderPrefs = normalizeNoticeReaderPrefs(value);
+
+    const panel = qs("#notice-render-panel");
+    const html = qs("#notice-render-html");
+    if (panel && html) {
+      panel.classList.toggle("notice-font-lg", noticeReaderPrefs.font === "lg");
+      panel.classList.toggle("notice-width-wide", noticeReaderPrefs.width === "wide");
+      panel.classList.toggle("notice-media-collapsed", noticeReaderPrefs.media === "collapse");
+    }
+
+    const fontButtons = document.querySelectorAll("[data-notice-font]");
+    fontButtons.forEach((button) => {
+      if (!(button instanceof HTMLButtonElement)) {
+        return;
+      }
+      const active = String(button.dataset.noticeFont || "") === noticeReaderPrefs.font;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+
+    const widthButtons = document.querySelectorAll("[data-notice-width]");
+    widthButtons.forEach((button) => {
+      if (!(button instanceof HTMLButtonElement)) {
+        return;
+      }
+      const active = String(button.dataset.noticeWidth || "") === noticeReaderPrefs.width;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+
+    const mediaButtons = document.querySelectorAll("[data-notice-media]");
+    mediaButtons.forEach((button) => {
+      if (!(button instanceof HTMLButtonElement)) {
+        return;
+      }
+      const active = String(button.dataset.noticeMedia || "") === noticeReaderPrefs.media;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+
+    if (opts.persist !== false) {
+      saveNoticeReaderPrefs(noticeReaderPrefs);
+    }
   }
 
   function formatTime(value) {
@@ -1522,32 +1664,69 @@
     const escapedDates = dates.map((day) => escapeHtml(day));
     const escapedTag = escapeHtml(tagValue || "");
     let maxCount = 0;
+    let totalCount = 0;
+    let activeCells = 0;
+    const dayTotals = Array(dates.length).fill(0);
+    const peak = {
+      count: 0,
+      user: "-",
+      day: "-",
+    };
+
+    if (!dates.length || !users.length) {
+      wrap.innerHTML = `<p class="muted">暂无可展示的 Board 数据</p>`;
+      return;
+    }
 
     const rows = users.map((user) => {
       const userCounts = [];
       const rowMatrix = matrix[String(user.id)] || {};
-      for (const day of dates) {
+      let userTotal = 0;
+      dates.forEach((day, dayIndex) => {
         const count = Number(rowMatrix[day] || 0) || 0;
         userCounts.push(count);
+        userTotal += count;
+        totalCount += count;
+        if (count > 0) {
+          activeCells += 1;
+        }
         if (count > maxCount) {
           maxCount = count;
         }
-      }
+        dayTotals[dayIndex] += count;
+        if (count > peak.count) {
+          peak.count = count;
+          peak.user = user.username || "-";
+          peak.day = day;
+        }
+      });
       return {
         user,
         userCounts,
+        userTotal,
       };
     });
+    const activeUsers = rows.filter((row) => row.userTotal > 0).length;
+    const totalCells = dates.length * users.length;
+    const activityRate = totalCells > 0 ? Math.round((activeCells / totalCells) * 100) : 0;
 
     const headHtml = dates
       .map((day, index) => {
         const escapedDay = escapedDates[index];
-        return `<th class="clickable" data-board-action="day" data-day="${escapedDay}" data-tag="${escapedTag}">${escapedDay}</th>`;
+        const dayTotal = dayTotals[index] || 0;
+        return `
+          <th class="clickable board-day-head-cell" data-board-action="day" data-day="${escapedDay}" data-tag="${escapedTag}" title="查看 ${escapedDay} 的公开记录">
+            <span class="board-day-label">${escapedDay}</span>
+            <span class="board-day-total">总 ${dayTotal}</span>
+          </th>
+        `;
       })
       .join("");
 
     const bodyHtml = rows
-      .map(({ user, userCounts }) => {
+      .map(({ user, userCounts, userTotal }) => {
+        const username = String(user.username || `用户#${user.id}`);
+        const escapedUsername = escapeHtml(username);
         const cells = userCounts
           .map((count, index) => {
             const escapedDay = escapedDates[index];
@@ -1562,16 +1741,81 @@
                 level = 2;
               } else if (ratio > 0) {
                 level = 1;
+                }
               }
-            }
-            return `<td class="clickable heat-${level}" data-board-action="cell" data-user-id="${user.id}" data-day="${escapedDay}" data-tag="${escapedTag}">${count}</td>`;
+            const title = `${username} 在 ${dates[index]} 有 ${count} 条记录`;
+            return `
+              <td
+                class="clickable heat-${level} ${count === 0 ? "is-zero" : "is-active"}"
+                data-board-action="cell"
+                data-user-id="${user.id}"
+                data-day="${escapedDay}"
+                data-tag="${escapedTag}"
+                data-count="${count}"
+                title="${escapeHtml(title)}"
+                aria-label="${escapeHtml(title)}"
+              >
+                <span class="board-cell-count">${count}</span>
+              </td>
+            `;
           })
           .join("");
-        return `<tr><th class="clickable" data-board-action="user" data-user-id="${user.id}" data-tag="${escapedTag}">${escapeHtml(user.username)}</th>${cells}</tr>`;
+        return `
+          <tr>
+            <th class="clickable board-sticky-col board-user-head" data-board-action="user" data-user-id="${user.id}" data-tag="${escapedTag}" title="查看 ${escapedUsername} 的可见记录">
+              <span class="board-row-user">${escapedUsername}</span>
+              <span class="board-row-total">总 ${userTotal}</span>
+            </th>
+            ${cells}
+          </tr>
+        `;
       })
       .join("");
 
-    wrap.innerHTML = `<table class="board-table"><thead><tr><th>用户 \\ 日期</th>${headHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>`;
+    wrap.innerHTML = `
+      <div class="board-insight">
+        <article class="board-insight-item">
+          <span>总记录数</span>
+          <strong>${totalCount}</strong>
+        </article>
+        <article class="board-insight-item">
+          <span>活跃用户</span>
+          <strong>${activeUsers}/${users.length}</strong>
+        </article>
+        <article class="board-insight-item">
+          <span>活跃格子率</span>
+          <strong>${activityRate}%</strong>
+        </article>
+        <article class="board-insight-item">
+          <span>峰值单元</span>
+          <strong>${escapeHtml(peak.user)} · ${escapeHtml(peak.day)} · ${peak.count}</strong>
+        </article>
+      </div>
+      <div class="board-legend" aria-label="热力图图例">
+        <span class="board-legend-label">热力强度</span>
+        <span class="board-legend-chip"><i class="board-legend-swatch level-0"></i>0</span>
+        <span class="board-legend-chip"><i class="board-legend-swatch level-1"></i>低</span>
+        <span class="board-legend-chip"><i class="board-legend-swatch level-2"></i>中</span>
+        <span class="board-legend-chip"><i class="board-legend-swatch level-3"></i>高</span>
+        <span class="board-legend-chip"><i class="board-legend-swatch level-4"></i>峰值</span>
+        ${
+          escapedTag
+            ? `<span class="board-legend-tag">当前标签: #${escapedTag}</span>`
+            : `<span class="board-legend-tag">当前标签: 全部</span>`
+        }
+      </div>
+      <div class="board-table-scroll">
+        <table class="board-table" aria-label="学习记录热力表">
+          <thead>
+            <tr>
+              <th class="board-corner board-sticky-col">用户 \\ 日期</th>
+              ${headHtml}
+            </tr>
+          </thead>
+          <tbody>${bodyHtml}</tbody>
+        </table>
+      </div>
+    `;
   }
 
   async function loadBoardSide(title, path) {
@@ -2112,6 +2356,7 @@
   function bindEchoesFilters() {
     const chipsWrap = qs("#echoes-type-chips");
     const refreshBtn = qs("#echoes-refresh-btn");
+    const densityWrap = qs(".echoes-density-switch");
 
     if (chipsWrap) {
       chipsWrap.addEventListener("click", (event) => {
@@ -2133,6 +2378,23 @@
       });
     }
 
+    if (densityWrap) {
+      densityWrap.addEventListener("click", (event) => {
+        if (!(event.target instanceof Element)) {
+          return;
+        }
+        const button = event.target.closest("button[data-echoes-density]");
+        if (!button) {
+          return;
+        }
+        const nextMode = normalizeEchoesDensity(button.dataset.echoesDensity || "");
+        if (nextMode === echoesState.density) {
+          return;
+        }
+        applyEchoesDensity(nextMode);
+      });
+    }
+
     if (refreshBtn) {
       refreshBtn.addEventListener("click", () => {
         loadEchoes({ reset: true }).catch((error) => window.alert(error.message));
@@ -2141,6 +2403,7 @@
   }
 
   async function initEchoes() {
+    applyEchoesDensity(readStoredEchoesDensity(), { persist: false });
     setActiveEchoesType(echoesState.fileType);
     setEchoesCount();
     bindEchoesFilters();
@@ -2157,6 +2420,67 @@
       tag: formData.get("tag") || "",
       order: formData.get("order") || "asc",
     };
+  }
+
+  function initNoticeReaderToolbar() {
+    const toolbar = qs("#notice-reader-toolbar");
+    if (!toolbar) {
+      return;
+    }
+
+    applyNoticeReaderPrefs(readStoredNoticeReaderPrefs(), { persist: false });
+
+    toolbar.addEventListener("click", (event) => {
+      if (!(event.target instanceof Element)) {
+        return;
+      }
+
+      const fontBtn = event.target.closest("button[data-notice-font]");
+      if (fontBtn) {
+        const nextFont = String(fontBtn.getAttribute("data-notice-font") || "");
+        applyNoticeReaderPrefs(
+          {
+            ...noticeReaderPrefs,
+            font: nextFont,
+          },
+          { persist: true },
+        );
+        return;
+      }
+
+      const widthBtn = event.target.closest("button[data-notice-width]");
+      if (widthBtn) {
+        const nextWidth = String(widthBtn.getAttribute("data-notice-width") || "");
+        applyNoticeReaderPrefs(
+          {
+            ...noticeReaderPrefs,
+            width: nextWidth,
+          },
+          { persist: true },
+        );
+        return;
+      }
+
+      const mediaBtn = event.target.closest("button[data-notice-media]");
+      if (mediaBtn) {
+        const nextMedia = String(mediaBtn.getAttribute("data-notice-media") || "");
+        applyNoticeReaderPrefs(
+          {
+            ...noticeReaderPrefs,
+            media: nextMedia,
+          },
+          { persist: true },
+        );
+        return;
+      }
+
+      if (event.target.closest("#notice-reader-top")) {
+        const panel = qs("#notice-render-panel");
+        if (panel) {
+          panel.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+      }
+    });
   }
 
   function setNoticeResultsVisible(visible) {
@@ -2195,10 +2519,12 @@
     if (htmlEl) {
       htmlEl.innerHTML = data.rendered_html || "";
     }
+    applyNoticeReaderPrefs(noticeReaderPrefs, { persist: false });
     setNoticeResultsVisible(true);
   }
 
   async function initNotice() {
+    initNoticeReaderToolbar();
     const users = await getUsers();
     populateSelect(
       qs("#notice-user"),

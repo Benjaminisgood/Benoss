@@ -26,7 +26,13 @@
       <button class="echoes-chip" type="button" data-file-type="document" aria-pressed="false">文档</button>
       <button class="echoes-chip" type="button" data-file-type="file" aria-pressed="false">文件</button>
     </div>
-    <button id="echoes-refresh-btn" class="secondary" type="button">刷新</button>
+    <div class="echoes-toolbar-actions">
+      <div class="echoes-density-switch" role="group" aria-label="卡片密度">
+        <button id="echoes-density-cozy" type="button" class="secondary" data-echoes-density="cozy" aria-pressed="true">舒展</button>
+        <button id="echoes-density-compact" type="button" class="secondary" data-echoes-density="compact" aria-pressed="false">紧凑</button>
+      </div>
+      <button id="echoes-refresh-btn" class="secondary" type="button">刷新</button>
+    </div>
   </div>
 
   <div id="echoes-grid" class="echoes-grid"></div>
