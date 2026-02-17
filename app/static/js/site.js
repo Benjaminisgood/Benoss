@@ -73,6 +73,35 @@
     pageSize: 24,
   };
   const homePanelStorageKey = "benoss.home.active_panel";
+  const validVisibilityValues = new Set(["public", "private"]);
+  const dialogState = {
+    record: null,
+    mode: "view",
+    saving: false,
+  };
+
+  function normalizeVisibility(value, fallback = "private") {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (validVisibilityValues.has(normalized)) {
+      return normalized;
+    }
+    const fallbackValue = String(fallback || "private").trim().toLowerCase();
+    return validVisibilityValues.has(fallbackValue) ? fallbackValue : "private";
+  }
+
+  function formatFileSize(sizeBytes) {
+    const value = Number(sizeBytes || 0);
+    if (value < 1024) {
+      return `${value} B`;
+    }
+    if (value < 1024 * 1024) {
+      return `${(value / 1024).toFixed(1)} KB`;
+    }
+    if (value < 1024 * 1024 * 1024) {
+      return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+    }
+    return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
 
   function escapeHtml(value) {
     return String(value ?? "").replace(htmlEscapePattern, (char) => htmlEscapeMap[char]);
@@ -219,6 +248,137 @@
       .join("");
   }
 
+  function dialogRecordMeta(record) {
+    const visibilityText = normalizeVisibility(record.visibility, "private") === "public" ? "公开" : "私密";
+    return `用户: ${escapeHtml(record.user?.username || "")} | ${escapeHtml(formatTime(record.created_at))} | ${visibilityText}`;
+  }
+
+  function currentFileMetaHtml(content) {
+    if (!content || content.kind !== "file") {
+      return "<p class=\"muted\">当前记录不是文件类型。</p>";
+    }
+    const sizeText = formatFileSize(content.size_bytes);
+    return `
+      <div class="record-edit-file-current">
+        <p><strong>${escapeHtml(content.filename || "未命名文件")}</strong></p>
+        <p class="muted">${escapeHtml(content.content_type || "application/octet-stream")} | ${escapeHtml(sizeText)}</p>
+      </div>
+    `;
+  }
+
+  function ensureDialogVisible() {
+    if (dialog && !dialog.open) {
+      dialog.showModal();
+    }
+  }
+
+  async function fetchRecord(recordId, includeComments = true) {
+    const flag = includeComments ? "1" : "0";
+    const data = await api(`/api/records/${recordId}?include_comments=${flag}`);
+    return data.record;
+  }
+
+  function renderRecordDialogView(record) {
+    dialogState.record = record;
+    dialogState.mode = "view";
+
+    dialogTitle.textContent = `记录 #${record.record_no}`;
+    const actions = [];
+    if (record.can_edit) {
+      actions.push(`<button class="bubble" type="button" data-dialog-action="edit-record" data-record-id="${record.id}">编辑这条记录</button>`);
+    }
+    if (record.can_comment) {
+      actions.push(`<button class="bubble" type="button" data-dialog-action="comment-record" data-record-id="${record.id}">评论这条记录</button>`);
+    }
+
+    dialogBody.innerHTML = `
+      <div class="dialog-content">
+        <p class="muted">${dialogRecordMeta(record)}</p>
+        <p>${escapeHtml(record.preview || "(无预览内容)")}</p>
+        <div class="tag-line">${tagHtml(record.tags)}</div>
+        <div class="action-line">${actions.join("")}</div>
+        <section>
+          <h4>具体内容</h4>
+          ${contentHtml(record.content)}
+        </section>
+        <section>
+          <h4>评论</h4>
+          ${commentsHtml(record.comments)}
+        </section>
+      </div>
+    `;
+  }
+
+  function renderRecordDialogEditor(record) {
+    dialogState.record = record;
+    dialogState.mode = "edit";
+
+    const tagsValue = Array.isArray(record.tags) ? record.tags.join(", ") : "";
+    const visibilityValue = normalizeVisibility(record.visibility, "private");
+    const formatValue = String(record.format || "").trim();
+    const isTextRecord = record.content?.kind === "text";
+    const textValue = isTextRecord ? String(record.content?.text || "") : "";
+    const fileEditorSection = isTextRecord
+      ? ""
+      : `
+        <section class="record-edit-file-card">
+          <h4>文件替换</h4>
+          ${currentFileMetaHtml(record.content)}
+          <div class="record-edit-preview">
+            ${contentHtml(record.content)}
+          </div>
+          <label>
+            上传新文件（可选）
+            <input type="file" name="file" data-record-edit-file-input>
+          </label>
+          <p class="record-edit-file-hint muted" data-record-edit-file-hint>未选择新文件，将保留当前文件。</p>
+        </section>
+      `;
+
+    dialogTitle.textContent = `编辑记录 #${record.record_no}`;
+    dialogBody.innerHTML = `
+      <div class="dialog-content">
+        <form class="record-edit-form stack-form" data-record-edit-form data-record-id="${record.id}">
+          <p class="muted">${dialogRecordMeta(record)}</p>
+          <div class="record-edit-grid">
+            <label>
+              可见性
+              <select name="visibility">
+                <option value="private" ${visibilityValue === "private" ? "selected" : ""}>私密</option>
+                <option value="public" ${visibilityValue === "public" ? "selected" : ""}>公开</option>
+              </select>
+            </label>
+            <label>
+              格式
+              <input type="text" name="format" value="${escapeHtml(formatValue)}" placeholder="留空将自动推断">
+            </label>
+          </div>
+          <label>
+            标签（逗号分隔）
+            <input type="text" name="tags" value="${escapeHtml(tagsValue)}" placeholder="math,python,reading">
+          </label>
+          ${
+            isTextRecord
+              ? `
+              <label>
+                文本内容
+                <textarea name="text" rows="8" required>${escapeHtml(textValue)}</textarea>
+              </label>
+              <p class="muted">文本记录可直接改写内容。</p>
+            `
+              : "<p class=\"muted\">文件记录可修改标签/可见性/格式，或上传新文件进行替换。</p>"
+          }
+          ${fileEditorSection}
+          <p class="record-edit-feedback muted" data-record-edit-feedback></p>
+          <div class="action-line">
+            <button type="submit" data-record-edit-submit>保存修改</button>
+            <button class="bubble" type="button" data-dialog-action="view-record" data-record-id="${record.id}">返回详情</button>
+          </div>
+        </form>
+      </div>
+    `;
+  }
+
   function recordCardHtml(record, opts = {}) {
     const showUser = opts.showUser !== false;
 
@@ -294,35 +454,9 @@
 
   async function openRecordDialog(recordId) {
     try {
-      const data = await api(`/api/records/${recordId}?include_comments=1`);
-      const record = data.record;
-
-      dialogTitle.textContent = `记录 #${record.record_no}`;
-      const primaryAction = record.can_edit
-        ? `<button class="bubble" type="button" data-dialog-action="edit-record" data-record-id="${record.id}">编辑这条记录</button>`
-        : (record.can_comment
-            ? `<button class="bubble" type="button" data-dialog-action="comment-record" data-record-id="${record.id}">评论这条记录</button>`
-            : "");
-      dialogBody.innerHTML = `
-        <div class="dialog-content">
-          <p class="muted">用户: ${escapeHtml(record.user?.username || "")} | ${escapeHtml(formatTime(record.created_at))} | ${escapeHtml(record.visibility)}</p>
-          <p>${escapeHtml(record.preview || "")}</p>
-          <div class="tag-line">${tagHtml(record.tags)}</div>
-          <div class="action-line">${primaryAction}</div>
-          <section>
-            <h4>具体内容</h4>
-            ${contentHtml(record.content)}
-          </section>
-          <section>
-            <h4>评论</h4>
-            ${commentsHtml(record.comments)}
-          </section>
-        </div>
-      `;
-
-      if (dialog && !dialog.open) {
-        dialog.showModal();
-      }
+      const record = await fetchRecord(recordId, true);
+      renderRecordDialogView(record);
+      ensureDialogVisible();
     } catch (error) {
       window.alert(error.message);
     }
@@ -330,39 +464,10 @@
 
   async function editRecord(recordId) {
     try {
-      const data = await api(`/api/records/${recordId}`);
-      const record = data.record;
-      const payload = {};
-
-      const tagsCurrent = Array.isArray(record.tags) ? record.tags.join(",") : "";
-      const tagsNext = window.prompt("标签（逗号分隔）", tagsCurrent);
-      if (tagsNext === null) {
-        return;
-      }
-      payload.tags = tagsNext;
-
-      const visibilityNext = window.prompt("可见性（public/private）", record.visibility || "private");
-      if (visibilityNext === null) {
-        return;
-      }
-      payload.visibility = visibilityNext;
-
-      if (record.content?.kind === "text") {
-        const textNext = window.prompt("编辑文本内容", record.content.text || "");
-        if (textNext === null) {
-          return;
-        }
-        payload.text = textNext;
-      }
-
-      await api(`/api/records/${recordId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      window.alert("记录已更新");
-      await refreshCurrentPageData();
+      const cachedRecord = dialogState.record && Number(dialogState.record.id) === recordId ? dialogState.record : null;
+      const record = cachedRecord || (await fetchRecord(recordId, true));
+      renderRecordDialogEditor(record);
+      ensureDialogVisible();
     } catch (error) {
       window.alert(error.message);
     }
@@ -600,122 +705,624 @@
     const vectorRebuildBtn = qs("#vector-rebuild-btn");
 
     if (form) {
-      const formatEl = qs("#quick-publish-format", form);
-      const textWrap = qs("#quick-publish-text-wrap", form);
-      const fileWrap = qs("#quick-publish-file-wrap", form);
+      const visibilityInput = qs('select[name="visibility"]', form);
+      const tagsInput = qs('input[name="tags"]', form);
       const textInput = qs('textarea[name="text"]', form);
       const fileInput = qs("#quick-publish-file-input", form);
-      const fileLabel = qs("#quick-publish-file-label", form);
+      const folderInput = qs("#quick-publish-folder-input", form);
+      const dropzone = qs("#quick-publish-dropzone", form);
+      const filePickerBtn = qs("#quick-publish-file-btn", form);
+      const folderPickerBtn = qs("#quick-publish-folder-btn", form);
       const fileHint = qs("#quick-publish-file-hint", form);
+      const fileList = qs("#quick-publish-file-list", form);
+      const submitBtn = qs('button[type="submit"]', form);
+      const progressWrap = qs("#quick-publish-progress-wrap", form);
+      const progressTextEl = qs("#quick-publish-progress-text", form);
+      const progressFillEl = qs("#quick-publish-progress-fill", form);
+      const progressBarEl = qs(".quick-publish-progress-bar", form);
+      const retryFailedBtn = qs("#quick-publish-retry-failed-btn", form);
 
-      const formatConfig = {
-        text: {
-          useFile: false,
-          fileLabel: "",
-          fileHint: "",
-          accept: "",
-        },
-        html: {
-          useFile: true,
-          fileLabel: "上传网页文件",
-          fileHint: "支持 html/htm/xhtml 网页文件",
-          accept: ".html,.htm,.xhtml,text/html,application/xhtml+xml",
-        },
-        image: {
-          useFile: true,
-          fileLabel: "上传图片",
-          fileHint: "支持 png/jpg/webp/gif 等图片类型",
-          accept: "image/*",
-        },
-        audio: {
-          useFile: true,
-          fileLabel: "上传音频",
-          fileHint: "支持 mp3/wav/m4a/aac/ogg/flac 等音频类型",
-          accept: "audio/*",
-        },
-        video: {
-          useFile: true,
-          fileLabel: "上传视频",
-          fileHint: "支持 mp4/mov/webm/mkv 等视频类型",
-          accept: "video/*",
-        },
-        document: {
-          useFile: true,
-          fileLabel: "上传文档",
-          fileHint: "支持 pdf/doc/docx/ppt/xls/txt/md/csv/json 等文档",
-          accept: ".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.csv,.json",
-        },
-        file: {
-          useFile: true,
-          fileLabel: "上传文件",
-          fileHint: "可上传任意文件类型",
-          accept: "",
-        },
+      const uploadStatusLabel = {
+        pending: "待发布",
+        uploading: "上传中",
+        success: "已成功",
+        failed: "失败",
+      };
+      const textTask = {
+        status: "idle",
+        error: "",
+        attempts: 0,
       };
 
-      const applyQuickPublishFormat = () => {
-        const formatValue = String(formatEl?.value || "text").trim().toLowerCase();
-        const config = formatConfig[formatValue] || formatConfig.text;
-        const useFile = Boolean(config.useFile);
+      let selectedFiles = [];
+      let dragDepth = 0;
+      let isPublishing = false;
 
-        if (textWrap) {
-          textWrap.hidden = useFile;
+      const trimUploadError = (error) => String(error?.message || error || "未知错误").trim().slice(0, 260);
+      const newUploadId = () => `upload-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const publishFields = () => ({
+        visibility: normalizeVisibility(visibilityInput?.value || "private"),
+        tags: String(tagsInput?.value || "").trim(),
+        text: String(textInput?.value || "").trim(),
+      });
+      const fileDisplayPath = (item) =>
+        String(item?.relativePath || item?.file?.webkitRelativePath || item?.file?.name || "").replace(/^\/+/, "");
+      const fileIdentity = (item) => `${fileDisplayPath(item)}::${item.file?.size || 0}::${item.file?.lastModified || 0}`;
+
+      const setProgress = (completed, total, label = "") => {
+        if (!progressWrap || !progressTextEl || !progressFillEl) {
+          return;
         }
-        if (fileWrap) {
-          fileWrap.hidden = !useFile;
+        const safeTotal = Math.max(0, Number(total || 0));
+        const safeCompleted = Math.max(0, Number(completed || 0));
+        const ratio = safeTotal > 0 ? Math.min(1, safeCompleted / safeTotal) : 0;
+        const percent = Math.round(ratio * 100);
+        progressWrap.hidden = false;
+        progressFillEl.style.width = `${percent}%`;
+        progressTextEl.textContent = label || `发布进度 ${safeCompleted}/${safeTotal}`;
+        if (progressBarEl) {
+          progressBarEl.setAttribute("aria-valuenow", String(percent));
+        }
+      };
+
+      const hideProgress = () => {
+        if (progressWrap) {
+          progressWrap.hidden = true;
+        }
+      };
+
+      const resetTextTask = () => {
+        textTask.status = "idle";
+        textTask.error = "";
+        textTask.attempts = 0;
+      };
+
+      const setPublishingState = (value) => {
+        isPublishing = Boolean(value);
+        if (submitBtn) {
+          submitBtn.disabled = isPublishing;
+        }
+        if (visibilityInput) {
+          visibilityInput.disabled = isPublishing;
+        }
+        if (tagsInput) {
+          tagsInput.disabled = isPublishing;
         }
         if (textInput) {
-          textInput.disabled = useFile;
+          textInput.disabled = isPublishing;
         }
         if (fileInput) {
-          fileInput.disabled = !useFile;
-          fileInput.accept = config.accept || "";
+          fileInput.disabled = isPublishing;
         }
-        if (fileLabel) {
-          fileLabel.textContent = config.fileLabel || "上传文件";
+        if (folderInput) {
+          folderInput.disabled = isPublishing;
         }
-        if (fileHint) {
-          fileHint.textContent = config.fileHint || "";
+        if (filePickerBtn) {
+          filePickerBtn.disabled = isPublishing;
+        }
+        if (folderPickerBtn) {
+          folderPickerBtn.disabled = isPublishing;
+        }
+        if (dropzone) {
+          dropzone.classList.toggle("is-disabled", isPublishing);
         }
       };
 
-      if (formatEl) {
-        formatEl.addEventListener("change", applyQuickPublishFormat);
+      const renderSelectedFiles = () => {
+        const failedFileCount = selectedFiles.filter((item) => item.status === "failed").length;
+        const retryableText = Boolean(publishFields().text) && textTask.status === "failed";
+
+        if (fileHint) {
+          if (!selectedFiles.length) {
+            fileHint.textContent = "未选择文件，可仅发布文本。";
+          } else if (failedFileCount > 0) {
+            fileHint.textContent = `已选择 ${selectedFiles.length} 个文件，失败 ${failedFileCount} 个，可重试。`;
+          } else {
+            fileHint.textContent = `已选择 ${selectedFiles.length} 个文件，可批量发布。`;
+          }
+        }
+        if (retryFailedBtn) {
+          retryFailedBtn.hidden = isPublishing || (!failedFileCount && !retryableText);
+          retryFailedBtn.disabled = isPublishing;
+        }
+        if (dropzone) {
+          dropzone.classList.toggle("has-files", selectedFiles.length > 0);
+        }
+        if (!isPublishing && !failedFileCount && !retryableText) {
+          const hasUploading = selectedFiles.some((item) => item.status === "uploading");
+          if (!hasUploading) {
+            hideProgress();
+          }
+        }
+
+        if (!fileList) {
+          return;
+        }
+        if (!selectedFiles.length) {
+          fileList.innerHTML = "";
+          return;
+        }
+
+        fileList.innerHTML = selectedFiles
+          .map(
+            (item) => `
+            <li class="quick-publish-file-item">
+              <div class="quick-publish-file-main">
+                <span class="quick-publish-file-name" title="${escapeHtml(fileDisplayPath(item))}">${escapeHtml(fileDisplayPath(item))}</span>
+                <span class="quick-publish-file-meta">${escapeHtml(formatFileSize(item.file.size))}</span>
+              </div>
+              <div class="quick-publish-file-actions">
+                <span class="quick-publish-file-status is-${escapeHtml(item.status)}">${escapeHtml(uploadStatusLabel[item.status] || "待发布")}</span>
+                ${
+                  !isPublishing
+                    ? `<button type="button" class="quick-publish-file-remove" data-remove-upload-id="${escapeHtml(item.id)}">移除</button>`
+                    : ""
+                }
+                ${
+                  !isPublishing && item.status === "failed"
+                    ? `<button type="button" class="quick-publish-file-retry" data-retry-upload-id="${escapeHtml(item.id)}">重试</button>`
+                    : ""
+                }
+              </div>
+              ${item.error ? `<p class="quick-publish-file-error">${escapeHtml(item.error)}</p>` : ""}
+            </li>
+          `,
+          )
+          .join("");
+      };
+
+      const addFileCandidates = (candidates) => {
+        const rows = Array.isArray(candidates) ? candidates : [];
+        if (!rows.length) {
+          return 0;
+        }
+        const existed = new Set(selectedFiles.map((item) => fileIdentity(item)));
+        let added = 0;
+        for (const row of rows) {
+          const file = row?.file;
+          if (!(file instanceof File) || !file.name) {
+            continue;
+          }
+          const relativePath = String(row.relativePath || file.webkitRelativePath || file.name).replace(/^\/+/, "") || file.name;
+          const identity = fileIdentity({ file, relativePath });
+          if (existed.has(identity)) {
+            continue;
+          }
+          existed.add(identity);
+          selectedFiles.push({
+            id: newUploadId(),
+            file,
+            relativePath,
+            status: "pending",
+            error: "",
+            attempts: 0,
+          });
+          added += 1;
+        }
+        if (added > 0) {
+          if (msgEl) {
+            msgEl.textContent = `已加入 ${added} 个文件`;
+          }
+          renderSelectedFiles();
+        }
+        return added;
+      };
+
+      const removeFileById = (id) => {
+        if (!id) {
+          return;
+        }
+        selectedFiles = selectedFiles.filter((item) => item.id !== id);
+        renderSelectedFiles();
+      };
+
+      const clearSelectedFiles = () => {
+        selectedFiles = [];
+        if (fileInput) {
+          fileInput.value = "";
+        }
+        if (folderInput) {
+          folderInput.value = "";
+        }
+        renderSelectedFiles();
+      };
+
+      const collectFilesFromInput = (fileListValue) =>
+        Array.from(fileListValue || [])
+          .filter((item) => item instanceof File && item.name)
+          .map((file) => ({
+            file,
+            relativePath: String(file.webkitRelativePath || file.name || "").replace(/^\/+/, "") || file.name,
+          }));
+
+      const readFileEntry = (entry) =>
+        new Promise((resolve) => {
+          entry.file(
+            (file) => resolve(file || null),
+            () => resolve(null),
+          );
+        });
+
+      const readDirectoryEntries = (reader) =>
+        new Promise((resolve) => {
+          reader.readEntries(
+            (entries) => resolve(Array.isArray(entries) ? entries : []),
+            () => resolve([]),
+          );
+        });
+
+      const walkFileSystemEntry = async (entry, prefix = "") => {
+        if (!entry) {
+          return [];
+        }
+        if (entry.isFile) {
+          const file = await readFileEntry(entry);
+          if (!(file instanceof File) || !file.name) {
+            return [];
+          }
+          const fallbackPath = String(entry.fullPath || "").replace(/^\/+/, "");
+          const relativePath = `${prefix}${file.name}` || fallbackPath || file.name;
+          return [{ file, relativePath }];
+        }
+        if (!entry.isDirectory || typeof entry.createReader !== "function") {
+          return [];
+        }
+        const nextPrefix = prefix ? `${prefix}${entry.name}/` : `${entry.name}/`;
+        const reader = entry.createReader();
+        const files = [];
+        while (true) {
+          const chunk = await readDirectoryEntries(reader);
+          if (!chunk.length) {
+            break;
+          }
+          for (const child of chunk) {
+            const childFiles = await walkFileSystemEntry(child, nextPrefix);
+            files.push(...childFiles);
+          }
+        }
+        return files;
+      };
+
+      const collectDroppedFiles = async (dataTransfer) => {
+        const items = Array.from(dataTransfer?.items || []);
+        if (items.length) {
+          const expanded = [];
+          for (const item of items) {
+            if (typeof item.webkitGetAsEntry === "function") {
+              const entry = item.webkitGetAsEntry();
+              if (entry) {
+                const files = await walkFileSystemEntry(entry, "");
+                expanded.push(...files);
+                continue;
+              }
+            }
+            const fallbackFile = item.getAsFile?.();
+            if (fallbackFile instanceof File && fallbackFile.name) {
+              expanded.push({
+                file: fallbackFile,
+                relativePath: fallbackFile.name,
+              });
+            }
+          }
+          if (expanded.length) {
+            return expanded;
+          }
+        }
+        return collectFilesFromInput(dataTransfer?.files);
+      };
+
+      const buildUploadPayload = ({ visibility, tags, text = "", file = null }) => {
+        const payload = new FormData();
+        payload.set("visibility", visibility || "private");
+        if (tags) {
+          payload.set("tags", tags);
+        }
+        if (text) {
+          payload.set("text", text);
+        }
+        if (file) {
+          payload.append("file", file, file.name);
+        }
+        return payload;
+      };
+
+      const uploadTextTask = async ({ visibility, tags, text }) => {
+        textTask.status = "uploading";
+        textTask.error = "";
+        textTask.attempts += 1;
+        await api("/api/push", {
+          method: "POST",
+          body: buildUploadPayload({ visibility, tags, text }),
+        });
+        textTask.status = "success";
+        textTask.error = "";
+      };
+
+      const uploadFileTask = async ({ visibility, tags }, item) => {
+        item.status = "uploading";
+        item.error = "";
+        item.attempts += 1;
+        renderSelectedFiles();
+        await api("/api/push", {
+          method: "POST",
+          body: buildUploadPayload({
+            visibility,
+            tags,
+            file: item.file,
+          }),
+        });
+        item.status = "success";
+        item.error = "";
+      };
+
+      const runPublish = async (opts = {}) => {
+        if (isPublishing) {
+          return;
+        }
+        const fields = publishFields();
+        const mode = String(opts.mode || "all");
+        const targetIdSet = Array.isArray(opts.fileIds) ? new Set(opts.fileIds) : null;
+        const hasText = Boolean(fields.text);
+
+        let needTextTask = false;
+        if (mode === "failed") {
+          needTextTask = hasText && textTask.status === "failed";
+        } else if (mode === "single") {
+          needTextTask = false;
+        } else {
+          needTextTask = hasText && textTask.status !== "success";
+        }
+
+        let fileTargets = [];
+        if (mode === "failed") {
+          fileTargets = selectedFiles.filter((item) => item.status === "failed");
+        } else if (mode === "single" && targetIdSet) {
+          fileTargets = selectedFiles.filter((item) => targetIdSet.has(item.id) && item.status !== "uploading");
+        } else {
+          fileTargets = selectedFiles.filter((item) => item.status !== "success");
+        }
+
+        if (!needTextTask && !fileTargets.length) {
+          if (msgEl) {
+            msgEl.textContent = "没有需要发布的项";
+          }
+          return;
+        }
+
+        setPublishingState(true);
+        renderSelectedFiles();
+
+        const totalTasks = fileTargets.length + (needTextTask ? 1 : 0);
+        let completedTasks = 0;
+        let successCount = 0;
+        let failedCount = 0;
+        setProgress(0, totalTasks, `发布进度 0/${totalTasks}`);
+        if (msgEl) {
+          msgEl.textContent = "发布中...";
+        }
+
+        if (needTextTask) {
+          try {
+            setProgress(completedTasks, totalTasks, `正在发布文本 (${completedTasks + 1}/${totalTasks})`);
+            await uploadTextTask(fields);
+            successCount += 1;
+          } catch (error) {
+            textTask.status = "failed";
+            textTask.error = trimUploadError(error);
+            failedCount += 1;
+          } finally {
+            completedTasks += 1;
+            setProgress(completedTasks, totalTasks, `发布进度 ${completedTasks}/${totalTasks}`);
+          }
+        }
+
+        for (const item of fileTargets) {
+          try {
+            setProgress(completedTasks, totalTasks, `正在上传 ${fileDisplayPath(item)} (${completedTasks + 1}/${totalTasks})`);
+            await uploadFileTask(fields, item);
+            successCount += 1;
+          } catch (error) {
+            item.status = "failed";
+            item.error = trimUploadError(error);
+            failedCount += 1;
+          } finally {
+            completedTasks += 1;
+            setProgress(completedTasks, totalTasks, `发布进度 ${completedTasks}/${totalTasks}`);
+            renderSelectedFiles();
+          }
+        }
+
+        setPublishingState(false);
+        renderSelectedFiles();
+
+        if (failedCount > 0 && successCount > 0) {
+          if (msgEl) {
+            msgEl.textContent = `部分成功：成功 ${successCount}，失败 ${failedCount}`;
+          }
+        } else if (failedCount > 0) {
+          if (msgEl) {
+            msgEl.textContent = `发布失败 ${failedCount} 项，可点击重试`;
+          }
+        } else if (msgEl) {
+          msgEl.textContent = successCount > 1 ? `发布成功，共 ${successCount} 条记录` : "发布成功";
+        }
+
+        if (successCount > 0) {
+          try {
+            await loadHome();
+          } catch (error) {
+            if (msgEl) {
+              msgEl.textContent = `${msgEl.textContent || ""}（列表刷新失败: ${trimUploadError(error)}）`;
+            }
+          }
+        }
+        if (failedCount === 0) {
+          hideProgress();
+          form.reset();
+          clearSelectedFiles();
+          resetTextTask();
+        }
+      };
+
+      if (filePickerBtn && fileInput) {
+        filePickerBtn.addEventListener("click", () => {
+          if (isPublishing) {
+            return;
+          }
+          fileInput.click();
+        });
       }
-      applyQuickPublishFormat();
+      if (folderPickerBtn && folderInput) {
+        folderPickerBtn.addEventListener("click", () => {
+          if (isPublishing) {
+            return;
+          }
+          folderInput.click();
+        });
+      }
+      if (fileInput) {
+        fileInput.addEventListener("change", (event) => {
+          const added = addFileCandidates(collectFilesFromInput(event.target.files));
+          if (!added && msgEl) {
+            msgEl.textContent = "未新增文件（可能都已在列表中）";
+          }
+          fileInput.value = "";
+        });
+      }
+      if (folderInput) {
+        folderInput.addEventListener("change", (event) => {
+          const added = addFileCandidates(collectFilesFromInput(event.target.files));
+          if (!added && msgEl) {
+            msgEl.textContent = "未新增文件（可能都已在列表中）";
+          }
+          folderInput.value = "";
+        });
+      }
+      if (fileList) {
+        fileList.addEventListener("click", (event) => {
+          if (!(event.target instanceof Element)) {
+            return;
+          }
+          const removeBtn = event.target.closest("[data-remove-upload-id]");
+          if (removeBtn && !isPublishing) {
+            removeFileById(String(removeBtn.getAttribute("data-remove-upload-id") || ""));
+            return;
+          }
+          const retryBtn = event.target.closest("[data-retry-upload-id]");
+          if (retryBtn && !isPublishing) {
+            const id = String(retryBtn.getAttribute("data-retry-upload-id") || "");
+            if (!id) {
+              return;
+            }
+            const target = selectedFiles.find((item) => item.id === id);
+            if (!target) {
+              return;
+            }
+            target.status = "pending";
+            target.error = "";
+            runPublish({ mode: "single", fileIds: [id] }).catch((error) => {
+              if (msgEl) {
+                msgEl.textContent = trimUploadError(error);
+              }
+            });
+          }
+        });
+      }
+      if (dropzone && fileInput) {
+        const haltDragEvent = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        };
+
+        dropzone.addEventListener("click", (event) => {
+          if (isPublishing) {
+            return;
+          }
+          if (event.target instanceof Element && event.target.closest("button")) {
+            return;
+          }
+          fileInput.click();
+        });
+        dropzone.addEventListener("keydown", (event) => {
+          if (isPublishing) {
+            return;
+          }
+          if (event.key !== "Enter" && event.key !== " ") {
+            return;
+          }
+          event.preventDefault();
+          fileInput.click();
+        });
+        dropzone.addEventListener("dragenter", (event) => {
+          haltDragEvent(event);
+          dragDepth += 1;
+          dropzone.classList.add("is-dragover");
+        });
+        dropzone.addEventListener("dragover", haltDragEvent);
+        dropzone.addEventListener("dragleave", (event) => {
+          haltDragEvent(event);
+          dragDepth = Math.max(0, dragDepth - 1);
+          if (!dragDepth) {
+            dropzone.classList.remove("is-dragover");
+          }
+        });
+        dropzone.addEventListener("drop", (event) => {
+          haltDragEvent(event);
+          dragDepth = 0;
+          dropzone.classList.remove("is-dragover");
+          if (isPublishing) {
+            return;
+          }
+          collectDroppedFiles(event.dataTransfer)
+            .then((rows) => {
+              const added = addFileCandidates(rows);
+              if (!added && msgEl) {
+                msgEl.textContent = "未新增文件（可能都已在列表中）";
+              }
+            })
+            .catch((error) => {
+              if (msgEl) {
+                msgEl.textContent = `读取拖拽内容失败: ${trimUploadError(error)}`;
+              }
+            });
+        });
+      }
+      if (textInput) {
+        textInput.addEventListener("input", () => {
+          if (textTask.status !== "uploading") {
+            resetTextTask();
+            renderSelectedFiles();
+          }
+        });
+      }
+      if (retryFailedBtn) {
+        retryFailedBtn.addEventListener("click", () => {
+          if (isPublishing) {
+            return;
+          }
+          runPublish({ mode: "failed" }).catch((error) => {
+            if (msgEl) {
+              msgEl.textContent = trimUploadError(error);
+            }
+          });
+        });
+      }
+
+      hideProgress();
+      renderSelectedFiles();
 
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
-        const formData = new FormData(form);
-        const formatValue = String(formData.get("format") || "text").trim().toLowerCase();
-        const config = formatConfig[formatValue] || formatConfig.text;
-        const textValue = String(formData.get("text") || "").trim();
-        const fileValue = formData.get("file");
-        const hasFile = fileValue instanceof File && Boolean(fileValue.name);
-
-        if (config.useFile && !hasFile) {
-          window.alert("当前发布格式需要选择文件");
+        const textValue = String(textInput?.value || "").trim();
+        if (!textValue && !selectedFiles.length) {
+          window.alert("请填写文本或选择至少一个文件");
           return;
         }
-        if (!config.useFile && !textValue) {
-          window.alert("文本格式需要填写内容");
-          return;
-        }
-
         try {
-          await api("/api/push", {
-            method: "POST",
-            body: formData,
-          });
-          if (msgEl) {
-            msgEl.textContent = "发布成功";
-          }
-          form.reset();
-          applyQuickPublishFormat();
-          await loadHome();
+          await runPublish({ mode: "all" });
         } catch (error) {
           if (msgEl) {
-            msgEl.textContent = error.message;
+            msgEl.textContent = trimUploadError(error);
           }
         }
       });
@@ -1509,10 +2116,117 @@
 
   function initDialogControls() {
     document.addEventListener("click", (event) => {
+      if (!(event.target instanceof Element)) {
+        return;
+      }
       if (event.target.closest("[data-close-dialog]") && dialog?.open) {
         dialog.close();
       }
     });
+
+    if (dialogBody) {
+      dialogBody.addEventListener("change", (event) => {
+        if (!(event.target instanceof Element)) {
+          return;
+        }
+        const fileInput = event.target.closest("[data-record-edit-file-input]");
+        if (!(fileInput instanceof HTMLInputElement)) {
+          return;
+        }
+        const hintEl = qs("[data-record-edit-file-hint]", dialogBody);
+        if (!hintEl) {
+          return;
+        }
+        const nextFile = fileInput.files && fileInput.files.length ? fileInput.files[0] : null;
+        hintEl.textContent = nextFile
+          ? `将替换为: ${nextFile.name} (${formatFileSize(nextFile.size)})`
+          : "未选择新文件，将保留当前文件。";
+      });
+
+      dialogBody.addEventListener("submit", async (event) => {
+        const form = event.target instanceof Element ? event.target.closest("form[data-record-edit-form]") : null;
+        if (!(form instanceof HTMLFormElement)) {
+          return;
+        }
+        event.preventDefault();
+
+        const recordId = Number(form.dataset.recordId || 0);
+        if (!recordId || dialogState.saving) {
+          return;
+        }
+
+        const formData = new FormData(form);
+        const payload = new FormData();
+        const submitBtn = qs("[data-record-edit-submit]", form);
+        const feedbackEl = qs("[data-record-edit-feedback]", form);
+
+        dialogState.saving = true;
+        if (submitBtn instanceof HTMLButtonElement) {
+          submitBtn.disabled = true;
+        }
+        if (feedbackEl) {
+          feedbackEl.textContent = "保存中...";
+        }
+
+        try {
+          const currentRecord =
+            dialogState.record && Number(dialogState.record.id) === recordId
+              ? dialogState.record
+              : await fetchRecord(recordId, false);
+
+          const visibility = normalizeVisibility(formData.get("visibility"), currentRecord?.visibility || "private");
+          const tags = String(formData.get("tags") || "");
+          const format = String(formData.get("format") || "").trim();
+
+          payload.set("visibility", visibility);
+          payload.set("tags", tags);
+          payload.set("format", format);
+
+          if (currentRecord?.content?.kind === "text") {
+            const text = String(formData.get("text") || "").trim();
+            if (!text) {
+              throw new Error("文本内容不能为空");
+            }
+            payload.set("text", text);
+          }
+
+          const fileInput = qs("[data-record-edit-file-input]", form);
+          const nextFile =
+            fileInput instanceof HTMLInputElement && fileInput.files && fileInput.files.length ? fileInput.files[0] : null;
+          if (nextFile) {
+            payload.set("file", nextFile, nextFile.name);
+          }
+
+          await api(`/api/records/${recordId}`, {
+            method: "PATCH",
+            body: payload,
+          });
+          if (feedbackEl) {
+            feedbackEl.textContent = "保存成功，正在刷新...";
+          }
+          await refreshCurrentPageData();
+          await openRecordDialog(recordId);
+          window.alert("记录已更新");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "更新失败";
+          if (feedbackEl) {
+            feedbackEl.textContent = message;
+          }
+          window.alert(message);
+        } finally {
+          dialogState.saving = false;
+          if (submitBtn instanceof HTMLButtonElement) {
+            submitBtn.disabled = false;
+          }
+        }
+      });
+    }
+
+    if (dialog) {
+      dialog.addEventListener("close", () => {
+        dialogState.saving = false;
+      });
+    }
   }
 
   async function refreshCurrentPageData() {

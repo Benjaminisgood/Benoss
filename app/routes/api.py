@@ -716,41 +716,102 @@ def _file_to_content(file_obj) -> tuple[Content, str]:
             pass
 
 
+def _request_upload_files() -> list:
+    if not request.files:
+        return []
+
+    files = []
+    seen = set()
+    preferred_fields = ("file", "files", "file[]")
+    field_names = list(preferred_fields)
+    field_names.extend(name for name in request.files.keys() if name not in preferred_fields)
+
+    for field_name in field_names:
+        for file_obj in request.files.getlist(field_name):
+            if not file_obj:
+                continue
+            filename = str(file_obj.filename or "").strip()
+            if not filename:
+                continue
+            marker = id(file_obj)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            files.append(file_obj)
+    return files
+
+
 def _create_record_for_user(user: User):
     payload = _form_or_json_payload()
     tags = _parse_tags(payload.get("tags"))
     visibility = _normalize_visibility(payload.get("visibility"), default="private")
     requested_format = payload.get("format")
 
-    file_obj = request.files.get("file")
-    if file_obj:
-        content, preview = _file_to_content(file_obj)
-    else:
-        text = str(payload.get("text") or "").strip()
-        if not text:
-            return jsonify({"error": "missing text or file"}), 400
-        content = Content(kind="text", text_content=text)
-        preview = _preview_text(text)
+    text_value = str(payload.get("text") or "").strip()
+    file_items = _request_upload_files()
+    if not text_value and not file_items:
+        return jsonify({"error": "missing text or file"}), 400
 
-    record = Record(
-        user_id=user.id,
-        content=content,
-        visibility=visibility,
-        preview=preview,
-    )
-    record.set_tags(tags)
-    record.format = _detect_format(content, requested_format)
+    created_records: list[Record] = []
+    uploaded_oss_keys: list[str] = []
 
-    db.session.add(content)
-    db.session.add(record)
-    db.session.commit()
+    if text_value:
+        text_content = Content(kind="text", text_content=text_value)
+        text_record = Record(
+            user_id=user.id,
+            content=text_content,
+            visibility=visibility,
+            preview=_preview_text(text_value),
+        )
+        text_record.set_tags(tags)
+        text_record.format = _detect_format(text_content, requested_format)
+        created_records.append(text_record)
+        db.session.add(text_content)
+        db.session.add(text_record)
 
-    loaded = (
+    for file_obj in file_items:
+        file_content, preview = _file_to_content(file_obj)
+        file_record = Record(
+            user_id=user.id,
+            content=file_content,
+            visibility=visibility,
+            preview=preview,
+        )
+        file_record.set_tags(tags)
+        file_record.format = _detect_format(file_content, requested_format)
+        created_records.append(file_record)
+        db.session.add(file_content)
+        db.session.add(file_record)
+        if file_content.oss_key:
+            uploaded_oss_keys.append(file_content.oss_key)
+
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        for oss_key in set(uploaded_oss_keys):
+            try:
+                delete_object(oss_key)
+            except Exception:
+                pass
+        raise
+
+    created_ids = [int(record.id) for record in created_records if record.id]
+    loaded_rows = (
         Record.query.options(joinedload(Record.user), joinedload(Record.content))
-        .filter_by(id=record.id)
-        .first()
+        .filter(Record.id.in_(created_ids))
+        .all()
     )
-    return jsonify({"record": _record_payload(loaded, viewer=user, include_content=False, include_comments=False)}), 201
+    loaded_map = {row.id: row for row in loaded_rows}
+    record_items = [
+        _record_payload(loaded_map[record_id], viewer=user, include_content=False, include_comments=False)
+        for record_id in created_ids
+        if record_id in loaded_map
+    ]
+
+    if len(record_items) == 1:
+        return jsonify({"record": record_items[0], "count": 1}), 201
+    return jsonify({"records": record_items, "count": len(record_items)}), 201
 
 
 def _record_html_content(content: Content) -> str:
