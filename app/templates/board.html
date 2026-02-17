@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card board-controls">
+<section class="card board-controls" data-reveal>
   <h2>学习记录 Board</h2>
   <form id="board-filter-form" class="inline-form">
     <label>
@@ -15,13 +15,13 @@
   </form>
 </section>
 
-<section class="board-layout">
+<section class="board-layout" data-reveal="80">
   <article class="card board-card">
     <div id="board-table-wrap" class="board-table-wrap"></div>
   </article>
 </section>
 
-<section class="board-records">
+<section class="board-records" data-reveal="120">
   <article class="card board-side">
     <h3 id="board-side-title">点击上方行/列/格子，在这里查看记录</h3>
     <div id="board-side-list" class="record-list"></div>

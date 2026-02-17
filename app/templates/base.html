@@ -3,35 +3,56 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f4354">
   <title>{{ title or "Benoss" }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
 </head>
 <body data-page="{{ page or '' }}">
-  <header class="site-header">
-    <div class="brand">
-      <a href="{{ url_for('site.home') }}">Benoss</a>
-      <span class="subtitle">Study Group Records</span>
-    </div>
-    {% if current_user %}
-    <nav class="site-nav">
-      <a class="{% if page == 'home' %}active{% endif %}" href="{{ url_for('site.home') }}">Home</a>
-      <a class="{% if page == 'board' %}active{% endif %}" href="{{ url_for('site.board') }}">Board</a>
-      <a class="{% if page == 'echoes' %}active{% endif %}" href="{{ url_for('site.echoes') }}">Echoes</a>
-      <a class="{% if page == 'notice' %}active{% endif %}" href="{{ url_for('site.notice') }}">Notice</a>
-    </nav>
-    <div class="account-nav">
-      <div class="account-user">
-        <span class="user-chip">@{{ current_user.username }}</span>
-        {% if current_user.role == "admin" %}
-        <span class="role-chip">管理员</span>
-        {% endif %}
+  <a class="skip-link" href="#page-main">跳到主要内容</a>
+
+  <header class="site-header" id="site-header">
+    <div class="site-header-inner">
+      <div class="brand">
+        <a class="brand-link" href="{{ url_for('site.home') }}">
+          <img src="{{ url_for('static', filename='images/logo.svg') }}" alt="Benoss" width="30" height="30" loading="lazy">
+          <span class="brand-title">Benoss</span>
+        </a>
+        <span class="subtitle">Study Group Records</span>
       </div>
-      {% if current_user.role == "admin" %}
-      <a class="account-link admin-link {% if page == 'admin' %}active{% endif %}" href="{{ url_for('site.admin') }}">管理台</a>
+
+      {% if current_user %}
+      <button
+        type="button"
+        class="site-nav-toggle"
+        id="site-nav-toggle"
+        aria-label="切换导航菜单"
+        aria-controls="site-header-right"
+        aria-expanded="false"
+      >
+        菜单
+      </button>
+      <div class="site-header-right" id="site-header-right">
+        <nav class="site-nav" aria-label="主导航">
+          <a class="{% if page == 'home' %}active{% endif %}" href="{{ url_for('site.home') }}">Home</a>
+          <a class="{% if page == 'board' %}active{% endif %}" href="{{ url_for('site.board') }}">Board</a>
+          <a class="{% if page == 'echoes' %}active{% endif %}" href="{{ url_for('site.echoes') }}">Echoes</a>
+          <a class="{% if page == 'notice' %}active{% endif %}" href="{{ url_for('site.notice') }}">Notice</a>
+        </nav>
+        <div class="account-nav">
+          <div class="account-user">
+            <span class="user-chip">@{{ current_user.username }}</span>
+            {% if current_user.role == "admin" %}
+            <span class="role-chip">管理员</span>
+            {% endif %}
+          </div>
+          {% if current_user.role == "admin" %}
+          <a class="account-link admin-link {% if page == 'admin' %}active{% endif %}" href="{{ url_for('site.admin') }}">管理台</a>
+          {% endif %}
+          <a class="account-link logout-link" href="{{ url_for('site.logout') }}">退出</a>
+        </div>
+      </div>
       {% endif %}
-      <a class="account-link logout-link" href="{{ url_for('site.logout') }}">退出</a>
     </div>
-    {% endif %}
   </header>
 
   {% with messages = get_flashed_messages(with_categories=true) %}
@@ -44,7 +65,7 @@
     {% endif %}
   {% endwith %}
 
-  <main class="page-main">
+  <main class="page-main" id="page-main">
     {% block content %}{% endblock %}
   </main>
 

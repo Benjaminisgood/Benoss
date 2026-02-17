@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card">
+<section class="card" data-reveal>
   <h2>Notice 筛选与整页渲染</h2>
   <form id="notice-filter-form" class="notice-filter-grid">
     <label>
@@ -30,7 +30,7 @@
   <p class="muted" id="notice-render-meta" hidden></p>
 </section>
 
-<section class="card" id="notice-render-panel" hidden>
+<section class="card" id="notice-render-panel" data-reveal="80" hidden>
   <article id="notice-render-html" class="optimized-html"></article>
 </section>
 {% endblock %}
