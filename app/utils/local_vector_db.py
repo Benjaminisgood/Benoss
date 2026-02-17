@@ -11,29 +11,16 @@ import requests
 from flask import current_app
 
 from .local_archive import list_archive_files, load_archive
+from .provider_config import (
+    normalize_provider as normalize_ai_provider,
+    provider_connection_settings,
+    provider_model,
+    provider_model_setting,
+)
 from .runtime_settings import get_setting_int, get_setting_str
 
 
 _SCHEMA_VERSION = 2
-_PROVIDER_ALIASES = {
-    "open_ai": "openai",
-    "open-ai": "openai",
-    "chat_anywhere": "chatanywhere",
-    "chat-anywhere": "chatanywhere",
-    "dashscope": "aliyun",
-}
-_EMBEDDING_MODEL_SETTING_KEYS = {
-    "openai": "OPENAI_EMBEDDING_MODEL",
-    "chatanywhere": "CHAT_ANYWHERE_EMBEDDING_MODEL",
-    "deepseek": "DEEPSEEK_EMBEDDING_MODEL",
-    "aliyun": "ALIYUN_AI_EMBEDDING_MODEL",
-}
-_EMBEDDING_MODEL_DEFAULTS = {
-    "openai": "text-embedding-3-small",
-    "chatanywhere": "text-embedding-3-small",
-    "deepseek": "unsupported",
-    "aliyun": "text-embedding-v3",
-}
 _MODEL_PLACEHOLDERS = {"", "none", "n/a", "na", "-", "unsupported", "not-supported", "not_supported"}
 _EN_TOKEN_PATTERN = re.compile(r"[a-z0-9_]+")
 _CJK_CHAR_PATTERN = re.compile(r"[\u4e00-\u9fff]")
@@ -57,8 +44,7 @@ def _index_path() -> Path:
 
 
 def _normalize_provider(value: str) -> str:
-    raw = str(value or "").strip().lower()
-    return _PROVIDER_ALIASES.get(raw, raw)
+    return normalize_ai_provider(value)
 
 
 def _embedding_provider() -> str:
@@ -71,16 +57,11 @@ def _model_placeholder(value: str) -> bool:
 
 
 def _embedding_model_setting(provider: str) -> tuple[str, str]:
-    key = str(_EMBEDDING_MODEL_SETTING_KEYS.get(provider) or "")
-    default = str(_EMBEDDING_MODEL_DEFAULTS.get(provider) or "")
-    return key, default
+    return provider_model_setting(provider, "embedding")
 
 
 def _embedding_model_for_provider(provider: str) -> str:
-    key, default = _embedding_model_setting(provider)
-    if not key:
-        return ""
-    return get_setting_str(key, default=default).strip()
+    return provider_model(provider, "embedding")
 
 
 def _embedding_provider_settings() -> dict | None:
@@ -88,42 +69,19 @@ def _embedding_provider_settings() -> dict | None:
     if not provider:
         return None
 
-    choices = {
-        "openai": {
-            "api_key": get_setting_str("OPENAI_API_KEY", default=""),
-            "base_url": get_setting_str("OPENAI_API_BASE_URL", default="https://api.openai.com/v1"),
-        },
-        "chatanywhere": {
-            "api_key": get_setting_str("CHAT_ANYWHERE_API_KEY", default=""),
-            "base_url": get_setting_str("CHAT_ANYWHERE_API_BASE_URL", default="https://api.chatanywhere.tech/v1"),
-        },
-        "deepseek": {
-            "api_key": get_setting_str("DEEPSEEK_API_KEY", default=""),
-            "base_url": get_setting_str("DEEPSEEK_API_BASE_URL", default="https://api.deepseek.com/v1"),
-        },
-        "aliyun": {
-            "api_key": get_setting_str("ALIYUN_AI_API_KEY", default=""),
-            "base_url": get_setting_str(
-                "ALIYUN_AI_API_BASE_URL",
-                default="https://dashscope.aliyuncs.com/compatible-mode/v1",
-            ),
-        },
-    }
-    selected = choices.get(provider)
+    selected = provider_connection_settings(provider)
     if not selected:
         return None
 
-    api_key = str(selected.get("api_key") or "").strip()
-    base_url = str(selected.get("base_url") or "").strip().rstrip("/")
     model_key, _ = _embedding_model_setting(provider)
     model = _embedding_model_for_provider(provider)
-    if not api_key or not base_url or _model_placeholder(model):
+    if _model_placeholder(model):
         return None
 
     return {
-        "provider": provider,
-        "api_key": api_key,
-        "base_url": base_url,
+        "provider": str(selected.get("provider") or provider),
+        "api_key": str(selected.get("api_key") or ""),
+        "base_url": str(selected.get("base_url") or ""),
         "model": model,
         "model_setting_key": model_key,
     }

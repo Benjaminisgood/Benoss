@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections import OrderedDict
 
 from flask import current_app, g
@@ -19,10 +20,17 @@ DEFAULT_NOTICE_PODCAST_TASK = (
     "需要有开场、主体、结尾，重点清晰，可直接用于语音合成。"
 )
 DEFAULT_NOTICE_POSTER_TASK = "把输入记录提炼成一份中文海报文案，包含标题、3-6 个重点、结语。"
-DEFAULT_POSTER_SYSTEM_PROMPT = "你是视觉总监，请把学习记录提炼成适合图像模型的一段海报提示词。"
+DEFAULT_POSTER_SYSTEM_PROMPT = (
+    "你是海报视觉总监。请把学习记录提炼成可直接用于图像模型作图的中文提示词。"
+    "提示词必须聚焦画面本身，避免写成方案说明或长文案。"
+)
 DEFAULT_POSTER_USER_TEMPLATE = (
-    "请输出一段 200-450 字中文提示词，用于生成学习小组海报。"
-    "包含主题、排版、颜色、风格、元素。只输出提示词本身。\n\n"
+    "请基于记录输出一段 120-220 字中文提示词，用于生成“图像感强”的学习小组海报。\n"
+    "要求：\n"
+    "1) 明确主体、场景、构图、色彩、光影、材质与情绪；\n"
+    "2) 画面文字极少，仅允许 0-2 行短标题（每行不超过 12 字）；\n"
+    "3) 禁止“主题/排版/颜色/风格/元素：”这类栏目写法；\n"
+    "4) 不要解释，不要分点，不要 markdown，只输出提示词正文。\n\n"
     "记录输入：\n{records_text}"
 )
 DEFAULT_VECTOR_CHAT_SYSTEM_PROMPT = (
@@ -716,6 +724,8 @@ def _resolved_raw_value(key: str) -> tuple[object, str]:
         return cache.get(key, ""), "override"
     if key in current_app.config:
         return current_app.config.get(key), "config"
+    if key in os.environ:
+        return os.environ.get(key), "config"
     spec = SETTING_DEFINITION_MAP.get(key) or {}
     return spec.get("default", ""), "default"
 
@@ -759,8 +769,10 @@ def _coerce_value(value: object, spec: dict, *, strict: bool) -> object:
     if kind == "choice" and options:
         allowed = {str(item.get("value", "")) for item in options}
         if text not in allowed:
-            if strict:
+            if strict and str(spec.get("normalize") or "") != "provider":
                 raise ValueError(f"{spec['label']} 选项无效")
+            if str(spec.get("normalize") or "") == "provider":
+                return text
             return str(default or "")
     return text
 
@@ -821,7 +833,13 @@ def admin_settings_payload() -> dict:
             "secret": bool(spec.get("secret")),
         }
         if "options" in spec:
-            item["options"] = spec["options"]
+            options = list(spec["options"])
+            if str(spec.get("normalize") or "") == "provider":
+                option_values = {str(opt.get("value", "")) for opt in options}
+                value_text = str(value or "")
+                if value_text and value_text not in option_values:
+                    options.append({"label": f"{value_text} (custom)", "value": value_text})
+            item["options"] = options
         if "min" in spec:
             item["min"] = spec["min"]
         if "max" in spec:

@@ -524,8 +524,8 @@ benoss-sync pull --username alice --output ./pulled_records
 
 ### 13.3 AI 配置
 
-- `AI_CHAT_PROVIDER`：聊天能力 provider（`openai` / `chatanywhere` / `deepseek` / `aliyun`）
-- `AI_EMBEDDING_PROVIDER`：向量 embedding provider（`openai` / `chatanywhere` / `deepseek` / `aliyun`）
+- `AI_CHAT_PROVIDER`：聊天能力 provider（内置 `openai` / `chatanywhere` / `deepseek` / `aliyun`，也支持自定义前缀 provider）
+- `AI_EMBEDDING_PROVIDER`：向量 embedding provider（内置 `openai` / `chatanywhere` / `deepseek` / `aliyun`，也支持自定义前缀 provider）
 - `AI_TTS_PROVIDER`：TTS provider（留空表示不调用外部 TTS）
 - `AI_IMAGE_PROVIDER`：图片 provider（留空表示不调用外部图像模型）
 - `AI_REQUEST_TIMEOUT_SECONDS`
@@ -561,6 +561,7 @@ benoss-sync pull --username alice --output ./pulled_records
 - `CHAT_ANYWHERE_API_KEY` / `CHAT_ANYWHERE_API_BASE_URL` / `CHAT_ANYWHERE_CHAT_MODEL` / `CHAT_ANYWHERE_EMBEDDING_MODEL` / `CHAT_ANYWHERE_TTS_MODEL` / `CHAT_ANYWHERE_IMAGE_MODEL` / `CHAT_ANYWHERE_TRANSCRIBE_MODEL`
 - `DEEPSEEK_API_KEY` / `DEEPSEEK_API_BASE_URL` / `DEEPSEEK_CHAT_MODEL` / `DEEPSEEK_EMBEDDING_MODEL` / `DEEPSEEK_TTS_MODEL` / `DEEPSEEK_IMAGE_MODEL` / `DEEPSEEK_TRANSCRIBE_MODEL`
 - `ALIYUN_AI_API_KEY` / `ALIYUN_AI_API_BASE_URL` / `ALIYUN_AI_CHAT_MODEL` / `ALIYUN_AI_EMBEDDING_MODEL` / `ALIYUN_AI_TTS_MODEL` / `ALIYUN_AI_IMAGE_MODEL` / `ALIYUN_AI_TRANSCRIBE_MODEL`
+- 自定义 provider 也支持同样命名规则：`<PROVIDER>_API_KEY` / `<PROVIDER>_API_BASE_URL` / `<PROVIDER>_CHAT_MODEL` / `<PROVIDER>_EMBEDDING_MODEL` / `<PROVIDER>_TTS_MODEL` / `<PROVIDER>_IMAGE_MODEL` / `<PROVIDER>_TRANSCRIBE_MODEL`（例如 `GROQ_*`）
 
 说明：
 - 媒体与向量模型现在都是“每个 provider 独立配置”，不再使用全局 `AI_TTS_MODEL` / `AI_IMAGE_MODEL` / `VECTOR_EMBEDDING_MODEL`。

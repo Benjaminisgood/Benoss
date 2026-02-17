@@ -15,6 +15,12 @@ import requests
 from flask import current_app
 
 from ..oss import get_object_bytes, get_object_to_file, sign_get_url
+from .provider_config import (
+    normalize_provider as normalize_ai_provider,
+    provider_connection_settings,
+    provider_model,
+    provider_model_setting,
+)
 from .runtime_settings import get_setting_bool, get_setting_int, get_setting_str
 
 
@@ -82,13 +88,6 @@ _TEXT_FILE_MIME_TYPES = {
     "application/csv",
     "application/x-sh",
     "application/x-httpd-php",
-}
-_PROVIDER_ALIASES = {
-    "open_ai": "openai",
-    "open-ai": "openai",
-    "chat_anywhere": "chatanywhere",
-    "chat-anywhere": "chatanywhere",
-    "dashscope": "aliyun",
 }
 _MODEL_PLACEHOLDERS = {"", "none", "n/a", "na", "-", "unsupported", "not-supported", "not_supported"}
 _SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
@@ -206,8 +205,7 @@ def _decode_text_bytes(raw: bytes) -> tuple[str, str]:
 
 
 def _normalize_provider(value: str) -> str:
-    raw = str(value or "").strip().lower()
-    return _PROVIDER_ALIASES.get(raw, raw)
+    return normalize_ai_provider(value)
 
 
 def _model_placeholder(value: str) -> bool:
@@ -215,13 +213,7 @@ def _model_placeholder(value: str) -> bool:
 
 
 def _transcribe_model_setting(provider: str) -> tuple[str, str]:
-    mapping = {
-        "openai": ("OPENAI_TRANSCRIBE_MODEL", "whisper-1"),
-        "chatanywhere": ("CHAT_ANYWHERE_TRANSCRIBE_MODEL", "whisper-1"),
-        "aliyun": ("ALIYUN_AI_TRANSCRIBE_MODEL", "whisper-1"),
-        "deepseek": ("DEEPSEEK_TRANSCRIBE_MODEL", "unsupported"),
-    }
-    return mapping.get(provider, ("", ""))
+    return provider_model_setting(provider, "transcribe")
 
 
 def _archive_ai_settings() -> dict | None:
@@ -229,41 +221,19 @@ def _archive_ai_settings() -> dict | None:
     if not provider:
         return None
 
-    choices = {
-        "openai": {
-            "api_key": get_setting_str("OPENAI_API_KEY", default=""),
-            "base_url": get_setting_str("OPENAI_API_BASE_URL", default="https://api.openai.com/v1"),
-            "model": get_setting_str("OPENAI_CHAT_MODEL", default="gpt-4o-mini"),
-        },
-        "chatanywhere": {
-            "api_key": get_setting_str("CHAT_ANYWHERE_API_KEY", default=""),
-            "base_url": get_setting_str("CHAT_ANYWHERE_API_BASE_URL", default="https://api.chatanywhere.tech/v1"),
-            "model": get_setting_str("CHAT_ANYWHERE_CHAT_MODEL", default="gpt-4o-mini"),
-        },
-        "deepseek": {
-            "api_key": get_setting_str("DEEPSEEK_API_KEY", default=""),
-            "base_url": get_setting_str("DEEPSEEK_API_BASE_URL", default="https://api.deepseek.com/v1"),
-            "model": get_setting_str("DEEPSEEK_CHAT_MODEL", default="deepseek-chat"),
-        },
-        "aliyun": {
-            "api_key": get_setting_str("ALIYUN_AI_API_KEY", default=""),
-            "base_url": get_setting_str(
-                "ALIYUN_AI_API_BASE_URL",
-                default="https://dashscope.aliyuncs.com/compatible-mode/v1",
-            ),
-            "model": get_setting_str("ALIYUN_AI_CHAT_MODEL", default="qwen-plus"),
-        },
-    }
-    selected = choices.get(provider)
+    selected = provider_connection_settings(provider)
     if not selected:
         return None
 
-    api_key = str(selected.get("api_key") or "").strip()
-    base_url = str(selected.get("base_url") or "").strip().rstrip("/")
-    model = str(selected.get("model") or "").strip()
-    if not api_key or not base_url or _model_placeholder(model):
+    model = provider_model(provider, "chat")
+    if _model_placeholder(model):
         return None
-    return {"provider": provider, "api_key": api_key, "base_url": base_url, "model": model}
+    return {
+        "provider": str(selected.get("provider") or provider),
+        "api_key": str(selected.get("api_key") or ""),
+        "base_url": str(selected.get("base_url") or ""),
+        "model": model,
+    }
 
 
 def _ai_request_json(endpoint: str, *, payload: dict, settings: dict, timeout: int) -> dict:

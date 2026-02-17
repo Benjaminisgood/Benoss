@@ -33,6 +33,12 @@ from ..utils.local_vector_db import (
     search as vector_search,
 )
 from ..utils.oss_paths import generated_asset_key, record_content_key
+from ..utils.provider_config import (
+    normalize_provider as normalize_ai_provider,
+    provider_connection_settings,
+    provider_model,
+    provider_model_setting,
+)
 from ..utils.runtime_settings import (
     DEFAULT_NOTICE_BLOG_TASK,
     DEFAULT_NOTICE_PODCAST_TASK,
@@ -857,15 +863,7 @@ def _ai_provider_settings() -> dict | None:
 
 
 def _normalize_provider(raw: str) -> str:
-    value = str(raw or "").strip().lower()
-    aliases = {
-        "open_ai": "openai",
-        "open-ai": "openai",
-        "chat_anywhere": "chatanywhere",
-        "chat-anywhere": "chatanywhere",
-        "dashscope": "aliyun",
-    }
-    return aliases.get(value, value)
+    return normalize_ai_provider(raw)
 
 
 def _chat_provider() -> str:
@@ -874,41 +872,18 @@ def _chat_provider() -> str:
 
 
 def _provider_raw_config(provider: str) -> dict | None:
-    choices = {
-        "openai": {
-            "api_key": get_setting_str("OPENAI_API_KEY", default=""),
-            "base_url": get_setting_str("OPENAI_API_BASE_URL", default="https://api.openai.com/v1"),
-            "chat_model": get_setting_str("OPENAI_CHAT_MODEL", default="gpt-4o-mini"),
-        },
-        "chatanywhere": {
-            "api_key": get_setting_str("CHAT_ANYWHERE_API_KEY", default=""),
-            "base_url": get_setting_str("CHAT_ANYWHERE_API_BASE_URL", default="https://api.chatanywhere.tech/v1"),
-            "chat_model": get_setting_str("CHAT_ANYWHERE_CHAT_MODEL", default="gpt-4o-mini"),
-        },
-        "deepseek": {
-            "api_key": get_setting_str("DEEPSEEK_API_KEY", default=""),
-            "base_url": get_setting_str("DEEPSEEK_API_BASE_URL", default="https://api.deepseek.com/v1"),
-            "chat_model": get_setting_str("DEEPSEEK_CHAT_MODEL", default="deepseek-chat"),
-        },
-        "aliyun": {
-            "api_key": get_setting_str("ALIYUN_AI_API_KEY", default=""),
-            "base_url": get_setting_str("ALIYUN_AI_API_BASE_URL", default="https://dashscope.aliyuncs.com/compatible-mode/v1"),
-            "chat_model": get_setting_str("ALIYUN_AI_CHAT_MODEL", default="qwen-plus"),
-        },
-    }
-    selected = choices.get(provider)
+    normalized = _normalize_provider(provider)
+    selected = provider_connection_settings(normalized)
     if not selected:
         return None
 
-    api_key = str(selected.get("api_key") or "").strip()
-    base_url = str(selected.get("base_url") or "").strip().rstrip("/")
-    chat_model = str(selected.get("chat_model") or "").strip()
-    if not api_key or not base_url:
+    chat_model = provider_model(normalized, "chat")
+    if _model_placeholder(chat_model):
         return None
     return {
-        "provider": provider,
-        "api_key": api_key,
-        "base_url": base_url,
+        "provider": str(selected.get("provider") or normalized),
+        "api_key": str(selected.get("api_key") or ""),
+        "base_url": str(selected.get("base_url") or ""),
         "chat_model": chat_model,
     }
 
@@ -947,22 +922,8 @@ def _model_placeholder(value: str) -> bool:
 
 
 def _capability_default_model(capability: str, provider: str) -> str:
-    defaults = {
-        "tts": {
-            "openai": "gpt-4o-mini-tts",
-            "chatanywhere": "gpt-4o-mini-tts",
-            "deepseek": "unsupported",
-            "aliyun": "qwen3-tts-instruct-flash",
-        },
-        "image": {
-            "openai": "gpt-image-1",
-            "chatanywhere": "gpt-image-1",
-            "deepseek": "unsupported",
-            "aliyun": "qwen-image-max",
-        },
-    }
-    selected = defaults.get(capability) or {}
-    return str(selected.get(provider) or "")
+    _, default_model = provider_model_setting(provider, capability)
+    return str(default_model or "")
 
 
 def _capability_provider_order(capability: str) -> list[str]:
@@ -991,22 +952,8 @@ def _capability_provider_order(capability: str) -> list[str]:
 
 
 def _capability_provider_model_key(capability: str, provider: str) -> str:
-    keys = {
-        "tts": {
-            "openai": "OPENAI_TTS_MODEL",
-            "chatanywhere": "CHAT_ANYWHERE_TTS_MODEL",
-            "deepseek": "DEEPSEEK_TTS_MODEL",
-            "aliyun": "ALIYUN_AI_TTS_MODEL",
-        },
-        "image": {
-            "openai": "OPENAI_IMAGE_MODEL",
-            "chatanywhere": "CHAT_ANYWHERE_IMAGE_MODEL",
-            "deepseek": "DEEPSEEK_IMAGE_MODEL",
-            "aliyun": "ALIYUN_AI_IMAGE_MODEL",
-        },
-    }
-    selected = keys.get(capability) or {}
-    return str(selected.get(provider) or "")
+    key, _ = provider_model_setting(provider, capability)
+    return str(key or "")
 
 
 def _capability_provider_model(capability: str, provider: str) -> str:
@@ -1719,8 +1666,12 @@ def _ai_generate_poster_image(prompt: str) -> tuple[bytes, str, str, dict]:
         return image_bytes, "image/png", ".png", {"provider": used["provider"], "model": used["model"]}
 
     if get_setting_bool("AI_IMAGE_FALLBACK_LOCAL", default=True):
+        if errors:
+            current_app.logger.warning("image generation failed, fallback to local svg: %s", " | ".join(errors)[:2000])
+        else:
+            current_app.logger.warning("image generation uses local svg fallback because no external image provider is available")
         image_bytes = _render_local_poster_svg(prompt)
-        return image_bytes, "image/svg+xml", ".svg", {"provider": "local", "model": "local-svg-poster-v1"}
+        return image_bytes, "image/svg+xml", ".svg", {"provider": "local", "model": "local-svg-poster-v2"}
 
     if not errors:
         raise RuntimeError("image generation not configured for available providers")
@@ -1753,36 +1704,214 @@ def _wrap_lines(value: str, *, width: int, max_lines: int) -> list[str]:
     return chunks
 
 
+def _poster_prompt_segments(prompt: str, *, limit: int = 10) -> list[str]:
+    text = _normalize_prompt_text(prompt)
+    if not text:
+        return []
+    text = re.sub(r"[`*_#>]", " ", text)
+    parts = re.split(r"[\n，。；;、|/]+", text)
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in parts:
+        item = str(raw or "").strip()
+        if not item:
+            continue
+        item = re.sub(
+            r"^(主题|排版|颜色|风格|元素|构图|文案|标题|副标题|画面|视觉焦点|配色|版式)\s*[：:]\s*",
+            "",
+            item,
+        )
+        item = re.sub(r"\s+", " ", item).strip(" -•·")
+        if not item:
+            continue
+        token = item.lower()
+        if token in seen:
+            continue
+        seen.add(token)
+        out.append(item[:30])
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _poster_title_and_subtitle(prompt: str) -> tuple[str, str]:
+    parts = _poster_prompt_segments(prompt, limit=12)
+    title = ""
+    subtitle = ""
+
+    for part in parts:
+        if 4 <= len(part) <= 26:
+            title = part
+            break
+    if not title and parts:
+        title = parts[0][:24]
+    if not title:
+        title = "学习小组日报"
+
+    for part in parts:
+        if part == title:
+            continue
+        if 4 <= len(part) <= 34:
+            subtitle = part
+            break
+    if not subtitle:
+        subtitle = "用持续学习，走向更好的自己"
+
+    return title[:26], subtitle[:34]
+
+
+def _poster_badges(prompt: str, *, max_items: int = 3) -> list[str]:
+    parts = _poster_prompt_segments(prompt, limit=24)
+    blocked = {
+        "主题",
+        "排版",
+        "颜色",
+        "风格",
+        "元素",
+        "构图",
+        "学习小组日报",
+        "Benoss Local Poster Fallback".lower(),
+    }
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        item = part.strip()
+        if not item:
+            continue
+        key = item.lower()
+        compact = re.sub(r"\s+", "", key)
+        if compact in blocked or key in blocked or key in seen:
+            continue
+        seen.add(key)
+        out.append(item[:10])
+        if len(out) >= max_items:
+            break
+    if not out:
+        out = ["学习计划", "行动复盘", "持续成长"][:max_items]
+    return out
+
+
+def _poster_image_prompt(prompt: str) -> str:
+    text = _normalize_prompt_text(prompt)
+    if not text:
+        return (
+            "学习小组主题海报，主视觉为正在协作学习的年轻人，背景有书本、便签与自然光，"
+            "构图层次分明，色调明快，细节干净，画面中的文字极少，仅保留1-2行短标题。"
+        )
+
+    parts = _poster_prompt_segments(text, limit=12)
+    body = "，".join(parts[:8]) if parts else _trim_text_balanced(text, limit=220)
+    body = _normalize_prompt_text(body).replace("\n", "，").strip("， ")
+    body = body[:320]
+    if not body:
+        body = "学习小组主题海报，人物主体清晰，场景真实，色彩层次丰富"
+
+    return (
+        f"{body}。"
+        "海报需图像主导，主体与场景具象，构图有纵深，光影自然，质感清晰；"
+        "画面文字极少，仅允许1-2行短标题，不要大段文字上墙。"
+    )
+
+
 def _render_local_poster_svg(prompt: str) -> bytes:
     prompt_text = _normalize_prompt_text(prompt)
     if not prompt_text:
         prompt_text = "Daily Digest Poster"
 
-    lines = _wrap_lines(prompt_text, width=26, max_lines=14)
-    if not lines:
-        lines = ["Daily Digest Poster"]
+    palettes = [
+        ("#102a43", "#1d4ed8", "#22d3ee", "#f59e0b", "#0f172a"),
+        ("#0f3d2e", "#2a9d8f", "#4cc9f0", "#ffd166", "#102a43"),
+        ("#1f2937", "#334155", "#38bdf8", "#f97316", "#0f172a"),
+        ("#2f3e46", "#52796f", "#84a98c", "#f4a261", "#1b263b"),
+    ]
+    digest = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
+    palette = palettes[int(digest[:2], 16) % len(palettes)]
+    bg_start, bg_end, accent_primary, accent_secondary, text_dark = palette
+    seed = [int(digest[i : i + 2], 16) for i in range(2, 26, 2)]
 
-    y_start = 170
-    line_gap = 56
-    line_items: list[str] = []
-    for idx, line in enumerate(lines):
-        safe = html.escape(line)
-        y_pos = y_start + idx * line_gap
-        line_items.append(f'<text x="92" y="{y_pos}" font-size="34" fill="#132037">{safe}</text>')
+    orb1_x = 120 + (seed[0] % 260)
+    orb1_y = 150 + (seed[1] % 220)
+    orb2_x = 660 + (seed[2] % 260)
+    orb2_y = 180 + (seed[3] % 260)
+    orb3_x = 780 + (seed[4] % 200)
+    orb3_y = 760 + (seed[5] % 180)
 
-    body = "\n    ".join(line_items)
+    title, subtitle = _poster_title_and_subtitle(prompt_text)
+    badges = _poster_badges(prompt_text, max_items=3)
+    title_lines = _wrap_lines(title, width=12, max_lines=2) or ["学习小组日报"]
+    subtitle_lines = _wrap_lines(subtitle, width=18, max_lines=2)
+
+    title_items: list[str] = []
+    title_start_y = 302
+    title_gap = 76
+    for idx, line in enumerate(title_lines):
+        safe_line = html.escape(line)
+        y_pos = title_start_y + idx * title_gap
+        title_items.append(
+            f'<text x="132" y="{y_pos}" font-size="66" font-weight="700" letter-spacing="1.2" fill="{text_dark}">{safe_line}</text>'
+        )
+
+    subtitle_items: list[str] = []
+    subtitle_start_y = title_start_y + len(title_lines) * title_gap + 32
+    for idx, line in enumerate(subtitle_lines):
+        safe_line = html.escape(line)
+        y_pos = subtitle_start_y + idx * 44
+        subtitle_items.append(
+            f'<text x="136" y="{y_pos}" font-size="30" fill="#334155" fill-opacity="0.95">{safe_line}</text>'
+        )
+
+    badge_items: list[str] = []
+    badge_x = 132
+    badge_y = subtitle_start_y + max(1, len(subtitle_lines)) * 44 + 34
+    for badge in badges:
+        safe_badge = html.escape(badge)
+        badge_width = max(150, min(360, 72 + len(badge) * 26))
+        if badge_x + badge_width > 900:
+            badge_x = 132
+            badge_y += 72
+        badge_items.append(
+            f'<rect x="{badge_x}" y="{badge_y}" width="{badge_width}" height="50" rx="25" fill="{accent_primary}" fill-opacity="0.14"/>'
+        )
+        badge_items.append(
+            f'<text x="{badge_x + 24}" y="{badge_y + 34}" font-size="24" fill="{text_dark}" fill-opacity="0.92">{safe_badge}</text>'
+        )
+        badge_x += badge_width + 18
+
+    visual_items = "\n    ".join(title_items + subtitle_items + badge_items)
+    today_text = date.today().isoformat()
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">\n'
         "  <defs>\n"
         '    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">\n'
-        '      <stop offset="0%" stop-color="#f8fbff"/>\n'
-        '      <stop offset="100%" stop-color="#e5eefc"/>\n'
+        f'      <stop offset="0%" stop-color="{bg_start}"/>\n'
+        f'      <stop offset="100%" stop-color="{bg_end}"/>\n'
         "    </linearGradient>\n"
+        '    <radialGradient id="orbA" cx="50%" cy="50%" r="50%">\n'
+        f'      <stop offset="0%" stop-color="{accent_primary}" stop-opacity="0.72"/>\n'
+        f'      <stop offset="100%" stop-color="{accent_primary}" stop-opacity="0"/>\n'
+        "    </radialGradient>\n"
+        '    <radialGradient id="orbB" cx="50%" cy="50%" r="50%">\n'
+        f'      <stop offset="0%" stop-color="{accent_secondary}" stop-opacity="0.52"/>\n'
+        f'      <stop offset="100%" stop-color="{accent_secondary}" stop-opacity="0"/>\n'
+        "    </radialGradient>\n"
         "  </defs>\n"
         '  <rect width="1024" height="1024" fill="url(#bg)"/>\n'
-        '  <rect x="64" y="72" width="896" height="880" rx="28" fill="#ffffff" stroke="#d3dded" stroke-width="2"/>\n'
-        '  <text x="92" y="122" font-size="28" fill="#4a5f82">Benoss Local Poster Fallback</text>\n'
-        f"  {body}\n"
+        f'  <circle cx="{orb1_x}" cy="{orb1_y}" r="220" fill="url(#orbA)"/>\n'
+        f'  <circle cx="{orb2_x}" cy="{orb2_y}" r="280" fill="url(#orbB)"/>\n'
+        f'  <circle cx="{orb3_x}" cy="{orb3_y}" r="260" fill="url(#orbA)"/>\n'
+        f'  <path d="M70,760 C230,630 430,630 610,760 L610,1024 L70,1024 Z" fill="{accent_primary}" fill-opacity="0.12"/>\n'
+        f'  <path d="M420,730 C610,590 860,620 980,760 L980,1024 L420,1024 Z" fill="{accent_secondary}" fill-opacity="0.12"/>\n'
+        '  <rect x="80" y="92" width="864" height="840" rx="38" fill="#ffffff" fill-opacity="0.9"/>\n'
+        '  <rect x="104" y="116" width="816" height="792" rx="30" fill="#ffffff" fill-opacity="0.72"/>\n'
+        f'  <text x="132" y="186" font-size="28" letter-spacing="2" fill="{accent_primary}" fill-opacity="0.95">BENOSS VISUAL DIGEST</text>\n'
+        f"  {visual_items}\n"
+        f'  <circle cx="236" cy="796" r="84" fill="{accent_primary}" fill-opacity="0.16"/>\n'
+        f'  <circle cx="352" cy="828" r="54" fill="{accent_secondary}" fill-opacity="0.2"/>\n'
+        f'  <path d="M470 780 L530 846 L588 780" stroke="{text_dark}" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" fill="none"/>\n'
+        f'  <path d="M166 876 C286 816 406 816 526 876 L526 904 C406 844 286 844 166 904 Z" fill="{text_dark}" fill-opacity="0.1"/>\n'
+        f'  <path d="M528 876 C648 816 768 816 888 876 L888 904 C768 844 648 844 528 904 Z" fill="{text_dark}" fill-opacity="0.1"/>\n'
+        f'  <text x="132" y="958" font-size="24" fill="{text_dark}" fill-opacity="0.68">{today_text}</text>\n'
+        f'  <text x="756" y="958" font-size="24" fill="{text_dark}" fill-opacity="0.68">fallback svg</text>\n'
         "</svg>\n"
     )
     return svg.encode("utf-8")
@@ -2003,11 +2132,12 @@ def _generate_poster_asset(
             "content": poster_user_content,
         },
     ]
-    poster_prompt, prompt_settings = _ai_chat(
+    poster_prompt_raw, prompt_settings = _ai_chat(
         messages=poster_prompt_messages,
         temperature=0.45,
         max_tokens=700,
     )
+    poster_prompt = _poster_image_prompt(poster_prompt_raw)
     image_bytes, image_type, ext, image_info = _ai_generate_poster_image(poster_prompt)
     asset = _save_generated_asset(
         user=user,
