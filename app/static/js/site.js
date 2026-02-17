@@ -156,6 +156,7 @@
       if (!button.dataset.busyLabel) {
         button.dataset.busyLabel = button.textContent || "";
       }
+      button.dataset.busyWasDisabled = button.disabled ? "1" : "0";
       button.classList.add("is-busy");
       button.disabled = true;
       button.setAttribute("aria-busy", "true");
@@ -170,9 +171,10 @@
       button.textContent = button.dataset.busyLabel;
     }
     if (!options.keepDisabled) {
-      button.disabled = false;
+      button.disabled = button.dataset.busyWasDisabled === "1";
     }
     delete button.dataset.busyLabel;
+    delete button.dataset.busyWasDisabled;
   }
 
   function initStatusDecorators() {
@@ -919,28 +921,34 @@
       const cleanupText = deletedDays > 0 ? `，自动清理 ${deletedDays} 天过期归档` : "";
       if (archive.saved && archive.archive) {
         const changedText = archive.archive.changed ? "已更新" : "无变更";
-        archiveStatusEl.textContent = `归档${changedText}：${archive.archive.day || "-"}，记录 ${archive.archive.record_count || 0} 条${cleanupText}`;
+        setFeedback(archiveStatusEl, `归档${changedText}：${archive.archive.day || "-"}，记录 ${archive.archive.record_count || 0} 条${cleanupText}`, archive.archive.changed ? "success" : "neutral");
       } else if (archive.reason) {
-        archiveStatusEl.textContent = `归档状态：${archive.reason}${cleanupText}`;
+        setFeedback(archiveStatusEl, `归档状态：${archive.reason}${cleanupText}`, "warning");
       } else if (cleanupText) {
-        archiveStatusEl.textContent = `归档状态：无更新${cleanupText}`;
+        setFeedback(archiveStatusEl, `归档状态：无更新${cleanupText}`, "neutral");
       } else {
-        archiveStatusEl.textContent = "归档状态：无更新";
+        setFeedback(archiveStatusEl, "归档状态：无更新", "neutral");
       }
     }
     if (vectorStatusEl) {
       const vector = data.vector || {};
       const base = `索引文档 ${vector.doc_count || 0} 条，语料文件 ${vector.archive_count || 0} 个`;
-      vectorStatusEl.textContent = vector.error ? `${base}（${vector.error}）` : base;
+      if (vector.error) {
+        setFeedback(vectorStatusEl, `${base}（${vector.error}）`, "error");
+      } else {
+        setFeedback(vectorStatusEl, base, "success");
+      }
     }
     if (digestStatusEl) {
       const digest = data.digest_build || {};
       const status = String(digest.status || "unknown");
       const message = String(digest.message || "").trim();
       const dayPrefix = digestDay ? `${digestDay} ` : "";
-      digestStatusEl.textContent = message
+      const statusMessage = message
         ? `${dayPrefix}自动生成状态：${status} (${message})`
         : `${dayPrefix}自动生成状态：${status}`;
+      const tone = status === "ready" ? "success" : status === "failed" ? "error" : status === "partial" ? "warning" : "neutral";
+      setFeedback(digestStatusEl, statusMessage, tone);
     }
     if (todayAssetsEl) {
       if (!todayAssets.length) {
@@ -1086,9 +1094,7 @@
 
       const setPublishingState = (value) => {
         isPublishing = Boolean(value);
-        if (submitBtn) {
-          submitBtn.disabled = isPublishing;
-        }
+        setButtonBusy(submitBtn, isPublishing, { busyText: "发布中..." });
         if (visibilityInput) {
           visibilityInput.disabled = isPublishing;
         }
@@ -1208,7 +1214,7 @@
         }
         if (added > 0) {
           if (msgEl) {
-            msgEl.textContent = `已加入 ${added} 个文件`;
+            setFeedback(msgEl, `已加入 ${added} 个文件`, "info");
           }
           renderSelectedFiles();
         }
@@ -1391,7 +1397,7 @@
 
         if (!needTextTask && !fileTargets.length) {
           if (msgEl) {
-            msgEl.textContent = "没有需要发布的项";
+            setFeedback(msgEl, "没有需要发布的项", "warning");
           }
           return;
         }
@@ -1405,7 +1411,7 @@
         let failedCount = 0;
         setProgress(0, totalTasks, `发布进度 0/${totalTasks}`);
         if (msgEl) {
-          msgEl.textContent = "发布中...";
+          setFeedback(msgEl, "发布中...", "info");
         }
 
         if (needTextTask) {
@@ -1444,14 +1450,14 @@
 
         if (failedCount > 0 && successCount > 0) {
           if (msgEl) {
-            msgEl.textContent = `部分成功：成功 ${successCount}，失败 ${failedCount}`;
+            setFeedback(msgEl, `部分成功：成功 ${successCount}，失败 ${failedCount}`, "warning");
           }
         } else if (failedCount > 0) {
           if (msgEl) {
-            msgEl.textContent = `发布失败 ${failedCount} 项，可点击重试`;
+            setFeedback(msgEl, `发布失败 ${failedCount} 项，可点击重试`, "error");
           }
         } else if (msgEl) {
-          msgEl.textContent = successCount > 1 ? `发布成功，共 ${successCount} 条记录` : "发布成功";
+          setFeedback(msgEl, successCount > 1 ? `发布成功，共 ${successCount} 条记录` : "发布成功", "success");
         }
 
         if (successCount > 0) {
@@ -1459,7 +1465,7 @@
             await loadHome();
           } catch (error) {
             if (msgEl) {
-              msgEl.textContent = `${msgEl.textContent || ""}（列表刷新失败: ${trimUploadError(error)}）`;
+              setFeedback(msgEl, `${msgEl.textContent || ""}（列表刷新失败: ${trimUploadError(error)}）`, "warning");
             }
           }
         }
@@ -1491,7 +1497,7 @@
         fileInput.addEventListener("change", (event) => {
           const added = addFileCandidates(collectFilesFromInput(event.target.files));
           if (!added && msgEl) {
-            msgEl.textContent = "未新增文件（可能都已在列表中）";
+            setFeedback(msgEl, "未新增文件（可能都已在列表中）", "warning");
           }
           fileInput.value = "";
         });
@@ -1500,7 +1506,7 @@
         folderInput.addEventListener("change", (event) => {
           const added = addFileCandidates(collectFilesFromInput(event.target.files));
           if (!added && msgEl) {
-            msgEl.textContent = "未新增文件（可能都已在列表中）";
+            setFeedback(msgEl, "未新增文件（可能都已在列表中）", "warning");
           }
           folderInput.value = "";
         });
@@ -1529,7 +1535,7 @@
             target.error = "";
             runPublish({ mode: "single", fileIds: [id] }).catch((error) => {
               if (msgEl) {
-                msgEl.textContent = trimUploadError(error);
+                setFeedback(msgEl, trimUploadError(error), "error");
               }
             });
           }
@@ -1584,12 +1590,12 @@
             .then((rows) => {
               const added = addFileCandidates(rows);
               if (!added && msgEl) {
-                msgEl.textContent = "未新增文件（可能都已在列表中）";
+                setFeedback(msgEl, "未新增文件（可能都已在列表中）", "warning");
               }
             })
             .catch((error) => {
               if (msgEl) {
-                msgEl.textContent = `读取拖拽内容失败: ${trimUploadError(error)}`;
+                setFeedback(msgEl, `读取拖拽内容失败: ${trimUploadError(error)}`, "error");
               }
             });
         });
@@ -1609,7 +1615,7 @@
           }
           runPublish({ mode: "failed" }).catch((error) => {
             if (msgEl) {
-              msgEl.textContent = trimUploadError(error);
+              setFeedback(msgEl, trimUploadError(error), "error");
             }
           });
         });
@@ -1629,7 +1635,7 @@
           await runPublish({ mode: "all" });
         } catch (error) {
           if (msgEl) {
-            msgEl.textContent = trimUploadError(error);
+            setFeedback(msgEl, trimUploadError(error), "error");
           }
         }
       });
@@ -1647,9 +1653,7 @@
         const topK = Number(formData.get("top_k") || 6);
         const useAiChecked = Boolean(qs('input[name="use_ai"]', vectorForm)?.checked);
         const submitBtn = qs('button[type="submit"]', vectorForm);
-        if (submitBtn) {
-          submitBtn.disabled = true;
-        }
+        setButtonBusy(submitBtn, true, { busyText: "检索中..." });
         if (vectorAnswerEl) {
           vectorAnswerEl.hidden = false;
           vectorAnswerEl.textContent = "检索中...";
@@ -1671,24 +1675,28 @@
           renderVectorHits(data.citations || []);
           if (vectorStatusEl) {
             const vector = data.vector || {};
-            vectorStatusEl.textContent = `索引文档 ${vector.doc_count || 0} 条，语料文件 ${vector.archive_count || 0} 个`;
+            setFeedback(vectorStatusEl, `索引文档 ${vector.doc_count || 0} 条，语料文件 ${vector.archive_count || 0} 个`, "success");
           }
         } catch (error) {
           if (vectorAnswerEl) {
             vectorAnswerEl.hidden = false;
             vectorAnswerEl.textContent = error.message;
           }
-        } finally {
-          if (submitBtn) {
-            submitBtn.disabled = false;
+          if (vectorStatusEl) {
+            setFeedback(vectorStatusEl, `问答失败: ${error.message || "未知错误"}`, "error");
           }
+        } finally {
+          setButtonBusy(submitBtn, false);
         }
       });
     }
 
     if (vectorRebuildBtn) {
       vectorRebuildBtn.addEventListener("click", async () => {
-        vectorRebuildBtn.disabled = true;
+        setButtonBusy(vectorRebuildBtn, true, { busyText: "重建中..." });
+        if (vectorStatusEl) {
+          setFeedback(vectorStatusEl, "正在重建向量索引...", "info");
+        }
         try {
           const data = await api("/api/vector/rebuild", {
             method: "POST",
@@ -1696,7 +1704,7 @@
             body: JSON.stringify({}),
           });
           if (vectorStatusEl) {
-            vectorStatusEl.textContent = `索引已重建：文档 ${data.doc_count || 0} 条，语料文件 ${data.archive_count || 0} 个`;
+            setFeedback(vectorStatusEl, `索引已重建：文档 ${data.doc_count || 0} 条，语料文件 ${data.archive_count || 0} 个`, "success");
           }
           if (vectorAnswerEl) {
             vectorAnswerEl.hidden = false;
@@ -1704,9 +1712,11 @@
           }
           renderVectorHits([]);
         } catch (error) {
-          window.alert(error.message);
+          if (vectorStatusEl) {
+            setFeedback(vectorStatusEl, `重建失败: ${error.message || "未知错误"}`, "error");
+          }
         } finally {
-          vectorRebuildBtn.disabled = false;
+          setButtonBusy(vectorRebuildBtn, false);
         }
       });
     }
@@ -1804,8 +1814,8 @@
                 level = 2;
               } else if (ratio > 0) {
                 level = 1;
-                }
               }
+            }
             const title = `${username} 在 ${dates[index]} 有 ${count} 条记录`;
             return `
               <td
@@ -1881,6 +1891,27 @@
     `;
   }
 
+  function boardTableLoadingHtml() {
+    return `
+      <div class="board-loading-grid" aria-live="polite">
+        <div class="board-loading-item"></div>
+        <div class="board-loading-item"></div>
+        <div class="board-loading-item"></div>
+        <div class="board-loading-item"></div>
+      </div>
+    `;
+  }
+
+  function boardSideLoadingHtml() {
+    return `
+      <div class="board-side-loading" aria-live="polite">
+        <div class="board-side-loading-row"></div>
+        <div class="board-side-loading-row"></div>
+        <div class="board-side-loading-row"></div>
+      </div>
+    `;
+  }
+
   async function loadBoardSide(title, path) {
     const titleEl = qs("#board-side-title");
     const listEl = qs("#board-side-list");
@@ -1891,20 +1922,39 @@
       titleEl.textContent = title;
     }
 
-    const data = await api(path);
-    renderBoardRecordList(listEl, data.items || [], { emptyText: "无匹配记录" });
+    listEl.innerHTML = boardSideLoadingHtml();
+    try {
+      const data = await api(path);
+      renderBoardRecordList(listEl, data.items || [], { emptyText: "无匹配记录" });
+    } catch (error) {
+      listEl.innerHTML = `<p class="feedback-inline" data-tone="error">读取失败: ${escapeHtml(error.message || "未知错误")}</p>`;
+    }
   }
 
   async function loadBoard() {
     const form = qs("#board-filter-form");
+    const submitBtn = form ? qs('button[type="submit"]', form) : null;
+    const wrap = qs("#board-table-wrap");
+    if (wrap) {
+      wrap.innerHTML = boardTableLoadingHtml();
+    }
+    setButtonBusy(submitBtn, true, { busyText: "刷新中..." });
     const formData = new FormData(form);
     const tag = String(formData.get("tag") || "").trim();
     const query = buildQuery({
       days: formData.get("days") || 7,
       tag,
     });
-    const data = await api(`/api/board?${query}`);
-    renderBoardTable(data, tag);
+    try {
+      const data = await api(`/api/board?${query}`);
+      renderBoardTable(data, tag);
+    } catch (error) {
+      if (wrap) {
+        wrap.innerHTML = `<p class="feedback-inline" data-tone="error">Board 加载失败: ${escapeHtml(error.message || "未知错误")}</p>`;
+      }
+    } finally {
+      setButtonBusy(submitBtn, false);
+    }
   }
 
   async function initBoard() {
@@ -1912,7 +1962,7 @@
     if (form) {
       form.addEventListener("submit", (event) => {
         event.preventDefault();
-        loadBoard().catch((error) => window.alert(error.message));
+        loadBoard().catch((error) => window.console.error(error));
       });
     }
 
@@ -1934,18 +1984,18 @@
         switch (action) {
           case "user": {
             const userId = trigger.dataset.userId;
-            loadBoardSide(`用户 #${userId} 的可见记录`, `/api/board/user/${userId}/records?${buildQuery({ tag })}`).catch((error) => window.alert(error.message));
+            loadBoardSide(`用户 #${userId} 的可见记录`, `/api/board/user/${userId}/records?${buildQuery({ tag })}`).catch((error) => window.console.error(error));
             break;
           }
           case "day": {
             const day = trigger.dataset.day;
-            loadBoardSide(`${day} 的公开记录`, `/api/board/date/${day}?${buildQuery({ tag })}`).catch((error) => window.alert(error.message));
+            loadBoardSide(`${day} 的公开记录`, `/api/board/date/${day}?${buildQuery({ tag })}`).catch((error) => window.console.error(error));
             break;
           }
           case "cell": {
             const userId = trigger.dataset.userId;
             const day = trigger.dataset.day;
-            loadBoardSide(`用户 #${userId} 在 ${day} 的记录`, `/api/board/cell?user_id=${encodeURIComponent(userId)}&day=${encodeURIComponent(day)}${tagQuery}`).catch((error) => window.alert(error.message));
+            loadBoardSide(`用户 #${userId} 在 ${day} 的记录`, `/api/board/cell?user_id=${encodeURIComponent(userId)}&day=${encodeURIComponent(day)}${tagQuery}`).catch((error) => window.console.error(error));
             break;
           }
           default:
@@ -2079,10 +2129,10 @@
     return `<span class="echo-badge file-${normalized}">${escapeHtml(label)}</span>`;
   }
 
-  function setEchoesStatus(text) {
+  function setEchoesStatus(text, tone = "neutral") {
     const statusEl = qs("#echoes-status");
     if (statusEl) {
-      statusEl.textContent = text;
+      setFeedback(statusEl, text, tone);
     }
   }
 
@@ -2109,6 +2159,7 @@
   function setEchoesLoadingVisible(visible) {
     const loadingEl = qs("#echoes-loading");
     if (loadingEl) {
+      markFeedbackEl(loadingEl, "info");
       loadingEl.hidden = !visible;
     }
   }
@@ -2116,7 +2167,7 @@
   function setEchoesEmptyVisible(visible, text = "暂无公开内容") {
     const emptyEl = qs("#echoes-empty");
     if (emptyEl) {
-      emptyEl.textContent = text;
+      setFeedback(emptyEl, text, "warning");
       emptyEl.hidden = !visible;
     }
   }
@@ -2124,6 +2175,7 @@
   function setEchoesEndVisible(visible) {
     const endEl = qs("#echoes-end");
     if (endEl) {
+      markFeedbackEl(endEl, "success");
       endEl.hidden = !visible;
     }
   }
@@ -2341,7 +2393,7 @@
 
     echoesState.loading = true;
     setEchoesLoadingVisible(true);
-    setEchoesStatus("加载中...");
+    setEchoesStatus("加载中...", "info");
 
     try {
       const query = buildQuery({
@@ -2375,18 +2427,19 @@
 
       if (!echoesState.visibleCount) {
         setEchoesEmptyVisible(true, echoesState.fileType ? "该类型暂无公开内容" : "暂无公开内容");
-        setEchoesStatus("暂无数据");
+        setEchoesStatus("暂无数据", "warning");
       } else if (echoesState.hasMore) {
         setEchoesEmptyVisible(false);
-        setEchoesStatus("向下滚动自动加载更多");
+        setEchoesStatus("向下滚动自动加载更多", "info");
       } else {
         setEchoesEmptyVisible(false);
-        setEchoesStatus("已加载全部内容");
+        setEchoesStatus("已加载全部内容", "success");
       }
       setEchoesEndVisible(!echoesState.hasMore && echoesState.visibleCount > 0);
     } catch (error) {
-      setEchoesStatus(`加载失败: ${error.message || "未知错误"}`);
-      throw error;
+      echoesState.hasMore = false;
+      setEchoesStatus(`加载失败: ${error.message || "未知错误"}`, "error");
+      setEchoesEmptyVisible(true, "加载失败，请稍后重试");
     } finally {
       echoesState.loading = false;
       setEchoesLoadingVisible(false);
@@ -2437,7 +2490,7 @@
         echoesState.fileType = nextType;
         setActiveEchoesType(echoesState.fileType);
         setEchoesCount();
-        loadEchoes({ reset: true }).catch((error) => window.alert(error.message));
+        loadEchoes({ reset: true }).catch((error) => window.console.error(error));
       });
     }
 
@@ -2460,7 +2513,7 @@
 
     if (refreshBtn) {
       refreshBtn.addEventListener("click", () => {
-        loadEchoes({ reset: true }).catch((error) => window.alert(error.message));
+        loadEchoes({ reset: true }).catch((error) => window.console.error(error));
       });
     }
   }
@@ -2483,6 +2536,14 @@
       tag: formData.get("tag") || "",
       order: formData.get("order") || "asc",
     };
+  }
+
+  function setNoticeMeta(text, tone = "neutral") {
+    const metaEl = qs("#notice-render-meta");
+    if (metaEl) {
+      setFeedback(metaEl, text, tone);
+      metaEl.hidden = false;
+    }
   }
 
   function initNoticeReaderToolbar() {
@@ -2558,11 +2619,8 @@
   }
 
   function clearNoticeRender() {
-    const metaEl = qs("#notice-render-meta");
     const htmlEl = qs("#notice-render-html");
-    if (metaEl) {
-      metaEl.textContent = "";
-    }
+    setNoticeMeta("", "neutral");
     if (htmlEl) {
       htmlEl.innerHTML = "";
     }
@@ -2572,18 +2630,29 @@
   async function loadNoticeRender(filters = readNoticeFilters()) {
     const query = buildQuery(filters);
     const path = query ? `/api/notice/render?${query}` : "/api/notice/render";
-    const data = await api(path);
-
-    const metaEl = qs("#notice-render-meta");
+    const form = qs("#notice-filter-form");
+    const submitBtn = form ? qs('button[type="submit"]', form) : null;
     const htmlEl = qs("#notice-render-html");
-    if (metaEl) {
-      metaEl.textContent = `匹配记录: ${data.count || 0}`;
+    setButtonBusy(submitBtn, true, { busyText: "渲染中..." });
+    setNoticeMeta("正在渲染...", "info");
+    try {
+      const data = await api(path);
+      if (htmlEl) {
+        htmlEl.innerHTML = data.rendered_html || "";
+      }
+      setNoticeMeta(`匹配记录: ${data.count || 0}`, "success");
+      applyNoticeReaderPrefs(noticeReaderPrefs, { persist: false });
+      setNoticeResultsVisible(true);
+    } catch (error) {
+      const message = String(error?.message || "渲染失败");
+      if (htmlEl) {
+        htmlEl.innerHTML = `<p class="feedback-inline" data-tone="error">${escapeHtml(message)}</p>`;
+      }
+      setNoticeMeta(`渲染失败: ${message}`, "error");
+      setNoticeResultsVisible(true);
+    } finally {
+      setButtonBusy(submitBtn, false);
     }
-    if (htmlEl) {
-      htmlEl.innerHTML = data.rendered_html || "";
-    }
-    applyNoticeReaderPrefs(noticeReaderPrefs, { persist: false });
-    setNoticeResultsVisible(true);
   }
 
   async function initNotice() {
@@ -2599,7 +2668,7 @@
     if (form) {
       form.addEventListener("submit", (event) => {
         event.preventDefault();
-        loadNoticeRender(readNoticeFilters()).catch((error) => window.alert(error.message));
+        loadNoticeRender(readNoticeFilters()).catch((error) => window.console.error(error));
       });
     }
     await loadNoticeRender();
@@ -2741,6 +2810,7 @@
   async function boot() {
     initHeaderNavToggle();
     initRevealAnimations();
+    initStatusDecorators();
     bindGlobalRecordActions();
     initDialogControls();
 
