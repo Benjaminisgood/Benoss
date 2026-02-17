@@ -598,6 +598,8 @@ AI 生成链路：
 ./benoss.sh start
 ./benoss.sh status
 ./benoss.sh logs
+./benoss.sh digest-cron install --time 00:00
+./benoss.sh digest-cron status
 ```
 
 手动：
@@ -625,6 +627,7 @@ benoss-sync pull --username <user> --output ./pulled_records
 补充：
 
 - 若 `digest-build` 在 CLI 报 `Unable to build URLs outside an active request`，优先改走 `POST /api/digest/daily`（admin）触发同等流程。
+- `./benoss.sh start`/`bootstrap` 不会自动安装 cron；若需要每天定时生成日报资产，需手动执行 `./benoss.sh digest-cron install --time 00:00`。
 
 ---
 

@@ -128,7 +128,7 @@ SETTING_DEFINITIONS: list[dict] = [
         "label": "首页自动生成日报资产",
         "type": "bool",
         "group": "站点",
-        "description": "首页访问时自动补齐当天公开内容的博客/播客/海报。",
+        "description": "首页访问时自动补齐最近闭合日（通常是昨天）的公开内容博客/播客/海报。",
         "default": True,
     },
     {

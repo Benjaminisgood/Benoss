@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # benoss: manage Benoss Flask/Gunicorn service (local or server)
-# Usage: benoss {start|stop|status|restart|ip|logs|check|update|init|bootstrap}
+# Usage: benoss {start|stop|status|restart|ip|logs|check|update|init|bootstrap|digest-run|digest-cron}
 #
 # Notes:
 # - Keep all ports in one place (PORTS section)
@@ -72,6 +72,11 @@ AUTO_INIT_DB="${BENOSS_AUTO_INIT_DB:-1}"
 DAILY_ARCHIVE_DIR="${BENOSS_DAILY_ARCHIVE_DIR:-$PROJECT_PATH/data/daily-archive}"
 VECTOR_STORE_DIR="${BENOSS_VECTOR_STORE_DIR:-$PROJECT_PATH/data/vector-store}"
 
+# Daily digest cron helpers
+DIGEST_CRON_TAG="${BENOSS_DIGEST_CRON_TAG:-BENOSS_DAILY_DIGEST}"
+DIGEST_CRON_TIME="${BENOSS_DIGEST_CRON_TIME:-00:00}"
+DIGEST_CRON_LOG_FILE="${BENOSS_DIGEST_CRON_LOG_FILE:-$LOG_DIR/digest-cron.log}"
+
 ########################################
 # Helpers
 ########################################
@@ -98,6 +103,74 @@ is_truthy() {
     1|[Yy]|[Yy][Ee][Ss]|[Tt][Rr][Uu][Ee]|[Oo][Nn]) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+shell_quote() {
+  local value="$1"
+  printf "'%s'" "${value//\'/\'\"\'\"\'}"
+}
+
+parse_hhmm() {
+  local text="$1"
+  if [[ ! "$text" =~ ^([01]?[0-9]|2[0-3]):([0-5][0-9])$ ]]; then
+    return 1
+  fi
+  local h="${BASH_REMATCH[1]}"
+  local m="${BASH_REMATCH[2]}"
+  printf "%d %d\n" "$h" "$m"
+}
+
+ensure_crontab_cmd() {
+  need_cmd crontab
+}
+
+read_crontab_safe() {
+  crontab -l 2>/dev/null || true
+}
+
+digest_cron_entry_line() {
+  if ! command -v crontab >/dev/null 2>&1; then
+    return 2
+  fi
+  local content line
+  content="$(read_crontab_safe)"
+  line="$(printf "%s\n" "$content" | grep -F "$DIGEST_CRON_TAG" | tail -n 1 || true)"
+  [[ -n "$line" ]] || return 1
+  printf "%s\n" "$line"
+}
+
+print_digest_cron_hint() {
+  local line=""
+  if ! line="$(digest_cron_entry_line)"; then
+    case "$?" in
+      2)
+        info "crontab command not found; skip digest cron check."
+        ;;
+      *)
+        info "Daily digest cron is not installed."
+        info "Install it: $(basename "$0") digest-cron install --time 00:00"
+        info "Then verify: $(basename "$0") digest-cron status"
+        ;;
+    esac
+    return 0
+  fi
+  info "Daily digest cron entry: $line"
+}
+
+strip_digest_cron_entries() {
+  local content="$1"
+  printf "%s\n" "$content" | awk -v tag="$DIGEST_CRON_TAG" 'index($0, tag) == 0'
+}
+
+build_digest_cron_entry() {
+  local hour="$1"
+  local minute="$2"
+  local project_q runner_q log_q
+
+  project_q="$(shell_quote "$PROJECT_PATH")"
+  runner_q="$(shell_quote "$PROJECT_PATH/benoss.sh")"
+  log_q="$(shell_quote "$DIGEST_CRON_LOG_FILE")"
+  echo "${minute} ${hour} * * * cd ${project_q} && ${runner_q} digest-run >> ${log_q} 2>&1 # ${DIGEST_CRON_TAG}"
 }
 
 compute_file_sha256() {
@@ -475,7 +548,7 @@ get_ips() {
 
 show_help() {
   cat <<EOF
-Usage: $(basename "$0") {start|stop|status|restart|ip|logs|check|update|init|bootstrap}
+Usage: $(basename "$0") {start|stop|status|restart|ip|logs|check|update|init|bootstrap|digest-run|digest-cron}
 
 Config via env vars:
   BENOSS_PROJECT_PATH=$PROJECT_PATH
@@ -494,15 +567,27 @@ Config via env vars:
   BENOSS_AUTO_INIT_DB=$AUTO_INIT_DB
   BENOSS_DAILY_ARCHIVE_DIR=$DAILY_ARCHIVE_DIR
   BENOSS_VECTOR_STORE_DIR=$VECTOR_STORE_DIR
+  BENOSS_DIGEST_CRON_TAG=$DIGEST_CRON_TAG
+  BENOSS_DIGEST_CRON_TIME=$DIGEST_CRON_TIME
+  BENOSS_DIGEST_CRON_LOG_FILE=$DIGEST_CRON_LOG_FILE
 
 Examples:
   BENOSS_APP_PORT=80 $(basename "$0") start
   $(basename "$0") init
   $(basename "$0") bootstrap
+  $(basename "$0") digest-run
+  $(basename "$0") digest-run --day 2026-02-16 --timezone Asia/Shanghai --force
+  $(basename "$0") digest-cron install --time 00:00
+  $(basename "$0") digest-cron status
+  $(basename "$0") digest-cron remove
   BENOSS_BACKUP_ITEMS=".env data uploads" $(basename "$0") update
   $(basename "$0") logs
   $(basename "$0") logs --tail 200 --grep ERROR
   $(basename "$0") logs --rotate
+
+Notes:
+  - start/init/bootstrap do NOT auto-install digest cron.
+  - Install cron manually with: $(basename "$0") digest-cron install --time 00:00
 EOF
 }
 
@@ -670,6 +755,7 @@ cmd_start() {
 
   if is_running; then
     ok "Already running (PID=$(cat "$PID_FILE"))"
+    print_digest_cron_hint
     release_lock
     return 0
   fi
@@ -722,6 +808,7 @@ cmd_start() {
     ip="${line#*: }"
     [[ -n "${ip:-}" ]] && echo "   - $iface: http://$ip:${APP_PORT}"
   done < "$INFO_FILE"
+  print_digest_cron_hint
 
   release_lock
 }
@@ -813,11 +900,130 @@ cmd_init() {
     ok "Database initialized."
   fi
 
+  print_digest_cron_hint
   ok "Init complete."
 }
 
 cmd_bootstrap() {
   cmd_init
+}
+
+cmd_digest_run() {
+  ensure_dirs
+  [[ -d "$PROJECT_PATH" ]] || die "Project path not found: $PROJECT_PATH"
+  cd "$PROJECT_PATH"
+  ensure_env_file
+  ensure_local_storage_dirs
+  if ! ensure_venv; then
+    info "digest-run stopped: virtualenv missing."
+    return 1
+  fi
+  ensure_deps
+
+  local py
+  py="$(python_bin)"
+  mkdir -p "$LOG_DIR"
+
+  info "Running daily digest build..."
+  "$py" -m flask --app app digest-build "$@"
+}
+
+cmd_digest_cron_status() {
+  ensure_crontab_cmd
+  local line=""
+  if ! line="$(digest_cron_entry_line)"; then
+    info "Digest cron is not installed."
+    return 1
+  fi
+  ok "Digest cron is installed:"
+  echo "$line"
+}
+
+cmd_digest_cron_install() {
+  ensure_crontab_cmd
+  ensure_dirs
+
+  local time_text="$DIGEST_CRON_TIME"
+  while (( $# > 0 )); do
+    case "$1" in
+      --time)
+        [[ $# -ge 2 ]] || die "Missing value for --time (expected HH:MM)"
+        time_text="$2"
+        shift 2
+        ;;
+      --help|-h)
+        cat <<EOF
+Usage: $(basename "$0") digest-cron install [--time HH:MM]
+  --time HH:MM   Run time in local system timezone (default: $DIGEST_CRON_TIME)
+EOF
+        return 0
+        ;;
+      *)
+        die "Unknown digest-cron install option: $1"
+        ;;
+    esac
+  done
+
+  local parsed hour minute
+  parsed="$(parse_hhmm "$time_text")" || die "Invalid --time format: $time_text (expected HH:MM, 24h)"
+  hour="$(awk '{print $1}' <<< "$parsed")"
+  minute="$(awk '{print $2}' <<< "$parsed")"
+
+  mkdir -p "$(dirname "$DIGEST_CRON_LOG_FILE")"
+
+  local current cleaned entry new_content
+  current="$(read_crontab_safe)"
+  cleaned="$(strip_digest_cron_entries "$current")"
+  entry="$(build_digest_cron_entry "$hour" "$minute")"
+
+  if [[ -n "$(printf "%s" "$cleaned" | tr -d '[:space:]')" ]]; then
+    new_content="${cleaned}"$'\n'"${entry}"
+  else
+    new_content="${entry}"
+  fi
+
+  printf "%s\n" "$new_content" | crontab - || die "Failed to install digest cron entry."
+  ok "Digest cron installed at $(printf '%02d:%02d' "$hour" "$minute")."
+  echo "$entry"
+}
+
+cmd_digest_cron_remove() {
+  ensure_crontab_cmd
+  local current cleaned
+  current="$(read_crontab_safe)"
+  cleaned="$(strip_digest_cron_entries "$current")"
+
+  if [[ "$cleaned" == "$current" ]]; then
+    info "No digest cron entry found."
+    return 0
+  fi
+
+  printf "%s\n" "$cleaned" | crontab - || die "Failed to remove digest cron entry."
+  ok "Digest cron entry removed."
+}
+
+cmd_digest_cron() {
+  local action="${1:-status}"
+  shift || true
+
+  case "$action" in
+    install) cmd_digest_cron_install "$@" ;;
+    status)  cmd_digest_cron_status ;;
+    remove|uninstall) cmd_digest_cron_remove ;;
+    --help|-h|help)
+      cat <<EOF
+Usage: $(basename "$0") digest-cron {install|status|remove} [options]
+
+Commands:
+  install [--time HH:MM]   Install or replace daily digest cron task
+  status                    Show installed digest cron entry
+  remove                    Remove digest cron entry
+EOF
+      ;;
+    *)
+      die "Unknown digest-cron action: $action (try: digest-cron --help)"
+      ;;
+  esac
 }
 
 cmd_ip() {
@@ -959,16 +1165,18 @@ EOF
 # Main
 ########################################
 case "${1:-}" in
-  start)   cmd_start ;;
-  stop)    cmd_stop ;;
-  status)  cmd_status ;;
-  restart) cmd_restart ;;
-  ip)      cmd_ip ;;
-  logs)    cmd_logs ;;
-  check)   cmd_check ;;
-  update)  cmd_update ;;
-  init)    cmd_init ;;
-  bootstrap) cmd_bootstrap ;;
+  start)   shift; cmd_start "$@" ;;
+  stop)    shift; cmd_stop "$@" ;;
+  status)  shift; cmd_status "$@" ;;
+  restart) shift; cmd_restart "$@" ;;
+  ip)      shift; cmd_ip "$@" ;;
+  logs)    shift; cmd_logs "$@" ;;
+  check)   shift; cmd_check "$@" ;;
+  update)  shift; cmd_update "$@" ;;
+  init)    shift; cmd_init "$@" ;;
+  bootstrap) shift; cmd_bootstrap "$@" ;;
+  digest-run) shift; cmd_digest_run "$@" ;;
+  digest-cron) shift; cmd_digest_cron "$@" ;;
   -h|--help|help|"") show_help ;;
   *) die "Unknown command: $1 (try --help)" ;;
 esac

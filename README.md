@@ -1,6 +1,6 @@
 # Benoss
 
-Benoss 是一个“学习记录流”应用：用户可以发布文本或文件记录，按标签筛选、评论互动；Notice 页面用于筛选并拼接整页内容，系统后台会自动基于当天公开内容生成博客、播客和海报并展示到 Home。
+Benoss 是一个“学习记录流”应用：用户可以发布文本或文件记录，按标签筛选、评论互动；Notice 页面用于筛选并拼接整页内容，系统会在自然日结束后，自动基于上一日公开内容生成博客、播客和海报并展示到 Home。
 
 项目当前是一个完整的 Flask 单体应用（Web 页面 + API + 数据库 + 对象存储 + AI 调用）。
 
@@ -14,7 +14,7 @@ Benoss 是一个“学习记录流”应用：用户可以发布文本或文件�
   - 作者可编辑或删除自己的记录。
 - 评论系统：对“你有权限看到”的记录发表评论。
 - 看板视图：
-  - `Home`：今天公开记录概览 + 快速发布 + 今日自动生成资产；
+- `Home`：今天公开记录概览 + 快速发布 + 已闭合日自动生成资产；
   - `Board`：按用户 × 日期统计热力表 以及记录查看；
   - `Echoes`：公开内容流；
   - `Notice`：按筛选条件拼接整页内容（不含页面内 AI 生成入口）。
@@ -406,8 +406,8 @@ Echoes 的 `entries[]` 额外字段：
 - Home 页面：
   - 拉取今日公开记录：`GET /api/home/today`
   - 快速发布：`POST /api/push`
-  - 查看系统自动生成的今日博客/播客/海报
-  - `today_assets` 仅包含：`visibility=public` 且 `is_daily_digest=true` 且 `source_day=今天` 的资产
+  - 查看系统自动生成的上一日博客/播客/海报
+  - `today_assets` 仅包含：`visibility=public` 且 `is_daily_digest=true` 且 `source_day=已闭合日` 的资产
   - 手动测试生成的 `private` 资产不会出现在 Home 卡片中
   - 本地向量问答：`POST /api/vector/chat`
   - 重建向量索引：`POST /api/vector/rebuild`
@@ -429,7 +429,17 @@ Echoes 的 `entries[]` 额外字段：
 ```bash
 ./benoss.sh bootstrap
 ./benoss.sh start
+# 安装每天 00:00 自动生成日报资产（博客/播客/海报）
+./benoss.sh digest-cron install --time 00:00
+# 查看/移除该定时任务
+./benoss.sh digest-cron status
+./benoss.sh digest-cron remove
 ```
+
+注意：
+- `./benoss.sh start` 和 `./benoss.sh bootstrap` 不会自动安装 cron。
+- 如果你希望“每天 00:00 自动生成”，必须手动执行一次 `./benoss.sh digest-cron install --time 00:00`。
+- 可用 `./benoss.sh digest-cron status` 确认是否已生效。
 
 如需关闭某些自动步骤，可用环境变量：
 

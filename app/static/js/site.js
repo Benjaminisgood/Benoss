@@ -491,7 +491,8 @@
 
     const data = await api("/api/home/today");
     const records = data.public_records || [];
-    const todayAssets = data.today_assets || [];
+    const todayAssets = data.digest_assets || data.today_assets || [];
+    const digestDay = String(data.digest_day || data.digest_build?.day || "").trim();
 
     if (dateEl) {
       dateEl.textContent = `日期: ${data.date || ""} (${data.timezone || "UTC"})`;
@@ -524,11 +525,15 @@
       const digest = data.digest_build || {};
       const status = String(digest.status || "unknown");
       const message = String(digest.message || "").trim();
-      digestStatusEl.textContent = message ? `自动生成状态：${status} (${message})` : `自动生成状态：${status}`;
+      const dayPrefix = digestDay ? `${digestDay} ` : "";
+      digestStatusEl.textContent = message
+        ? `${dayPrefix}自动生成状态：${status} (${message})`
+        : `${dayPrefix}自动生成状态：${status}`;
     }
     if (todayAssetsEl) {
       if (!todayAssets.length) {
-        todayAssetsEl.innerHTML = "<p class=\"muted\">今日自动内容尚未生成</p>";
+        const dayText = digestDay ? `${escapeHtml(digestDay)} 的日报内容尚未生成` : "已闭合日报内容尚未生成";
+        todayAssetsEl.innerHTML = `<p class="muted">${dayText}</p>`;
       } else {
         todayAssetsEl.innerHTML = todayAssets.map((asset) => echoAssetCardHtml(asset)).join("");
       }

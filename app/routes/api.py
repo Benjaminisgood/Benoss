@@ -2431,9 +2431,24 @@ def _daily_digest_assets_for_day(day_value: date) -> list[GeneratedAsset]:
     )
 
 
-def _maybe_auto_build_today_digest(*, day_value: date, timezone_name: str, record_count: int) -> dict:
+def _public_record_count_for_day(*, day_value: date, timezone_name: str) -> int:
+    start, end = _utc_bounds_for_local_day(day_value, timezone_name)
+    total = (
+        db.session.query(func.count(Record.id))
+        .filter(
+            Record.visibility == "public",
+            Record.created_at >= start,
+            Record.created_at < end,
+        )
+        .scalar()
+    )
+    return int(total or 0)
+
+
+def _maybe_auto_build_digest_for_day(*, day_value: date, timezone_name: str, record_count: int) -> dict:
     enabled = get_setting_bool("HOME_AUTO_BUILD_DAILY_ASSETS", default=True)
     state = {
+        "day": day_value.isoformat(),
         "enabled": bool(enabled),
         "triggered": False,
         "status": "disabled" if not enabled else "skipped",
@@ -2444,7 +2459,7 @@ def _maybe_auto_build_today_digest(*, day_value: date, timezone_name: str, recor
 
     if record_count <= 0:
         state["status"] = "no_records"
-        state["message"] = "today has no public records"
+        state["message"] = f"{day_value.isoformat()} has no public records"
         return state
 
     if not _ai_provider_settings():
@@ -3214,6 +3229,7 @@ def home_today():
     except Exception:
         tz = timezone.utc
     today = datetime.now(tz).date()
+    digest_day = today - timedelta(days=1)
     start, end = _utc_bounds_for_local_day(today, timezone_name)
 
     records = (
@@ -3239,12 +3255,14 @@ def home_today():
             vector_state["ready"] = False
             vector_state["error"] = str(exc)
 
-    digest_build_state = _maybe_auto_build_today_digest(
-        day_value=today,
+    digest_record_count = _public_record_count_for_day(day_value=digest_day, timezone_name=timezone_name)
+    digest_build_state = _maybe_auto_build_digest_for_day(
+        day_value=digest_day,
         timezone_name=timezone_name,
-        record_count=len(records),
+        record_count=digest_record_count,
     )
-    daily_assets = _daily_digest_assets_for_day(today)
+    daily_assets = _daily_digest_assets_for_day(digest_day)
+    digest_assets_payload = [_generated_asset_payload(item) for item in daily_assets]
 
     ai_settings = _ai_provider_settings()
 
@@ -3252,11 +3270,13 @@ def home_today():
         {
             "date": today.isoformat(),
             "timezone": timezone_name,
+            "digest_day": digest_day.isoformat(),
             "public_records": [
                 _record_payload(item, viewer=user, include_content=False, include_comments=False)
                 for item in records
             ],
-            "today_assets": [_generated_asset_payload(item) for item in daily_assets],
+            "today_assets": digest_assets_payload,
+            "digest_assets": digest_assets_payload,
             "digest_build": digest_build_state,
             "ai": {
                 "enabled": bool(ai_settings),
