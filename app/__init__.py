@@ -71,7 +71,10 @@ def create_app() -> Flask:
                 day_value = datetime.now(tz).date() - timedelta(days=1)
 
             try:
-                result = build_daily_public_digest(day_value=day_value, force=bool(force), timezone_name=tz_name)
+                # digest-build runs under Flask CLI (no request context), while
+                # payload generation uses url_for for blob endpoints.
+                with app.test_request_context("/"):
+                    result = build_daily_public_digest(day_value=day_value, force=bool(force), timezone_name=tz_name)
             except Exception as exc:
                 raise click.ClickException(str(exc)) from exc
             click.echo(json.dumps(result, ensure_ascii=False))
