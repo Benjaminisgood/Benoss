@@ -201,6 +201,35 @@ def _preview_text(value: str, *, limit: int = 220) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def _human_size(size_bytes: int | None) -> str:
+    value = int(size_bytes or 0)
+    if value <= 0:
+        return ""
+
+    units = ("B", "KB", "MB", "GB", "TB")
+    size = float(value)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.1f}".rstrip("0").rstrip(".") + f" {unit}"
+        size /= 1024
+    return f"{value} B"
+
+
+def _notice_file_meta_html(payload: dict) -> str:
+    parts: list[str] = []
+    content_type = str(payload.get("content_type") or "").strip()
+    size_text = _human_size(payload.get("size_bytes"))
+    if content_type:
+        parts.append(html.escape(content_type))
+    if size_text:
+        parts.append(size_text)
+    if not parts:
+        return ""
+    return f"<p class=\"notice-file-meta\">{' | '.join(parts)}</p>"
+
+
 def _parse_tags(raw) -> list[str]:
     if raw is None:
         return []
@@ -814,7 +843,10 @@ def _create_record_for_user(user: User):
     return jsonify({"records": record_items, "count": len(record_items)}), 201
 
 
-def _record_html_content(content: Content) -> str:
+def _record_html_content(content: Content | None) -> str:
+    if not content:
+        return "<p class=\"muted\">内容缺失</p>"
+
     payload = _content_payload(content)
     if payload["kind"] == "text":
         return f"<pre>{html.escape(payload.get('text') or '')}</pre>"
@@ -826,14 +858,64 @@ def _record_html_content(content: Content) -> str:
 
     escaped_src = html.escape(src, quote=True)
     escaped_name = html.escape(payload.get("filename") or "file")
+    meta_html = _notice_file_meta_html(payload)
+    action_open = (
+        f"<a class=\"notice-media-action\" href=\"{escaped_src}\" target=\"_blank\" rel=\"noreferrer noopener\">打开原文件</a>"
+    )
 
     if media_type == "image":
-        return f"<img src=\"{escaped_src}\" alt=\"{escaped_name}\">"
+        return (
+            "<figure class=\"notice-media notice-media-image\">"
+            "<div class=\"notice-media-stage\">"
+            f"<a class=\"notice-media-link\" href=\"{escaped_src}\" target=\"_blank\" rel=\"noreferrer noopener\">"
+            f"<img loading=\"lazy\" decoding=\"async\" src=\"{escaped_src}\" alt=\"{escaped_name}\">"
+            "</a>"
+            "</div>"
+            "<figcaption class=\"notice-media-caption\">"
+            "<div class=\"notice-media-caption-main\">"
+            f"<p class=\"notice-media-name\">{escaped_name}</p>"
+            f"{meta_html}"
+            "</div>"
+            f"{action_open}"
+            "</figcaption>"
+            "</figure>"
+        )
     if media_type == "video":
-        return f"<video controls src=\"{escaped_src}\"></video>"
+        return (
+            "<figure class=\"notice-media notice-media-video\">"
+            "<div class=\"notice-media-stage\">"
+            f"<video controls preload=\"metadata\" playsinline src=\"{escaped_src}\"></video>"
+            "</div>"
+            "<figcaption class=\"notice-media-caption\">"
+            "<div class=\"notice-media-caption-main\">"
+            f"<p class=\"notice-media-name\">{escaped_name}</p>"
+            f"{meta_html}"
+            "</div>"
+            f"{action_open}"
+            "</figcaption>"
+            "</figure>"
+        )
     if media_type == "audio":
-        return f"<audio controls src=\"{escaped_src}\"></audio>"
-    return f"<p><a href=\"{escaped_src}\" target=\"_blank\" rel=\"noreferrer\">{escaped_name}</a></p>"
+        return (
+            "<section class=\"notice-media notice-media-audio\">"
+            "<header class=\"notice-audio-head\">"
+            "<p class=\"notice-audio-label\">AUDIO</p>"
+            "<div class=\"notice-audio-main\">"
+            f"<p class=\"notice-media-name\">{escaped_name}</p>"
+            f"{meta_html}"
+            "</div>"
+            f"{action_open}"
+            "</header>"
+            f"<audio class=\"notice-audio-control\" controls preload=\"none\" src=\"{escaped_src}\"></audio>"
+            "</section>"
+        )
+    return (
+        "<section class=\"notice-file-card\">"
+        f"<p class=\"notice-file-name\">{escaped_name}</p>"
+        f"{meta_html}"
+        f"<p class=\"notice-file-actions\">{action_open}</p>"
+        "</section>"
+    )
 
 
 def _render_notice_html(records: list[Record], *, day: str, user_id: str, tag: str) -> str:
