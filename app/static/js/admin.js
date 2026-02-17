@@ -240,8 +240,8 @@
     }
 
     form.innerHTML = filtered
-      .map((group, index) => {
-        const isOpen = hasActiveFilter() || index === 0;
+      .map((group) => {
+        const isOpen = hasActiveFilter();
         const itemsHtml = group.items
           .map(
             (item) => `

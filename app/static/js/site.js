@@ -216,6 +216,7 @@
     const shouldOpen = Boolean(value);
     siteHeader.classList.toggle("is-nav-open", shouldOpen);
     siteNavToggle.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+    document.body.classList.toggle("nav-open-lock", shouldOpen);
     window.requestAnimationFrame(syncStickyHeaderOffset);
   }
 
