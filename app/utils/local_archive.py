@@ -646,13 +646,33 @@ def _archive_file_blob(*, day_value: date, record, content_payload: dict) -> dic
     return info
 
 
+def _read_text_content(content) -> str:
+    fallback = _normalize_text(str(getattr(content, "text_content", "") or ""))
+    oss_key = str(getattr(content, "oss_key", "") or "").strip()
+    if not oss_key:
+        return fallback
+
+    try:
+        raw = get_object_bytes(oss_key)
+    except Exception:
+        return fallback
+    if not raw:
+        return fallback
+
+    decoded, _ = _decode_text_bytes(raw)
+    if not decoded:
+        decoded = raw.decode("utf-8", errors="replace")
+    text = _normalize_text(decoded)
+    return text or fallback
+
+
 def _record_text(record, *, content_payload: dict, extraction: dict) -> str:
     content = getattr(record, "content", None)
     if not content:
         return ""
 
     if getattr(content, "kind", "") == "text":
-        text = _normalize_text(str(getattr(content, "text_content", "") or ""))
+        text = _read_text_content(content)
         return text or _normalize_text(str(getattr(record, "preview", "") or ""))
 
     filename = str(content_payload.get("filename") or "file")
@@ -690,12 +710,18 @@ def _record_payload(record, *, max_file_bytes: int, day_value: date) -> dict:
     kind = str(getattr(content, "kind", "") or "")
 
     if kind == "text":
-        text_value = _normalize_text(str(getattr(content, "text_content", "") or ""))
+        text_value = _read_text_content(content)
         content_payload = {
             "kind": "text",
             "text": text_value,
             "media_type": "text",
         }
+        oss_key = str(getattr(content, "oss_key", "") or "").strip()
+        if oss_key:
+            content_payload["oss_key"] = oss_key
+            content_payload["content_type"] = str(getattr(content, "content_type", "") or "text/plain; charset=utf-8")
+            content_payload["size_bytes"] = int(getattr(content, "size_bytes", 0) or 0)
+            content_payload["sha256"] = str(getattr(content, "sha256", "") or "")
         extraction = {
             "status": "inline_text",
             "text": "",

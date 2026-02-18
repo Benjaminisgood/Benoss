@@ -19,11 +19,20 @@
     "\"": "&quot;",
     "'": "&#39;",
   });
+  const linkPattern = /(?:https?:\/\/|www\.)[^\s<>"']+/gi;
+  const linkTrailingChars = new Set([".", ",", ";", ":", "!", "?", ")", "]", "}", "，", "。", "；", "：", "！", "？", "）", "】", "》", "、"]);
+  const autoTagPattern = /(?:^|[^0-9A-Za-z_:/#])#([0-9A-Za-z_\-\u3400-\u9fff]{1,40})/g;
   const recordActionHandlers = {
     "view-record": openRecordDialog,
     "edit-record": editRecord,
+    "delete-record": deleteRecord,
+    "clone-record": cloneRecord,
     "comment-record": commentRecord,
   };
+  const echoScopeLabels = Object.freeze({
+    with_mine: "公开 + 我的私密",
+    public: "仅公开",
+  });
   const echoFileTypeLabels = Object.freeze({
     text: "文本",
     web: "网页",
@@ -68,6 +77,7 @@
   ]);
   const documentFileExtensions = [".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".odt", ".ods", ".odp"];
   const echoesState = {
+    scope: "with_mine",
     fileType: "",
     cursor: null,
     hasMore: true,
@@ -82,14 +92,21 @@
   const noticeReaderStorageKey = "benoss.notice.reader";
   const validVisibilityValues = new Set(["public", "private"]);
   const validEchoesDensity = new Set(["cozy", "compact"]);
+  const validEchoesScopes = new Set(["public", "with_mine"]);
   const defaultNoticeReaderPrefs = Object.freeze({
     font: "md",
     width: "normal",
     media: "expand",
+    family: "sans",
+    context: "hide",
+    translateLang: "en",
   });
   const validNoticeFontValues = new Set(["md", "lg"]);
   const validNoticeWidthValues = new Set(["normal", "wide"]);
   const validNoticeMediaValues = new Set(["expand", "collapse"]);
+  const validNoticeFamilyValues = new Set(["sans", "serif", "wenkai", "mono"]);
+  const validNoticeContextValues = new Set(["hide", "show"]);
+  const validNoticeTranslateLangValues = new Set(["en", "zh-CN", "ja", "ko", "fr", "de", "es"]);
   let noticeReaderPrefs = {
     ...defaultNoticeReaderPrefs,
   };
@@ -124,6 +141,133 @@
 
   function escapeHtml(value) {
     return String(value ?? "").replace(htmlEscapePattern, (char) => htmlEscapeMap[char]);
+  }
+
+  function trimLinkSuffix(rawUrl) {
+    let core = String(rawUrl || "");
+    let suffix = "";
+    while (core) {
+      const last = core.slice(-1);
+      if (!linkTrailingChars.has(last)) {
+        break;
+      }
+      if (last === ")" && (core.match(/\(/g) || []).length >= (core.match(/\)/g) || []).length) {
+        break;
+      }
+      core = core.slice(0, -1);
+      suffix = `${last}${suffix}`;
+    }
+    return { core, suffix };
+  }
+
+  function linkifyText(value) {
+    const source = String(value ?? "");
+    if (!source) {
+      return "";
+    }
+
+    let output = "";
+    let cursor = 0;
+    const pattern = new RegExp(linkPattern.source, "gi");
+    let match = pattern.exec(source);
+    while (match) {
+      const matched = match[0];
+      const offset = match.index;
+      if (offset > cursor) {
+        output += escapeHtml(source.slice(cursor, offset));
+      }
+
+      const { core, suffix } = trimLinkSuffix(matched);
+      if (!core) {
+        output += escapeHtml(matched);
+      } else {
+        const href = /^https?:\/\//i.test(core) ? core : `https://${core}`;
+        output += `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer noopener">${escapeHtml(core)}</a>`;
+        if (suffix) {
+          output += escapeHtml(suffix);
+        }
+      }
+      cursor = offset + matched.length;
+      match = pattern.exec(source);
+    }
+
+    if (cursor < source.length) {
+      output += escapeHtml(source.slice(cursor));
+    }
+    return output;
+  }
+
+  function normalizeTagList(values) {
+    const items = Array.isArray(values) ? values : [];
+    const result = [];
+    const seen = new Set();
+    for (const raw of items) {
+      let text = String(raw || "").trim();
+      if (!text) {
+        continue;
+      }
+      if (text.length > 40) {
+        text = text.slice(0, 40);
+      }
+      const lowered = text.toLowerCase();
+      if (seen.has(lowered)) {
+        continue;
+      }
+      seen.add(lowered);
+      result.push(text);
+      if (result.length >= 20) {
+        break;
+      }
+    }
+    return result;
+  }
+
+  function parseTagInput(raw) {
+    const text = String(raw || "");
+    if (!text) {
+      return [];
+    }
+    return normalizeTagList(text.split(","));
+  }
+
+  function extractAutoTagsFromText(raw) {
+    const source = String(raw || "");
+    if (!source) {
+      return [];
+    }
+    const pattern = new RegExp(autoTagPattern.source, "g");
+    const tags = [];
+    let match = pattern.exec(source);
+    while (match) {
+      tags.push(String(match[1] || ""));
+      if (tags.length >= 60) {
+        break;
+      }
+      match = pattern.exec(source);
+    }
+    return normalizeTagList(tags);
+  }
+
+  function tagsSignature(tags) {
+    return normalizeTagList(tags)
+      .map((item) => item.toLowerCase())
+      .join("\u0001");
+  }
+
+  function syncTagsInputFromText(tagsInput, textInput) {
+    if (!(tagsInput instanceof HTMLInputElement) || !(textInput instanceof HTMLTextAreaElement)) {
+      return;
+    }
+    const currentTags = parseTagInput(tagsInput.value);
+    const autoTags = extractAutoTagsFromText(textInput.value);
+    if (!autoTags.length) {
+      return;
+    }
+    const merged = normalizeTagList([...currentTags, ...autoTags]);
+    if (tagsSignature(merged) === tagsSignature(currentTags)) {
+      return;
+    }
+    tagsInput.value = merged.join(", ");
   }
 
   function qs(selector, root = document) {
@@ -320,6 +464,11 @@
     return validEchoesDensity.has(normalized) ? normalized : "cozy";
   }
 
+  function normalizeEchoesScope(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    return validEchoesScopes.has(normalized) ? normalized : "with_mine";
+  }
+
   function readStoredEchoesDensity() {
     try {
       return normalizeEchoesDensity(window.localStorage.getItem(echoesDensityStorageKey));
@@ -371,7 +520,16 @@
     const media = validNoticeMediaValues.has(String(raw.media || "").trim().toLowerCase())
       ? String(raw.media).trim().toLowerCase()
       : defaultNoticeReaderPrefs.media;
-    return { font, width, media };
+    const family = validNoticeFamilyValues.has(String(raw.family || "").trim().toLowerCase())
+      ? String(raw.family).trim().toLowerCase()
+      : defaultNoticeReaderPrefs.family;
+    const context = validNoticeContextValues.has(String(raw.context || "").trim().toLowerCase())
+      ? String(raw.context).trim().toLowerCase()
+      : defaultNoticeReaderPrefs.context;
+    const translateLang = validNoticeTranslateLangValues.has(String(raw.translateLang || "").trim())
+      ? String(raw.translateLang).trim()
+      : defaultNoticeReaderPrefs.translateLang;
+    return { font, width, media, family, context, translateLang };
   }
 
   function readStoredNoticeReaderPrefs() {
@@ -405,6 +563,10 @@
       panel.classList.toggle("notice-font-lg", noticeReaderPrefs.font === "lg");
       panel.classList.toggle("notice-width-wide", noticeReaderPrefs.width === "wide");
       panel.classList.toggle("notice-media-collapsed", noticeReaderPrefs.media === "collapse");
+      panel.classList.toggle("notice-family-serif", noticeReaderPrefs.family === "serif");
+      panel.classList.toggle("notice-family-wenkai", noticeReaderPrefs.family === "wenkai");
+      panel.classList.toggle("notice-family-mono", noticeReaderPrefs.family === "mono");
+      panel.classList.toggle("notice-context-hidden", noticeReaderPrefs.context === "hide");
     }
 
     const fontButtons = document.querySelectorAll("[data-notice-font]");
@@ -436,6 +598,31 @@
       button.classList.toggle("is-active", active);
       button.setAttribute("aria-pressed", active ? "true" : "false");
     });
+
+    const familyButtons = document.querySelectorAll("[data-notice-family]");
+    familyButtons.forEach((button) => {
+      if (!(button instanceof HTMLButtonElement)) {
+        return;
+      }
+      const active = String(button.dataset.noticeFamily || "") === noticeReaderPrefs.family;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+
+    const contextButtons = document.querySelectorAll("[data-notice-context]");
+    contextButtons.forEach((button) => {
+      if (!(button instanceof HTMLButtonElement)) {
+        return;
+      }
+      const active = String(button.dataset.noticeContext || "") === noticeReaderPrefs.context;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+
+    const langSelect = qs("#notice-translate-lang");
+    if (langSelect instanceof HTMLSelectElement) {
+      langSelect.value = noticeReaderPrefs.translateLang;
+    }
 
     if (opts.persist !== false) {
       saveNoticeReaderPrefs(noticeReaderPrefs);
@@ -524,12 +711,45 @@
     }
   }
 
-  function tagHtml(tags) {
-    const list = Array.isArray(tags) ? tags : [];
-    if (!list.length) {
-      return "<span class=\"muted\">无标签</span>";
+  function buildNoticeTagHref(tag) {
+    const normalizedTag = String(tag || "").trim();
+    if (!normalizedTag) {
+      return "/notice";
     }
-    return list.map((tag) => `<span class="tag-pill">#${escapeHtml(tag)}</span>`).join("");
+    return `/notice?${buildQuery({ tag: normalizedTag })}`;
+  }
+
+  function tagLinkHtml(tag, opts = {}) {
+    const text = String(tag || "").trim();
+    if (!text) {
+      return "";
+    }
+    const className = String(opts.className || "tag-pill tag-pill-link");
+    const withHash = opts.withHash !== false;
+    const label = `${withHash ? "#" : ""}${escapeHtml(text)}`;
+    const href = escapeHtml(buildNoticeTagHref(text));
+    return `<a class="${className}" href="${href}" data-notice-tag="${escapeHtml(text)}">${label}</a>`;
+  }
+
+  function tagLinksHtml(tags, opts = {}) {
+    const list = Array.isArray(tags)
+      ? tags
+          .map((item) => String(item || "").trim())
+          .filter((item) => item)
+      : [];
+    if (!list.length) {
+      return String(opts.emptyHtml || "<span class=\"muted\">无标签</span>");
+    }
+    const separator = opts.separator === undefined ? "" : String(opts.separator);
+    return list.map((tag) => tagLinkHtml(tag, opts)).filter((item) => item).join(separator);
+  }
+
+  function tagHtml(tags) {
+    return tagLinksHtml(tags, {
+      className: "tag-pill tag-pill-link",
+      separator: "",
+      emptyHtml: "<span class=\"muted\">无标签</span>",
+    });
   }
 
   function contentHtml(content) {
@@ -537,7 +757,7 @@
       return "<p class=\"muted\">无内容</p>";
     }
     if (content.kind === "text") {
-      return `<pre>${escapeHtml(content.text || "")}</pre>`;
+      return `<pre>${linkifyText(content.text || "")}</pre>`;
     }
 
     const mediaType = content.media_type || "file";
@@ -547,7 +767,7 @@
     }
 
     if (mediaType === "image") {
-      return `<img src="${escapeHtml(src)}" alt="${escapeHtml(content.filename || "image")}">`;
+      return `<img class="preview-image" data-previewable="1" src="${escapeHtml(src)}" alt="${escapeHtml(content.filename || "image")}">`;
     }
     if (mediaType === "video") {
       return `<video controls src="${escapeHtml(src)}"></video>`;
@@ -572,7 +792,7 @@
           <strong>${escapeHtml(item.user?.username || "")}</strong>
           <span class="muted">${escapeHtml(formatTime(item.created_at))}</span>
         </div>
-        <p>${escapeHtml(item.body || "")}</p>
+        <p>${linkifyText(item.body || "")}</p>
       </article>
     `,
       )
@@ -617,6 +837,10 @@
     const actions = [];
     if (record.can_edit) {
       actions.push(`<button class="bubble" type="button" data-dialog-action="edit-record" data-record-id="${record.id}">编辑这条记录</button>`);
+      actions.push(`<button class="bubble" type="button" data-dialog-action="delete-record" data-record-id="${record.id}">删除这条记录</button>`);
+    }
+    if (record.can_clone) {
+      actions.push(`<button class="bubble" type="button" data-dialog-action="clone-record" data-record-id="${record.id}">克隆到我的名下</button>`);
     }
     if (record.can_comment) {
       actions.push(`<button class="bubble" type="button" data-dialog-action="comment-record" data-record-id="${record.id}">评论这条记录</button>`);
@@ -625,7 +849,7 @@
     dialogBody.innerHTML = `
       <div class="dialog-content">
         <p class="muted">${dialogRecordMeta(record)}</p>
-        <p>${escapeHtml(record.preview || "(无预览内容)")}</p>
+        <p>${linkifyText(record.preview || "(无预览内容)")}</p>
         <div class="tag-line">${tagHtml(record.tags)}</div>
         <div class="action-line">${actions.join("")}</div>
         <section>
@@ -703,11 +927,22 @@
           <p class="record-edit-feedback muted" data-record-edit-feedback></p>
           <div class="action-line">
             <button type="submit" data-record-edit-submit>保存修改</button>
+            <button class="bubble" type="button" data-dialog-action="delete-record" data-record-id="${record.id}">删除记录</button>
+            <button class="bubble" type="button" data-dialog-action="clone-record" data-record-id="${record.id}">克隆记录</button>
             <button class="bubble" type="button" data-dialog-action="view-record" data-record-id="${record.id}">返回详情</button>
           </div>
         </form>
       </div>
     `;
+
+    const formEl = qs("[data-record-edit-form]", dialogBody);
+    const editorTagsInput = qs('input[name="tags"]', formEl || dialogBody);
+    const editorTextInput = qs('textarea[name="text"]', formEl || dialogBody);
+    if (editorTagsInput && editorTextInput) {
+      const syncEditorTags = () => syncTagsInputFromText(editorTagsInput, editorTextInput);
+      editorTextInput.addEventListener("input", syncEditorTags);
+      syncEditorTags();
+    }
   }
 
   function recordCardHtml(record, opts = {}) {
@@ -721,6 +956,7 @@
     meta.push(record.visibility === "public" ? "公开" : "私密");
 
     const canEdit = Boolean(record.can_edit);
+    const canClone = Boolean(record.can_clone);
     const canComment = Boolean(record.can_comment);
 
     return `
@@ -729,11 +965,13 @@
           <strong>#${record.record_no} ${escapeHtml(record.format || "record")}</strong>
           <span class="muted">${meta.join(" | ")}</span>
         </div>
-        <p>${escapeHtml(record.preview || "(无预览内容)")}</p>
+        <p>${linkifyText(record.preview || "(无预览内容)")}</p>
         <div class="tag-line">${tagHtml(record.tags)}</div>
         <div class="action-line">
           <button class="bubble" type="button" data-action="view-record" data-record-id="${record.id}">查看内容</button>
           ${canEdit ? `<button class="bubble" type="button" data-action="edit-record" data-record-id="${record.id}">编辑</button>` : ""}
+          ${canEdit ? `<button class="bubble" type="button" data-action="delete-record" data-record-id="${record.id}">删除</button>` : ""}
+          ${canClone ? `<button class="bubble" type="button" data-action="clone-record" data-record-id="${record.id}">克隆</button>` : ""}
           ${canComment ? `<button class="bubble" type="button" data-action="comment-record" data-record-id="${record.id}">评论</button>` : ""}
         </div>
       </article>
@@ -757,6 +995,8 @@
       `时间: ${escapeHtml(formatTime(record.created_at))}`,
       record.visibility === "public" ? "公开" : "私密",
     ];
+    const canEdit = Boolean(record.can_edit);
+    const canClone = Boolean(record.can_clone);
 
     return `
       <article class="record-item" data-record-id="${record.id}">
@@ -767,6 +1007,8 @@
         <div class="tag-line">${tagHtml(record.tags)}</div>
         <div class="action-line">
           <button class="bubble" type="button" data-action="view-record" data-record-id="${record.id}">查看内容</button>
+          ${canEdit ? `<button class="bubble" type="button" data-action="delete-record" data-record-id="${record.id}">删除</button>` : ""}
+          ${canClone ? `<button class="bubble" type="button" data-action="clone-record" data-record-id="${record.id}">克隆</button>` : ""}
         </div>
       </article>
     `;
@@ -804,6 +1046,57 @@
     }
   }
 
+  async function deleteRecord(recordId) {
+    const confirmed = window.confirm(`确认删除记录 #${recordId}？此操作不可撤销。`);
+    if (!confirmed) {
+      return;
+    }
+    try {
+      await api(`/api/records/${recordId}`, {
+        method: "DELETE",
+      });
+      if (dialog?.open && Number(dialogState.record?.id) === recordId) {
+        dialog.close();
+      }
+      await refreshCurrentPageData();
+      window.alert("记录已删除");
+    } catch (error) {
+      window.alert(error.message);
+    }
+  }
+
+  async function cloneRecord(recordId) {
+    let suggestedVisibility = "private";
+    try {
+      const cachedRecord = dialogState.record && Number(dialogState.record.id) === recordId ? dialogState.record : null;
+      suggestedVisibility = normalizeVisibility(cachedRecord?.visibility || suggestedVisibility, "private");
+    } catch (_error) {
+      suggestedVisibility = "private";
+    }
+
+    const visibilityInput = window.prompt("克隆后的可见性（public/private）", suggestedVisibility);
+    if (visibilityInput === null) {
+      return;
+    }
+    const visibility = normalizeVisibility(visibilityInput, suggestedVisibility);
+
+    try {
+      const data = await api(`/api/records/${recordId}/clone`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ visibility }),
+      });
+      await refreshCurrentPageData();
+      const clonedId = Number(data?.record?.id || 0);
+      if (clonedId > 0) {
+        await openRecordDialog(clonedId);
+      }
+      window.alert("克隆成功，已保存到你的名下");
+    } catch (error) {
+      window.alert(error.message);
+    }
+  }
+
   async function commentRecord(recordId) {
     const body = window.prompt("请输入评论内容");
     if (!body || !body.trim()) {
@@ -820,6 +1113,100 @@
     } catch (error) {
       window.alert(error.message);
     }
+  }
+
+  function ensureImagePreviewDialog() {
+    const existing = qs("#image-preview-dialog");
+    if (existing instanceof HTMLDialogElement) {
+      return existing;
+    }
+
+    const dialogEl = document.createElement("dialog");
+    dialogEl.id = "image-preview-dialog";
+    dialogEl.className = "image-preview-dialog";
+    dialogEl.innerHTML = `
+      <div class="image-preview-shell">
+        <button type="button" class="bubble image-preview-close" data-close-image-preview>关闭</button>
+        <img id="image-preview-target" alt="">
+        <p id="image-preview-caption" class="muted image-preview-caption" hidden></p>
+      </div>
+    `;
+    dialogEl.addEventListener("click", (event) => {
+      if (!(event.target instanceof Element)) {
+        return;
+      }
+      if (event.target === dialogEl || event.target.closest("[data-close-image-preview]")) {
+        dialogEl.close();
+      }
+    });
+    document.body.appendChild(dialogEl);
+    return dialogEl;
+  }
+
+  function resolvePreviewImageTarget(target) {
+    if (!(target instanceof Element)) {
+      return null;
+    }
+    const imageEl = target.closest("img");
+    if (!(imageEl instanceof HTMLImageElement)) {
+      return null;
+    }
+    if (!imageEl.currentSrc && !imageEl.src) {
+      return null;
+    }
+    if (imageEl.closest(".brand-link")) {
+      return null;
+    }
+    if (imageEl.closest("#image-preview-dialog")) {
+      return null;
+    }
+    if (imageEl.dataset.noPreview === "1") {
+      return null;
+    }
+    const inPreviewZone = Boolean(
+      imageEl.dataset.previewable === "1" ||
+        imageEl.closest(".dialog-content, .record-edit-preview, .echo-card-media, .notice-render, .notice-block"),
+    );
+    return inPreviewZone ? imageEl : null;
+  }
+
+  function openImagePreview(imageEl) {
+    const dialogEl = ensureImagePreviewDialog();
+    const previewImage = qs("#image-preview-target", dialogEl);
+    const captionEl = qs("#image-preview-caption", dialogEl);
+    if (!(previewImage instanceof HTMLImageElement) || !(captionEl instanceof HTMLElement)) {
+      return;
+    }
+
+    const src = imageEl.currentSrc || imageEl.src || "";
+    if (!src) {
+      return;
+    }
+    const alt = String(imageEl.alt || "").trim();
+    previewImage.src = src;
+    previewImage.alt = alt || "preview";
+    if (alt) {
+      captionEl.hidden = false;
+      captionEl.textContent = alt;
+    } else {
+      captionEl.hidden = true;
+      captionEl.textContent = "";
+    }
+
+    if (!dialogEl.open) {
+      dialogEl.showModal();
+    }
+  }
+
+  function bindImagePreview() {
+    document.addEventListener("click", (event) => {
+      const imageEl = resolvePreviewImageTarget(event.target);
+      if (!imageEl) {
+        return;
+      }
+      event.preventDefault();
+      openImagePreview(imageEl);
+    });
   }
 
   function bindGlobalRecordActions() {
@@ -993,8 +1380,7 @@
     });
     const topTags = [...tagCounter.entries()]
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .slice(0, 3)
-      .map((item) => `#${item[0]}`);
+      .slice(0, 3);
 
     if (metricPublicEl) {
       metricPublicEl.textContent = String(records.length);
@@ -1003,18 +1389,30 @@
       metricUserEl.textContent = String(userSet.size);
     }
     if (metricTagsEl) {
-      metricTagsEl.textContent = topTags.length ? topTags.join(" ") : "-";
+      metricTagsEl.innerHTML = topTags.length
+        ? topTags
+            .map(([tag]) =>
+              tagLinkHtml(tag, {
+                className: "tag-pill tag-pill-inline",
+              }),
+            )
+            .join(" ")
+        : "-";
     }
     return data;
   }
 
   function vectorHitHtml(hit) {
-    const tags = Array.isArray(hit.tags) && hit.tags.length ? hit.tags.map((tag) => `#${escapeHtml(tag)}`).join(" ") : "无标签";
+    const tags = tagLinksHtml(hit.tags, {
+      className: "tag-pill tag-pill-inline",
+      separator: " ",
+      emptyHtml: "<span class=\"muted\">无标签</span>",
+    });
     return `
       <article class="vector-hit-item">
         <p><strong>${escapeHtml(hit.day || "")} #${Number(hit.record_id || 0)}</strong> | 用户: ${escapeHtml(hit.username || "-")} | score=${Number(hit.score || 0).toFixed(3)}</p>
-        <p class="muted">${escapeHtml(tags)}</p>
-        <p>${escapeHtml(hit.snippet || "")}</p>
+        <p class="muted">${tags}</p>
+        <p>${linkifyText(hit.snippet || "")}</p>
       </article>
     `;
   }
@@ -1077,11 +1475,16 @@
 
       const trimUploadError = (error) => String(error?.message || error || "未知错误").trim().slice(0, 260);
       const newUploadId = () => `upload-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-      const publishFields = () => ({
-        visibility: normalizeVisibility(visibilityInput?.value || "private"),
-        tags: String(tagsInput?.value || "").trim(),
-        text: String(textInput?.value || "").trim(),
-      });
+      const publishFields = () => {
+        if (tagsInput && textInput) {
+          syncTagsInputFromText(tagsInput, textInput);
+        }
+        return {
+          visibility: normalizeVisibility(visibilityInput?.value || "private"),
+          tags: String(tagsInput?.value || "").trim(),
+          text: String(textInput?.value || "").trim(),
+        };
+      };
       const fileDisplayPath = (item) =>
         String(item?.relativePath || item?.file?.webkitRelativePath || item?.file?.name || "").replace(/^\/+/, "");
       const fileIdentity = (item) => `${fileDisplayPath(item)}::${item.file?.size || 0}::${item.file?.lastModified || 0}`;
@@ -1624,11 +2027,17 @@
       }
       if (textInput) {
         textInput.addEventListener("input", () => {
+          if (tagsInput) {
+            syncTagsInputFromText(tagsInput, textInput);
+          }
           if (textTask.status !== "uploading") {
             resetTextTask();
             renderSelectedFiles();
           }
         });
+        if (tagsInput) {
+          syncTagsInputFromText(tagsInput, textInput);
+        }
       }
       if (retryFailedBtn) {
         retryFailedBtn.addEventListener("click", () => {
@@ -1758,6 +2167,11 @@
     const matrix = data.matrix || {};
     const escapedDates = dates.map((day) => escapeHtml(day));
     const escapedTag = escapeHtml(tagValue || "");
+    const boardTagNoticeLink = tagValue
+      ? tagLinkHtml(tagValue, {
+          className: "tag-pill tag-pill-inline",
+        })
+      : "<span>全部</span>";
     let maxCount = 0;
     let totalCount = 0;
     let activeCells = 0;
@@ -1895,7 +2309,7 @@
         <span class="board-legend-chip"><i class="board-legend-swatch level-4"></i>峰值</span>
         ${
           escapedTag
-            ? `<span class="board-legend-tag">当前标签: #${escapedTag}</span>`
+            ? `<span class="board-legend-tag">当前标签: ${boardTagNoticeLink}</span>`
             : `<span class="board-legend-tag">当前标签: 全部</span>`
         }
       </div>
@@ -2143,7 +2557,7 @@
     if (sourceType === "asset") {
       return `<span class="echo-badge source-asset">AI 资产</span>`;
     }
-    return `<span class="echo-badge source-record">公开记录</span>`;
+    return `<span class="echo-badge source-record">记录</span>`;
   }
 
   function echoFileBadgeHtml(fileType) {
@@ -2165,7 +2579,19 @@
       return;
     }
     const typeLabel = echoesState.fileType ? (echoFileTypeLabels[echoesState.fileType] || "全部") : "全部";
-    countEl.textContent = `已显示 ${echoesState.visibleCount} 条 · ${typeLabel}`;
+    const scopeLabel = echoScopeLabels[echoesState.scope] || "公开 + 我的私密";
+    countEl.textContent = `已显示 ${echoesState.visibleCount} 条 · ${typeLabel} · ${scopeLabel}`;
+  }
+
+  function setActiveEchoesScope(scope) {
+    const normalized = normalizeEchoesScope(scope);
+    const chips = document.querySelectorAll("#echoes-scope-chips button[data-scope]");
+    chips.forEach((chip) => {
+      const chipScope = normalizeEchoesScope(chip.dataset.scope || "");
+      const active = chipScope === normalized;
+      chip.classList.toggle("active", active);
+      chip.setAttribute("aria-pressed", active ? "true" : "false");
+    });
   }
 
   function setActiveEchoesType(fileType) {
@@ -2187,7 +2613,7 @@
     }
   }
 
-  function setEchoesEmptyVisible(visible, text = "暂无公开内容") {
+  function setEchoesEmptyVisible(visible, text = "暂无内容") {
     const emptyEl = qs("#echoes-empty");
     if (emptyEl) {
       setFeedback(emptyEl, text, "warning");
@@ -2276,15 +2702,17 @@
     const mediaType = String(content.media_type || "").toLowerCase();
     const src = content.blob_url || content.signed_url || "";
     const fileType = normalizeEchoFileType(entry.file_type || echoFileTypeFromRecord(record)) || "file";
+    const canEdit = Boolean(record.can_edit);
+    const canClone = Boolean(record.can_clone);
 
     let mediaHtml = "";
     if (content.kind === "text") {
       const textPreview = String(record.preview || content.text || "").trim();
       mediaHtml = textPreview
-        ? `<pre class="echo-text">${escapeHtml(textPreview)}</pre>`
+        ? `<pre class="echo-text">${linkifyText(textPreview)}</pre>`
         : `<p class="muted">文本内容不可用</p>`;
     } else if (src && mediaType === "image") {
-      mediaHtml = `<img loading="lazy" decoding="async" src="${escapeHtml(src)}" alt="${escapeHtml(content.filename || "image")}">`;
+      mediaHtml = `<img class="preview-image" data-previewable="1" loading="lazy" decoding="async" src="${escapeHtml(src)}" alt="${escapeHtml(content.filename || "image")}">`;
     } else if (src && mediaType === "video") {
       mediaHtml = `<video controls preload="none" src="${escapeHtml(src)}"></video>`;
     } else if (src && mediaType === "audio") {
@@ -2302,7 +2730,12 @@
       meta.push(`发布者: ${escapeHtml(record.user.username)}`);
     }
     if (Array.isArray(record.tags) && record.tags.length) {
-      meta.push(record.tags.slice(0, 3).map((tag) => `#${escapeHtml(tag)}`).join(" "));
+      meta.push(
+        tagLinksHtml(record.tags.slice(0, 3), {
+          className: "tag-pill tag-pill-inline",
+          separator: " ",
+        }),
+      );
     }
 
     return `
@@ -2318,6 +2751,8 @@
         <p class="muted echo-card-meta">${meta.join(" | ")}</p>
         <div class="action-line">
           <button class="bubble" type="button" data-action="view-record" data-record-id="${record.id}">查看完整记录</button>
+          ${canEdit ? `<button class="bubble" type="button" data-action="delete-record" data-record-id="${record.id}">删除</button>` : ""}
+          ${canClone ? `<button class="bubble" type="button" data-action="clone-record" data-record-id="${record.id}">克隆</button>` : ""}
         </div>
       </article>
     `;
@@ -2334,7 +2769,7 @@
         ? `<p><a href="${escapeHtml(src)}" target="_blank" rel="noreferrer">打开博客网页</a></p>`
         : `<p class="muted">博客内容不可用</p>`;
     } else if (src && contentType.startsWith("image/")) {
-      mediaHtml = `<img loading="lazy" decoding="async" src="${escapeHtml(src)}" alt="${escapeHtml(asset.title || "poster")}">`;
+      mediaHtml = `<img class="preview-image" data-previewable="1" loading="lazy" decoding="async" src="${escapeHtml(src)}" alt="${escapeHtml(asset.title || "poster")}">`;
     } else if (src && contentType.startsWith("audio/")) {
       mediaHtml = `<audio controls preload="none" src="${escapeHtml(src)}"></audio>`;
     } else if (src && contentType.startsWith("video/")) {
@@ -2420,6 +2855,7 @@
 
     try {
       const query = buildQuery({
+        scope: echoesState.scope,
         limit: echoesState.pageSize,
         file_type: echoesState.fileType,
         cursor_time: echoesState.cursor?.created_at || "",
@@ -2428,6 +2864,8 @@
       });
       const path = query ? `/api/echoes?${query}` : "/api/echoes";
       const data = await api(path);
+      echoesState.scope = normalizeEchoesScope(data.scope || echoesState.scope);
+      setActiveEchoesScope(echoesState.scope);
       const entries = normalizeEchoEntries(data);
       renderEchoEntries(entries);
 
@@ -2449,7 +2887,8 @@
       }
 
       if (!echoesState.visibleCount) {
-        setEchoesEmptyVisible(true, echoesState.fileType ? "该类型暂无公开内容" : "暂无公开内容");
+        const baseLabel = echoesState.scope === "public" ? "公开内容" : "内容";
+        setEchoesEmptyVisible(true, echoesState.fileType ? `该类型暂无${baseLabel}` : `暂无${baseLabel}`);
         setEchoesStatus("暂无数据", "warning");
       } else if (echoesState.hasMore) {
         setEchoesEmptyVisible(false);
@@ -2493,9 +2932,30 @@
   }
 
   function bindEchoesFilters() {
+    const scopeWrap = qs("#echoes-scope-chips");
     const chipsWrap = qs("#echoes-type-chips");
     const refreshBtn = qs("#echoes-refresh-btn");
     const densityWrap = qs(".echoes-density-switch");
+
+    if (scopeWrap) {
+      scopeWrap.addEventListener("click", (event) => {
+        if (!(event.target instanceof Element)) {
+          return;
+        }
+        const chip = event.target.closest("button[data-scope]");
+        if (!chip) {
+          return;
+        }
+        const nextScope = normalizeEchoesScope(chip.dataset.scope || "");
+        if (nextScope === echoesState.scope && echoesState.visibleCount > 0) {
+          return;
+        }
+        echoesState.scope = nextScope;
+        setActiveEchoesScope(echoesState.scope);
+        setEchoesCount();
+        loadEchoes({ reset: true }).catch((error) => window.console.error(error));
+      });
+    }
 
     if (chipsWrap) {
       chipsWrap.addEventListener("click", (event) => {
@@ -2543,22 +3003,12 @@
 
   async function initEchoes() {
     applyEchoesDensity(readStoredEchoesDensity(), { persist: false });
+    setActiveEchoesScope(echoesState.scope);
     setActiveEchoesType(echoesState.fileType);
     setEchoesCount();
     bindEchoesFilters();
     initEchoesObserver();
     await loadEchoes({ reset: true });
-  }
-
-  function readNoticeFilters() {
-    const form = qs("#notice-filter-form");
-    const formData = new FormData(form);
-    return {
-      day: formData.get("day") || "",
-      user_id: formData.get("user_id") || "",
-      tag: formData.get("tag") || "",
-      order: formData.get("order") || "asc",
-    };
   }
 
   function setNoticeMeta(text, tone = "neutral") {
@@ -2567,6 +3017,88 @@
       setFeedback(metaEl, text, tone);
       metaEl.hidden = false;
     }
+  }
+
+  function normalizeNoticeFilters(value = {}) {
+    const raw = value && typeof value === "object" ? value : {};
+    const order = String(raw.order || "").trim().toLowerCase() === "desc" ? "desc" : "asc";
+    return {
+      day: String(raw.day || "").trim(),
+      user_id: String(raw.user_id || "").trim(),
+      tag: String(raw.tag || "").trim(),
+      order,
+    };
+  }
+
+  function readNoticeFilters() {
+    const form = qs("#notice-filter-form");
+    if (!(form instanceof HTMLFormElement)) {
+      return normalizeNoticeFilters();
+    }
+    const formData = new FormData(form);
+    return normalizeNoticeFilters({
+      day: formData.get("day") || "",
+      user_id: formData.get("user_id") || "",
+      tag: formData.get("tag") || "",
+      order: formData.get("order") || "asc",
+    });
+  }
+
+  function readNoticeFiltersFromUrl() {
+    const params = new URLSearchParams(window.location.search || "");
+    return normalizeNoticeFilters({
+      day: params.get("day") || "",
+      user_id: params.get("user_id") || "",
+      tag: params.get("tag") || "",
+      order: params.get("order") || "asc",
+    });
+  }
+
+  function applyNoticeFiltersToForm(filters) {
+    const normalized = normalizeNoticeFilters(filters);
+    const form = qs("#notice-filter-form");
+    if (!(form instanceof HTMLFormElement)) {
+      return normalized;
+    }
+    const dayInput = qs('input[name="day"]', form);
+    const userInput = qs('select[name="user_id"]', form);
+    const tagInput = qs('input[name="tag"]', form);
+    const orderInput = qs('select[name="order"]', form);
+    if (dayInput instanceof HTMLInputElement) {
+      dayInput.value = normalized.day;
+    }
+    if (userInput instanceof HTMLSelectElement) {
+      userInput.value = normalized.user_id;
+    }
+    if (tagInput instanceof HTMLInputElement) {
+      tagInput.value = normalized.tag;
+    }
+    if (orderInput instanceof HTMLSelectElement) {
+      orderInput.value = normalized.order;
+    }
+    return normalized;
+  }
+
+  function syncNoticeFiltersToUrl(filters) {
+    const normalized = normalizeNoticeFilters(filters);
+    const query = buildQuery(normalized);
+    const next = query ? `/notice?${query}` : "/notice";
+    const current = `${window.location.pathname}${window.location.search}`;
+    if (current !== next && window.history && typeof window.history.replaceState === "function") {
+      window.history.replaceState(null, "", next);
+    }
+  }
+
+  function noticeTranslatableText() {
+    const selected = String(window.getSelection?.()?.toString() || "").trim();
+    if (selected) {
+      return selected;
+    }
+    const htmlEl = qs("#notice-render-html");
+    if (!(htmlEl instanceof HTMLElement)) {
+      return "";
+    }
+    return String(htmlEl.innerText || "").trim();
   }
 
   function initNoticeReaderToolbar() {
@@ -2621,12 +3153,89 @@
         return;
       }
 
+      const familyBtn = event.target.closest("button[data-notice-family]");
+      if (familyBtn) {
+        const nextFamily = String(familyBtn.getAttribute("data-notice-family") || "");
+        applyNoticeReaderPrefs(
+          {
+            ...noticeReaderPrefs,
+            family: nextFamily,
+          },
+          { persist: true },
+        );
+        return;
+      }
+
+      const contextBtn = event.target.closest("button[data-notice-context]");
+      if (contextBtn) {
+        const nextContext = String(contextBtn.getAttribute("data-notice-context") || "");
+        applyNoticeReaderPrefs(
+          {
+            ...noticeReaderPrefs,
+            context: nextContext,
+          },
+          { persist: true },
+        );
+        return;
+      }
+
+      if (event.target.closest("#notice-reader-translate")) {
+        const langSelect = qs("#notice-translate-lang");
+        const selectedLang =
+          langSelect instanceof HTMLSelectElement ? String(langSelect.value || "").trim() : defaultNoticeReaderPrefs.translateLang;
+        const nextLang = validNoticeTranslateLangValues.has(selectedLang) ? selectedLang : defaultNoticeReaderPrefs.translateLang;
+        if (nextLang !== noticeReaderPrefs.translateLang) {
+          applyNoticeReaderPrefs(
+            {
+              ...noticeReaderPrefs,
+              translateLang: nextLang,
+            },
+            { persist: true },
+          );
+        }
+        const sourceText = noticeTranslatableText();
+        if (!sourceText) {
+          setNoticeMeta("暂无可翻译内容，请先渲染内容或先选中文字。", "warning");
+          return;
+        }
+        const maxChars = 2000;
+        const clippedText = sourceText.length > maxChars ? sourceText.slice(0, maxChars) : sourceText;
+        const url = `https://translate.google.com/?sl=auto&tl=${encodeURIComponent(nextLang)}&text=${encodeURIComponent(clippedText)}&op=translate`;
+        const opened = window.open(url, "_blank", "noopener,noreferrer");
+        if (!opened) {
+          setNoticeMeta("浏览器拦截了翻译窗口，请允许弹窗后重试。", "warning");
+          return;
+        }
+        const clippedSuffix = sourceText.length > maxChars ? "（已截取前 2000 字）" : "";
+        setNoticeMeta(`已打开翻译窗口 ${clippedSuffix}`, "info");
+        return;
+      }
+
       if (event.target.closest("#notice-reader-top")) {
         const panel = qs("#notice-render-panel");
         if (panel) {
           panel.scrollIntoView({ behavior: "smooth", block: "start" });
         }
       }
+    });
+
+    toolbar.addEventListener("change", (event) => {
+      if (!(event.target instanceof HTMLSelectElement)) {
+        return;
+      }
+      if (event.target.id !== "notice-translate-lang") {
+        return;
+      }
+      const nextLang = validNoticeTranslateLangValues.has(String(event.target.value || "").trim())
+        ? String(event.target.value || "").trim()
+        : defaultNoticeReaderPrefs.translateLang;
+      applyNoticeReaderPrefs(
+        {
+          ...noticeReaderPrefs,
+          translateLang: nextLang,
+        },
+        { persist: true },
+      );
     });
   }
 
@@ -2651,13 +3260,15 @@
   }
 
   async function loadNoticeRender(filters = readNoticeFilters()) {
-    const query = buildQuery(filters);
+    const normalizedFilters = normalizeNoticeFilters(filters);
+    const query = buildQuery(normalizedFilters);
     const path = query ? `/api/notice/render?${query}` : "/api/notice/render";
     const form = qs("#notice-filter-form");
     const submitBtn = form ? qs('button[type="submit"]', form) : null;
     const htmlEl = qs("#notice-render-html");
     setButtonBusy(submitBtn, true, { busyText: "渲染中..." });
     setNoticeMeta("正在渲染...", "info");
+    syncNoticeFiltersToUrl(normalizedFilters);
     try {
       const data = await api(path);
       if (htmlEl) {
@@ -2681,20 +3292,58 @@
   async function initNotice() {
     initNoticeReaderToolbar();
     const users = await getUsers();
+    const userSelect = qs("#notice-user");
     populateSelect(
-      qs("#notice-user"),
+      userSelect,
       users.map((item) => ({ id: item.id, username: item.username })),
       { allowAll: true, allText: "全部用户" },
     );
+
+    const initialFilters = applyNoticeFiltersToForm(readNoticeFiltersFromUrl());
 
     const form = qs("#notice-filter-form");
     if (form) {
       form.addEventListener("submit", (event) => {
         event.preventDefault();
-        loadNoticeRender(readNoticeFilters()).catch((error) => window.console.error(error));
+        const nextFilters = readNoticeFilters();
+        applyNoticeFiltersToForm(nextFilters);
+        loadNoticeRender(nextFilters).catch((error) => window.console.error(error));
       });
     }
-    await loadNoticeRender();
+
+    document.addEventListener("click", (event) => {
+      if (!(event.target instanceof Element) || page !== "notice") {
+        return;
+      }
+      const link = event.target.closest("a[data-notice-tag]");
+      if (!(link instanceof HTMLAnchorElement)) {
+        return;
+      }
+      if (
+        event instanceof MouseEvent &&
+        (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+      ) {
+        return;
+      }
+      const tag = String(link.dataset.noticeTag || "").trim();
+      if (!tag) {
+        return;
+      }
+      event.preventDefault();
+      const nextFilters = normalizeNoticeFilters({
+        day: "",
+        user_id: "",
+        tag,
+        order: "asc",
+      });
+      applyNoticeFiltersToForm(nextFilters);
+      loadNoticeRender(nextFilters).catch((error) => window.console.error(error));
+    });
+
+    if (userSelect instanceof HTMLSelectElement && initialFilters.user_id) {
+      userSelect.value = initialFilters.user_id;
+    }
+    await loadNoticeRender(readNoticeFilters());
   }
 
   function initDialogControls() {
@@ -2835,6 +3484,7 @@
     initRevealAnimations();
     initStatusDecorators();
     bindGlobalRecordActions();
+    bindImagePreview();
     initDialogControls();
 
     if (page === "home") {

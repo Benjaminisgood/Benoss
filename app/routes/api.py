@@ -22,7 +22,7 @@ from werkzeug.utils import secure_filename
 
 from ..extensions import db
 from ..models import Comment, Content, DailyDigestJob, GeneratedAsset, Record, User
-from ..oss import delete_object, get_object_bytes, put_object_bytes, put_object_from_file, sign_get_url
+from ..oss import copy_object, delete_object, get_object_bytes, put_object_bytes, put_object_from_file, sign_get_url
 from ..utils.ids import new_uuid
 from ..utils.local_archive import apply_archive_retention_policy, archive_file_path, load_archive, save_daily_archive
 from ..utils.local_vector_db import (
@@ -59,6 +59,9 @@ api_bp = Blueprint("api", __name__)
 
 _VALID_VISIBILITY = {"public", "private"}
 _DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_AUTO_TAG_PATTERN = re.compile(r"(?:^|[^0-9A-Za-z_:/#])#([0-9A-Za-z_\-\u3400-\u9fff]{1,40})")
+_URL_PATTERN = re.compile(r"(?:https?://|www\.)[^\s<>'\"`]+", re.IGNORECASE)
+_URL_TRAILING_CHARS = ".,;:!?)]}，。；：！？）】》、"
 _PODCAST_STYLE_GUIDE = {
     "dialogue": "对话式：双人主持人口吻，包含主持人A/主持人B轮流发言，节奏自然。",
     "speech": "演讲式：单人演讲结构，逻辑清晰，重点突出。",
@@ -230,6 +233,21 @@ def _notice_file_meta_html(payload: dict) -> str:
     return f"<p class=\"notice-file-meta\">{' | '.join(parts)}</p>"
 
 
+def _notice_tag_link(tag_text: str, *, class_name: str = "tag-pill notice-tag-link") -> str:
+    text = str(tag_text or "").strip()
+    if not text:
+        return ""
+    href = url_for("site.notice", tag=text)
+    escaped_href = html.escape(href, quote=True)
+    escaped_tag = html.escape(text)
+    escaped_tag_attr = html.escape(text, quote=True)
+    escaped_class = html.escape(class_name, quote=True)
+    return (
+        f"<a class=\"{escaped_class}\" href=\"{escaped_href}\" data-notice-tag=\"{escaped_tag_attr}\">"
+        f"#{escaped_tag}</a>"
+    )
+
+
 def _parse_tags(raw) -> list[str]:
     if raw is None:
         return []
@@ -255,6 +273,101 @@ def _parse_tags(raw) -> list[str]:
         if len(result) >= 20:
             break
     return result
+
+
+def _auto_tags_from_text(raw: str) -> list[str]:
+    text = str(raw or "")
+    if not text:
+        return []
+    items: list[str] = []
+    for match in _AUTO_TAG_PATTERN.finditer(text):
+        tag = str(match.group(1) or "").strip()
+        if not tag:
+            continue
+        items.append(tag)
+        if len(items) >= 60:
+            break
+    return _parse_tags(items)
+
+
+def _read_text_content(content: Content | None, *, max_bytes: int | None = None) -> str:
+    if not content:
+        return ""
+    fallback = str(content.text_content or "")
+    if not content.oss_key:
+        return fallback
+    try:
+        data = get_object_bytes(content.oss_key, max_bytes=max_bytes)
+    except Exception:
+        return fallback
+    if not data:
+        return fallback
+    decoded, _ = _decode_text_bytes(data)
+    if decoded:
+        return decoded
+    return data.decode("utf-8", errors="replace") or fallback
+
+
+def _trim_link_suffix(raw_url: str) -> tuple[str, str]:
+    core = str(raw_url or "")
+    suffix = ""
+    while core and core[-1] in _URL_TRAILING_CHARS:
+        last_char = core[-1]
+        if last_char == ")" and core.count("(") >= core.count(")"):
+            break
+        core = core[:-1]
+        suffix = last_char + suffix
+    return core, suffix
+
+
+def _linkify_text_html(value: str) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+
+    parts: list[str] = []
+    cursor = 0
+    for match in _URL_PATTERN.finditer(text):
+        start, end = match.span()
+        if start > cursor:
+            parts.append(html.escape(text[cursor:start]))
+
+        matched = match.group(0)
+        clean_url, suffix = _trim_link_suffix(matched)
+        if not clean_url:
+            parts.append(html.escape(matched))
+            cursor = end
+            continue
+
+        href = clean_url if clean_url.lower().startswith(("http://", "https://")) else f"https://{clean_url}"
+        parts.append(
+            f"<a href=\"{html.escape(href, quote=True)}\" target=\"_blank\" rel=\"noreferrer noopener\">"
+            f"{html.escape(clean_url)}</a>"
+        )
+        if suffix:
+            parts.append(html.escape(suffix))
+        cursor = end
+
+    if cursor < len(text):
+        parts.append(html.escape(text[cursor:]))
+    return "".join(parts)
+
+
+def _text_to_content(text_value: str) -> Content:
+    text = str(text_value or "")
+    data = text.encode("utf-8")
+    object_id = new_uuid()
+    oss_key = record_content_key(object_id, "text.txt")
+    put_object_bytes(oss_key, data, content_type="text/plain; charset=utf-8")
+    return Content(
+        kind="text",
+        text_content=_preview_text(text, limit=2000),
+        oss_key=oss_key,
+        filename="text.txt",
+        content_type="text/plain; charset=utf-8",
+        size_bytes=len(data),
+        sha256=hashlib.sha256(data).hexdigest(),
+    )
 
 
 def _normalize_visibility(raw, *, default: str = "private") -> str:
@@ -572,8 +685,12 @@ def _content_payload(content: Content) -> dict:
         "updated_at": _iso(content.updated_at),
     }
     if content.kind == "text":
-        payload["text"] = content.text_content or ""
+        payload["text"] = _read_text_content(content)
         payload["media_type"] = "text"
+        payload["size_bytes"] = int(content.size_bytes or 0)
+        payload["sha256"] = content.sha256 or ""
+        payload["blob_url"] = url_for("api.get_content_blob", content_id=content.id)
+        payload["signed_url"] = sign_get_url(content.oss_key, expires=3600) if content.oss_key else ""
         return payload
 
     payload.update(
@@ -620,6 +737,7 @@ def _record_payload(
         "created_at": _iso(record.created_at),
         "updated_at": _iso(record.updated_at),
         "can_edit": bool(viewer and record.user_id == viewer.id),
+        "can_clone": _is_record_visible(record, viewer),
         "can_comment": _is_record_visible(record, viewer),
         "user": {
             "id": record.user.id if record.user else record.user_id,
@@ -772,11 +890,13 @@ def _request_upload_files() -> list:
 
 def _create_record_for_user(user: User):
     payload = _form_or_json_payload()
-    tags = _parse_tags(payload.get("tags"))
+    manual_tags = _parse_tags(payload.get("tags"))
     visibility = _normalize_visibility(payload.get("visibility"), default="private")
     requested_format = payload.get("format")
 
     text_value = str(payload.get("text") or "").strip()
+    auto_tags = _auto_tags_from_text(text_value) if text_value else []
+    tags = _parse_tags(manual_tags + auto_tags)
     file_items = _request_upload_files()
     if not text_value and not file_items:
         return jsonify({"error": "missing text or file"}), 400
@@ -785,7 +905,7 @@ def _create_record_for_user(user: User):
     uploaded_oss_keys: list[str] = []
 
     if text_value:
-        text_content = Content(kind="text", text_content=text_value)
+        text_content = _text_to_content(text_value)
         text_record = Record(
             user_id=user.id,
             content=text_content,
@@ -797,6 +917,8 @@ def _create_record_for_user(user: User):
         created_records.append(text_record)
         db.session.add(text_content)
         db.session.add(text_record)
+        if text_content.oss_key:
+            uploaded_oss_keys.append(text_content.oss_key)
 
     for file_obj in file_items:
         file_content, preview = _file_to_content(file_obj)
@@ -849,7 +971,7 @@ def _record_html_content(content: Content | None) -> str:
 
     payload = _content_payload(content)
     if payload["kind"] == "text":
-        return f"<pre>{html.escape(payload.get('text') or '')}</pre>"
+        return f"<pre>{_linkify_text_html(payload.get('text') or '')}</pre>"
 
     media_type = payload.get("media_type")
     src = payload.get("blob_url") or payload.get("signed_url") or ""
@@ -934,23 +1056,30 @@ def _render_notice_html(records: list[Record], *, day: str, user_id: str, tag: s
     if tag:
         filter_badges.append(f"标签: #{html.escape(tag)}")
 
-    lines: list[str] = [
-        "<article class=\"notice-render\">",
-        "<header class=\"notice-render-summary\">",
-        "<h2>Notice 内容拼接页</h2>",
+    side_lines: list[str] = [
+        "<aside class=\"notice-context-rail\">",
+        "<div class=\"notice-context-head\">",
+        "<p class=\"notice-context-title\">筛选与索引</p>",
         f"<p class=\"notice-summary-line\">总记录数: {len(records)}</p>",
     ]
-
     if filter_badges:
-        lines.append("<p class=\"notice-summary-line\">筛选条件: " + " | ".join(filter_badges) + "</p>")
-    if top_tags:
-        lines.append(
-            "<p class=\"notice-summary-line\">高频标签: "
-            + ", ".join(f"#{html.escape(key)}" for key, _ in top_tags.most_common(10))
-            + "</p>"
+        side_lines.append(
+            "<div class=\"notice-context-badges\">"
+            + "".join(f"<span class=\"notice-context-badge\">{item}</span>" for item in filter_badges)
+            + "</div>"
         )
+    if top_tags:
+        top_tag_links = [_notice_tag_link(key, class_name="tag-pill notice-side-tag") for key, _ in top_tags.most_common(10)]
+        top_tag_links = [item for item in top_tag_links if item]
+        if top_tag_links:
+            side_lines.append("<div class=\"notice-context-hot-tags\">" + "".join(top_tag_links) + "</div>")
+    side_lines.append("</div>")
+    side_lines.append("<div class=\"notice-context-list\">")
 
-    lines.append("</header>")
+    lines: list[str] = [
+        "<article class=\"notice-render notice-reader-layout\">",
+        "<section class=\"notice-main-flow\">",
+    ]
 
     current_day = ""
     for record in records:
@@ -958,36 +1087,27 @@ def _render_notice_html(records: list[Record], *, day: str, user_id: str, tag: s
         if day_key != current_day:
             if current_day:
                 lines.append("</section>")
-            lines.append(f"<section class=\"notice-day\"><p class=\"notice-day-label\">{day_key}</p>")
+            lines.append(f"<section class=\"notice-day\" data-notice-day=\"{html.escape(day_key, quote=True)}\">")
+            side_lines.append(f"<p class=\"notice-context-day\">{html.escape(day_key)}</p>")
             current_day = day_key
 
         user_name = html.escape(record.user.username if record.user else "")
         stamp = html.escape((record.created_at or datetime.utcnow()).strftime("%H:%M"))
         visibility_text = html.escape(record.visibility or "")
-        tags = [f"#{html.escape(tag_text)}" for tag_text in record.get_tags()]
-
-        meta_parts: list[str] = []
-        if stamp:
-            meta_parts.append(f"<span>{stamp}</span>")
-        if user_name:
-            meta_parts.append(f"<span>{user_name}</span>")
-        if visibility_text:
-            meta_parts.append(f"<span>{visibility_text}</span>")
-        if tags:
-            meta_parts.append(f"<span class=\"notice-meta-tags\">{' '.join(tags)}</span>")
-        meta_html = " <span class=\"notice-meta-sep\">·</span> ".join(meta_parts) or "<span class=\"muted\">记录</span>"
+        record_anchor = f"notice-record-{int(record.id)}"
+        record_tag_links = [_notice_tag_link(tag_text, class_name="tag-pill notice-side-tag") for tag_text in record.get_tags()]
+        record_tag_links = [item for item in record_tag_links if item]
 
         preview_text = (record.preview or "").strip()
         content_kind = (record.content.kind if record.content else "").strip().lower()
 
         lines.extend(
             [
-                "<article class=\"notice-block\">",
-                f"<p class=\"notice-block-head\"><span class=\"notice-record-id\">#{record.id}</span>{meta_html}</p>",
+                f"<article class=\"notice-block\" id=\"{record_anchor}\">",
             ]
         )
         if preview_text and content_kind != "text":
-            lines.append(f"<p class=\"notice-preview\">{html.escape(preview_text)}</p>")
+            lines.append(f"<p class=\"notice-preview\">{_linkify_text_html(preview_text)}</p>")
         lines.extend(
             [
                 f"<div class=\"notice-block-body\">{_record_html_content(record.content)}</div>",
@@ -995,7 +1115,26 @@ def _render_notice_html(records: list[Record], *, day: str, user_id: str, tag: s
             ]
         )
 
+        side_lines.extend(
+            [
+                "<article class=\"notice-context-item\">",
+                f"<a class=\"notice-context-link\" href=\"#{record_anchor}\">",
+                f"<span class=\"notice-context-time\">{stamp}</span>",
+                f"<span class=\"notice-context-user\">{user_name or '匿名用户'}</span>",
+                f"<span class=\"notice-context-record\">#{int(record.id)} · {visibility_text or 'record'}</span>",
+                "</a>",
+                "<p class=\"notice-context-tags\">"
+                + (" ".join(record_tag_links) if record_tag_links else "<span class=\"muted\">无标签</span>")
+                + "</p>",
+                "</article>",
+            ]
+        )
+
     lines.append("</section>")
+    lines.append("</section>")
+    side_lines.append("</div>")
+    side_lines.append("</aside>")
+    lines.extend(side_lines)
     lines.append("</article>")
     return "\n".join(lines)
 
@@ -1333,7 +1472,7 @@ def _extract_file_text_for_prompt(content: Content, *, max_bytes: int) -> tuple[
 
 def _record_full_text_for_prompt(record: Record, *, max_file_bytes: int) -> str:
     if record.content.kind == "text":
-        text = _normalize_prompt_text(record.content.text_content or "")
+        text = _normalize_prompt_text(_read_text_content(record.content, max_bytes=max_file_bytes))
         return text or _normalize_prompt_text(record.preview or "")
 
     preview = _normalize_prompt_text(record.preview or "")
@@ -2767,24 +2906,49 @@ def update_record(record_id: int):
         return jsonify({"error": "forbidden"}), 403
 
     payload = _form_or_json_payload()
+    uploaded_oss_keys: list[str] = []
+    stale_oss_keys: list[str] = []
+    next_tags = record.get_tags()
 
     if "visibility" in payload:
         record.visibility = _normalize_visibility(payload.get("visibility"), default=record.visibility)
 
     if "tags" in payload:
-        record.set_tags(_parse_tags(payload.get("tags")))
+        next_tags = _parse_tags(payload.get("tags"))
 
     if record.content.kind == "text" and "text" in payload:
         text = str(payload.get("text") or "").strip()
         if not text:
             return jsonify({"error": "text cannot be empty"}), 400
-        record.content.text_content = text
+        auto_tags = _auto_tags_from_text(text)
+        if auto_tags:
+            next_tags = _parse_tags(next_tags + auto_tags)
+
+        old_key = str(record.content.oss_key or "").strip()
+        content = _text_to_content(text)
+        if content.oss_key:
+            uploaded_oss_keys.append(content.oss_key)
+
+        record.content.kind = "text"
+        record.content.text_content = content.text_content or ""
+        record.content.filename = content.filename or ""
+        record.content.content_type = content.content_type or ""
+        record.content.size_bytes = int(content.size_bytes or 0)
+        record.content.sha256 = content.sha256 or ""
+        record.content.oss_key = content.oss_key or ""
         record.preview = _preview_text(text)
+        if old_key and old_key != record.content.oss_key:
+            stale_oss_keys.append(old_key)
+
+    if "tags" in payload or (record.content.kind == "text" and "text" in payload):
+        record.set_tags(next_tags)
 
     new_file = request.files.get("file")
     if new_file:
-        old_key = record.content.oss_key
+        old_key = str(record.content.oss_key or "").strip()
         content, preview = _file_to_content(new_file)
+        if content.oss_key:
+            uploaded_oss_keys.append(content.oss_key)
 
         record.content.kind = content.kind
         # Content.text_content is non-null in schema; keep empty string for file records.
@@ -2798,16 +2962,29 @@ def update_record(record_id: int):
         record.preview = preview
         record.format = _detect_format(record.content, payload.get("format"))
 
-        if old_key:
-            try:
-                delete_object(old_key)
-            except Exception:
-                pass
+        if old_key and old_key != record.content.oss_key:
+            stale_oss_keys.append(old_key)
 
     if "format" in payload and not new_file:
         record.format = _detect_format(record.content, payload.get("format"))
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        for oss_key in set(uploaded_oss_keys):
+            try:
+                delete_object(oss_key)
+            except Exception:
+                pass
+        raise
+
+    for oss_key in set(stale_oss_keys):
+        try:
+            delete_object(oss_key)
+        except Exception:
+            pass
+
     return jsonify({"ok": True})
 
 
@@ -2820,7 +2997,7 @@ def delete_record(record_id: int):
     if record.user_id != user.id:
         return jsonify({"error": "forbidden"}), 403
 
-    oss_key = record.content.oss_key if record.content and record.content.kind == "file" else ""
+    oss_key = record.content.oss_key if record.content and record.content.oss_key else ""
     content = record.content
 
     db.session.delete(record)
@@ -2835,6 +3012,80 @@ def delete_record(record_id: int):
             pass
 
     return jsonify({"ok": True})
+
+
+@api_bp.route("/api/records/<int:record_id>/clone", methods=["POST"])
+@login_required()
+def clone_record(record_id: int):
+    user = g.get("user")
+    source_record = (
+        Record.query.options(joinedload(Record.user), joinedload(Record.content))
+        .filter_by(id=record_id)
+        .first_or_404()
+    )
+    if not _is_record_visible(source_record, user):
+        return jsonify({"error": "forbidden"}), 403
+
+    payload = _form_or_json_payload()
+    visibility = _normalize_visibility(payload.get("visibility"), default="private")
+
+    source_content = source_record.content
+    if not source_content:
+        return jsonify({"error": "source content unavailable"}), 409
+
+    uploaded_oss_key = ""
+    if source_content.kind == "text":
+        source_text = _read_text_content(source_content)
+        cloned_content = _text_to_content(source_text)
+        uploaded_oss_key = str(cloned_content.oss_key or "").strip()
+    else:
+        source_key = str(source_content.oss_key or "").strip()
+        if not source_key:
+            return jsonify({"error": "source file unavailable"}), 409
+        filename = source_content.filename or f"clone-{source_content.id}"
+        uploaded_oss_key = record_content_key(new_uuid(), filename)
+        try:
+            copy_object(source_key, uploaded_oss_key)
+        except Exception as exc:
+            return jsonify({"error": f"clone file failed: {exc}"}), 502
+        cloned_content = Content(
+            kind="file",
+            text_content="",
+            filename=source_content.filename or "",
+            content_type=source_content.content_type or "",
+            size_bytes=int(source_content.size_bytes or 0),
+            sha256=source_content.sha256 or "",
+            oss_key=uploaded_oss_key,
+        )
+
+    cloned_record = Record(
+        user_id=user.id,
+        content=cloned_content,
+        format=source_record.format,
+        visibility=visibility,
+        preview=source_record.preview or "",
+    )
+    cloned_record.set_tags(source_record.get_tags())
+
+    db.session.add(cloned_content)
+    db.session.add(cloned_record)
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        if uploaded_oss_key:
+            try:
+                delete_object(uploaded_oss_key)
+            except Exception:
+                pass
+        raise
+
+    loaded = (
+        Record.query.options(joinedload(Record.user), joinedload(Record.content))
+        .filter_by(id=cloned_record.id)
+        .first_or_404()
+    )
+    return jsonify({"record": _record_payload(loaded, viewer=user, include_content=False, include_comments=False)}), 201
 
 
 @api_bp.route("/api/records/<int:record_id>/comments", methods=["GET"])
@@ -2892,7 +3143,20 @@ def get_content_blob(content_id: int):
         return jsonify({"error": "forbidden"}), 403
 
     if content.kind == "text":
-        return Response(content.text_content or "", mimetype="text/plain; charset=utf-8")
+        if content.oss_key:
+            try:
+                data = get_object_bytes(content.oss_key)
+                response = Response(data, mimetype=content.content_type or "text/plain; charset=utf-8")
+                if content.filename:
+                    response.headers["Content-Disposition"] = f'inline; filename="{content.filename}"'
+                return response
+            except Exception:
+                pass
+
+        fallback_text = content.text_content or ""
+        if fallback_text:
+            return Response(fallback_text, mimetype="text/plain; charset=utf-8")
+        return jsonify({"error": "content unavailable"}), 404
 
     if not content.oss_key:
         return jsonify({"error": "missing content"}), 404
@@ -3044,11 +3308,17 @@ def board_day_records(day: str):
 @login_required()
 def echoes_feed():
     user = g.get("user")
-    records_query = _record_query_for(user, include_comments=False, public_only=True)
-    assets_query = GeneratedAsset.query.options(joinedload(GeneratedAsset.user)).filter(
-        GeneratedAsset.visibility == "public",
-        GeneratedAsset.status == "ready",
-    )
+    scope = str(request.args.get("scope") or "public").strip().lower()
+    if scope not in {"public", "with_mine"}:
+        return jsonify({"error": "invalid scope"}), 400
+
+    include_private = scope == "with_mine"
+    records_query = _record_query_for(user, include_comments=False, public_only=not include_private)
+    assets_query = GeneratedAsset.query.options(joinedload(GeneratedAsset.user)).filter(GeneratedAsset.status == "ready")
+    if include_private:
+        assets_query = assets_query.filter(or_(GeneratedAsset.visibility == "public", GeneratedAsset.user_id == user.id))
+    else:
+        assets_query = assets_query.filter(GeneratedAsset.visibility == "public")
 
     tag = str(request.args.get("tag") or "").strip()
     if tag:
@@ -3212,6 +3482,7 @@ def echoes_feed():
             "has_more": has_more,
             "limit": limit,
             "file_type": file_type or "all",
+            "scope": scope,
         }
     )
 
