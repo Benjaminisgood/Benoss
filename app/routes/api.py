@@ -432,6 +432,20 @@ def _is_record_visible(record: Record, user: User) -> bool:
     return bool(user and record.user_id == user.id)
 
 
+def _is_generated_asset_visible(asset: GeneratedAsset, user: User) -> bool:
+    if asset.visibility == "public":
+        return True
+    return bool(user and asset.user_id == user.id)
+
+
+def _can_manage_generated_asset(asset: GeneratedAsset, user: User) -> bool:
+    if not user:
+        return False
+    if asset.visibility == "public":
+        return True
+    return asset.user_id == user.id
+
+
 def _normalized_file_meta(content_type: str | None, filename_or_ext: str | None) -> tuple[str, str, str]:
     ctype = str(content_type or "").split(";", 1)[0].strip().lower()
     name = str(filename_or_ext or "").strip().lower()
@@ -2205,7 +2219,8 @@ def _sha256_bytes(data: bytes) -> str:
     return digest.hexdigest()
 
 
-def _generated_asset_payload(asset: GeneratedAsset) -> dict:
+def _generated_asset_payload(asset: GeneratedAsset, *, viewer: User | None = None) -> dict:
+    can_manage = _can_manage_generated_asset(asset, viewer)
     return {
         "id": asset.id,
         "kind": asset.kind,
@@ -2225,8 +2240,45 @@ def _generated_asset_payload(asset: GeneratedAsset) -> dict:
         },
         "size_bytes": int(asset.size_bytes or 0),
         "created_at": _iso(asset.created_at),
+        "updated_at": _iso(asset.updated_at),
+        "can_edit": can_manage,
+        "can_delete": can_manage,
         "blob_url": url_for("api.generated_asset_blob", asset_id=asset.id),
     }
+
+
+def _generated_asset_default_file_meta(kind: str) -> tuple[str, str]:
+    normalized = str(kind or "").strip().lower()
+    if normalized == "blog_html":
+        return ".html", "text/html; charset=utf-8"
+    if normalized == "podcast_audio":
+        return ".mp3", "audio/mpeg"
+    if normalized == "poster_image":
+        return ".png", "image/png"
+    return ".bin", "application/octet-stream"
+
+
+def _generated_asset_file_matches_kind(kind: str, *, content_type: str | None, filename_or_ext: str | None) -> bool:
+    inferred = _detect_file_format(content_type, filename_or_ext)
+    normalized = str(kind or "").strip().lower()
+    if normalized == "blog_html":
+        return inferred == "html"
+    if normalized == "podcast_audio":
+        return inferred == "audio"
+    if normalized == "poster_image":
+        return inferred == "image"
+    return True
+
+
+def _generated_asset_file_error(kind: str) -> str:
+    normalized = str(kind or "").strip().lower()
+    if normalized == "blog_html":
+        return "blog_html expects an HTML file"
+    if normalized == "podcast_audio":
+        return "podcast_audio expects an audio file"
+    if normalized == "poster_image":
+        return "poster_image expects an image file"
+    return "invalid replacement file for generated asset"
 
 
 def _save_generated_asset(
@@ -3413,7 +3465,7 @@ def echoes_feed():
             }
         )
     for item in assets:
-        asset_payload = _generated_asset_payload(item)
+        asset_payload = _generated_asset_payload(item, viewer=user)
         candidates.append(
             {
                 "entry_type": "asset",
@@ -3568,12 +3620,164 @@ def generated_assets():
 
     return jsonify(
         {
-            "items": [_generated_asset_payload(item) for item in assets],
+            "items": [_generated_asset_payload(item, viewer=user) for item in assets],
             "total": total,
             "page": page,
             "per": per,
         }
     )
+
+
+@api_bp.route("/api/generated-assets/<int:asset_id>", methods=["GET"])
+@login_required()
+def get_generated_asset(asset_id: int):
+    user = g.get("user")
+    asset = GeneratedAsset.query.options(joinedload(GeneratedAsset.user)).filter_by(id=asset_id).first_or_404()
+    if not _is_generated_asset_visible(asset, user):
+        return jsonify({"error": "forbidden"}), 403
+    return jsonify({"asset": _generated_asset_payload(asset, viewer=user)})
+
+
+@api_bp.route("/api/generated-assets/<int:asset_id>", methods=["PATCH"])
+@login_required()
+def update_generated_asset(asset_id: int):
+    user = g.get("user")
+    asset = GeneratedAsset.query.options(joinedload(GeneratedAsset.user)).filter_by(id=asset_id).first_or_404()
+    if not _can_manage_generated_asset(asset, user):
+        return jsonify({"error": "forbidden"}), 403
+
+    payload = _form_or_json_payload()
+    uploaded_oss_keys: list[str] = []
+    stale_oss_keys: list[str] = []
+    changed = False
+
+    if "title" in payload:
+        asset.title = str(payload.get("title") or "").strip()[:255]
+        changed = True
+    if "visibility" in payload:
+        asset.visibility = _normalize_visibility(payload.get("visibility"), default=asset.visibility)
+        changed = True
+
+    new_file = request.files.get("file")
+    has_html_replacement = "html" in payload
+    if new_file and has_html_replacement:
+        return jsonify({"error": "provide either file or html, not both"}), 400
+
+    replacement_data: bytes | None = None
+    replacement_content_type = ""
+    replacement_ext = ""
+
+    if new_file:
+        default_ext, default_content_type = _generated_asset_default_file_meta(asset.kind)
+        source_name = secure_filename(new_file.filename or "") or f"asset{default_ext}"
+        file_bytes = new_file.read() or b""
+        if not file_bytes:
+            return jsonify({"error": "replacement file is empty"}), 400
+
+        guessed_type = mimetypes.guess_type(source_name)[0] or ""
+        content_type = str(new_file.mimetype or guessed_type or default_content_type).strip() or default_content_type
+        ext = Path(source_name).suffix.lower() or default_ext
+        if not _generated_asset_file_matches_kind(asset.kind, content_type=content_type, filename_or_ext=source_name):
+            return jsonify({"error": _generated_asset_file_error(asset.kind)}), 400
+
+        replacement_data = file_bytes
+        replacement_content_type = content_type
+        replacement_ext = ext
+    elif has_html_replacement:
+        if str(asset.kind or "").strip().lower() != "blog_html":
+            return jsonify({"error": "html replacement is only supported for blog_html assets"}), 400
+        html_text = str(payload.get("html") or "")
+        if not html_text.strip():
+            return jsonify({"error": "html cannot be empty"}), 400
+        replacement_data = html_text.encode("utf-8")
+        replacement_content_type = "text/html; charset=utf-8"
+        replacement_ext = ".html"
+
+    if replacement_data is not None:
+        default_ext, _ = _generated_asset_default_file_meta(asset.kind)
+        safe_ext = str(replacement_ext or default_ext).strip().lower() or default_ext
+        if not safe_ext.startswith("."):
+            safe_ext = f".{safe_ext}"
+        safe_ext = safe_ext[:16] if len(safe_ext) > 16 else safe_ext
+
+        new_key = generated_asset_key(asset.user_id, asset.kind, new_uuid(), f"asset{safe_ext}")
+        try:
+            put_object_bytes(new_key, replacement_data, content_type=replacement_content_type)
+        except Exception as exc:
+            db.session.rollback()
+            return jsonify({"error": f"asset upload failed: {exc}"}), 502
+
+        old_key = str(asset.oss_key or "").strip()
+        uploaded_oss_keys.append(new_key)
+
+        asset.oss_key = new_key
+        asset.content_type = replacement_content_type[:255]
+        asset.ext = safe_ext
+        asset.size_bytes = len(replacement_data)
+        asset.sha256 = _sha256_bytes(replacement_data)
+        asset.status = "ready"
+        changed = True
+
+        if old_key and old_key != new_key:
+            stale_oss_keys.append(old_key)
+
+    if not changed:
+        return jsonify({"error": "nothing to update"}), 400
+
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        for oss_key in set(uploaded_oss_keys):
+            try:
+                delete_object(oss_key)
+            except Exception:
+                pass
+        raise
+
+    for oss_key in set(stale_oss_keys):
+        try:
+            delete_object(oss_key)
+        except Exception:
+            pass
+
+    return jsonify({"ok": True, "asset": _generated_asset_payload(asset, viewer=user)})
+
+
+@api_bp.route("/api/generated-assets/<int:asset_id>", methods=["DELETE"])
+@login_required()
+def delete_generated_asset(asset_id: int):
+    user = g.get("user")
+    asset = GeneratedAsset.query.options(joinedload(GeneratedAsset.user)).filter_by(id=asset_id).first_or_404()
+    if not _can_manage_generated_asset(asset, user):
+        return jsonify({"error": "forbidden"}), 403
+
+    oss_key = str(asset.oss_key or "").strip()
+    jobs = DailyDigestJob.query.filter(
+        or_(
+            DailyDigestJob.blog_asset_id == asset.id,
+            DailyDigestJob.podcast_asset_id == asset.id,
+            DailyDigestJob.poster_asset_id == asset.id,
+        )
+    ).all()
+    for job in jobs:
+        if job.blog_asset_id == asset.id:
+            job.blog_asset_id = None
+        if job.podcast_asset_id == asset.id:
+            job.podcast_asset_id = None
+        if job.poster_asset_id == asset.id:
+            job.poster_asset_id = None
+
+    db.session.delete(asset)
+    db.session.commit()
+
+    if oss_key:
+        try:
+            delete_object(oss_key)
+        except Exception:
+            pass
+
+    return jsonify({"ok": True})
 
 
 @api_bp.route("/api/digest/daily", methods=["POST"])
@@ -3618,7 +3822,7 @@ def digest_daily():
 def generated_asset_blob(asset_id: int):
     user = g.get("user")
     asset = GeneratedAsset.query.get_or_404(asset_id)
-    if asset.visibility != "public" and asset.user_id != user.id:
+    if not _is_generated_asset_visible(asset, user):
         return jsonify({"error": "forbidden"}), 403
 
     try:
@@ -3676,7 +3880,7 @@ def home_today():
         record_count=digest_record_count,
     )
     daily_assets = _daily_digest_assets_for_day(digest_day)
-    digest_assets_payload = [_generated_asset_payload(item) for item in daily_assets]
+    digest_assets_payload = [_generated_asset_payload(item, viewer=user) for item in daily_assets]
 
     ai_settings = _ai_provider_settings()
 

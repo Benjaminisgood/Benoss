@@ -29,6 +29,11 @@
     "clone-record": cloneRecord,
     "comment-record": commentRecord,
   };
+  const assetActionHandlers = {
+    "edit-asset": editGeneratedAsset,
+    "replace-asset": replaceGeneratedAsset,
+    "delete-asset": deleteGeneratedAsset,
+  };
   const echoScopeLabels = Object.freeze({
     with_mine: "公开 + 我的私密",
     public: "仅公开",
@@ -137,6 +142,71 @@
       return `${(value / (1024 * 1024)).toFixed(1)} MB`;
     }
     return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+
+  function generatedAssetUploadAccept(kind) {
+    const normalized = String(kind || "").trim().toLowerCase();
+    if (normalized === "blog_html") {
+      return ".html,.htm,.xhtml,text/html,application/xhtml+xml";
+    }
+    if (normalized === "podcast_audio") {
+      return "audio/*";
+    }
+    if (normalized === "poster_image") {
+      return "image/*";
+    }
+    return "";
+  }
+
+  function pickSingleFile(accept = "") {
+    return new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      if (accept) {
+        input.accept = accept;
+      }
+      input.tabIndex = -1;
+      input.style.position = "fixed";
+      input.style.left = "-9999px";
+      input.style.width = "1px";
+      input.style.height = "1px";
+      input.style.opacity = "0";
+      document.body.appendChild(input);
+
+      let settled = false;
+      const cleanup = () => {
+        if (focusHandler) {
+          window.removeEventListener("focus", focusHandler);
+        }
+        input.remove();
+      };
+      const settle = (file) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(file || null);
+      };
+
+      const focusHandler = () => {
+        window.setTimeout(() => {
+          const file = input.files && input.files.length ? input.files[0] : null;
+          settle(file);
+        }, 240);
+      };
+
+      input.addEventListener(
+        "change",
+        () => {
+          const file = input.files && input.files.length ? input.files[0] : null;
+          settle(file);
+        },
+        { once: true },
+      );
+      window.addEventListener("focus", focusHandler, { once: true });
+      input.click();
+    });
   }
 
   function escapeHtml(value) {
@@ -1115,6 +1185,77 @@
     }
   }
 
+  async function editGeneratedAsset(assetId) {
+    try {
+      const data = await api(`/api/generated-assets/${assetId}`);
+      const asset = data?.asset || {};
+      const currentTitle = String(asset.title || asset.kind || "AI 资产").trim();
+      const nextTitleInput = window.prompt("请输入资产标题", currentTitle);
+      if (nextTitleInput === null) {
+        return;
+      }
+      const nextTitle = String(nextTitleInput || "").trim();
+      const currentVisibility = normalizeVisibility(asset.visibility, "private");
+      const nextVisibilityInput = window.prompt("请输入可见性（public/private）", currentVisibility);
+      if (nextVisibilityInput === null) {
+        return;
+      }
+      const nextVisibility = normalizeVisibility(nextVisibilityInput, currentVisibility);
+
+      await api(`/api/generated-assets/${assetId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: nextTitle,
+          visibility: nextVisibility,
+        }),
+      });
+      await refreshCurrentPageData();
+      window.alert("AI 资产已更新");
+    } catch (error) {
+      window.alert(error.message);
+    }
+  }
+
+  async function replaceGeneratedAsset(assetId) {
+    try {
+      const data = await api(`/api/generated-assets/${assetId}`);
+      const asset = data?.asset || {};
+      const accept = generatedAssetUploadAccept(asset.kind);
+      const picked = await pickSingleFile(accept);
+      if (!picked) {
+        return;
+      }
+
+      const payload = new FormData();
+      payload.set("file", picked, picked.name || "asset-upload");
+      await api(`/api/generated-assets/${assetId}`, {
+        method: "PATCH",
+        body: payload,
+      });
+      await refreshCurrentPageData();
+      window.alert("AI 资产内容已替换");
+    } catch (error) {
+      window.alert(error.message);
+    }
+  }
+
+  async function deleteGeneratedAsset(assetId) {
+    const confirmed = window.confirm(`确认删除 AI 资产 #${assetId}？此操作不可撤销。`);
+    if (!confirmed) {
+      return;
+    }
+    try {
+      await api(`/api/generated-assets/${assetId}`, {
+        method: "DELETE",
+      });
+      await refreshCurrentPageData();
+      window.alert("AI 资产已删除");
+    } catch (error) {
+      window.alert(error.message);
+    }
+  }
+
   function ensureImagePreviewDialog() {
     const existing = qs("#image-preview-dialog");
     if (existing instanceof HTMLDialogElement) {
@@ -1220,13 +1361,21 @@
       }
       const action = button.dataset.action || button.dataset.dialogAction;
       const recordId = Number(button.dataset.recordId || 0);
-      if (!recordId) {
+      if (recordId) {
+        const handler = recordActionHandlers[action];
+        if (handler) {
+          handler(recordId);
+        }
         return;
       }
 
-      const handler = recordActionHandlers[action];
-      if (handler) {
-        handler(recordId);
+      const assetId = Number(button.dataset.assetId || 0);
+      if (!assetId) {
+        return;
+      }
+      const assetHandler = assetActionHandlers[action];
+      if (assetHandler) {
+        assetHandler(assetId);
       }
     });
   }
@@ -2762,6 +2911,9 @@
     const src = asset.blob_url || "";
     const contentType = String(asset.content_type || "").toLowerCase();
     const fileType = normalizeEchoFileType(entry.file_type || echoFileTypeFromAsset(asset)) || "file";
+    const canEdit = Boolean(asset.can_edit);
+    const canReplace = Boolean(asset.can_edit);
+    const canDelete = Boolean(asset.can_delete);
 
     let mediaHtml = "";
     if (fileType === "web") {
@@ -2803,6 +2955,11 @@
         <p><strong>${escapeHtml(asset.title || asset.kind || "AI 资产")}</strong></p>
         <div class="echo-card-media">${mediaHtml}</div>
         <p class="muted echo-card-meta">${meta.join(" | ")}</p>
+        <div class="action-line">
+          ${canEdit ? `<button class="bubble" type="button" data-action="edit-asset" data-asset-id="${asset.id}">编辑</button>` : ""}
+          ${canReplace ? `<button class="bubble" type="button" data-action="replace-asset" data-asset-id="${asset.id}">替换内容</button>` : ""}
+          ${canDelete ? `<button class="bubble" type="button" data-action="delete-asset" data-asset-id="${asset.id}">删除</button>` : ""}
+        </div>
       </article>
     `;
   }
