@@ -30,8 +30,8 @@
     "comment-record": commentRecord,
   };
   const assetActionHandlers = {
+    "view-asset": openGeneratedAssetDialog,
     "edit-asset": editGeneratedAsset,
-    "replace-asset": replaceGeneratedAsset,
     "delete-asset": deleteGeneratedAsset,
   };
   const echoScopeLabels = Object.freeze({
@@ -117,6 +117,8 @@
   };
   const dialogState = {
     record: null,
+    asset: null,
+    assetHtmlOriginal: "",
     mode: "view",
     saving: false,
   };
@@ -156,57 +158,6 @@
       return "image/*";
     }
     return "";
-  }
-
-  function pickSingleFile(accept = "") {
-    return new Promise((resolve) => {
-      const input = document.createElement("input");
-      input.type = "file";
-      if (accept) {
-        input.accept = accept;
-      }
-      input.tabIndex = -1;
-      input.style.position = "fixed";
-      input.style.left = "-9999px";
-      input.style.width = "1px";
-      input.style.height = "1px";
-      input.style.opacity = "0";
-      document.body.appendChild(input);
-
-      let settled = false;
-      const cleanup = () => {
-        if (focusHandler) {
-          window.removeEventListener("focus", focusHandler);
-        }
-        input.remove();
-      };
-      const settle = (file) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup();
-        resolve(file || null);
-      };
-
-      const focusHandler = () => {
-        window.setTimeout(() => {
-          const file = input.files && input.files.length ? input.files[0] : null;
-          settle(file);
-        }, 240);
-      };
-
-      input.addEventListener(
-        "change",
-        () => {
-          const file = input.files && input.files.length ? input.files[0] : null;
-          settle(file);
-        },
-        { once: true },
-      );
-      window.addEventListener("focus", focusHandler, { once: true });
-      input.click();
-    });
   }
 
   function escapeHtml(value) {
@@ -887,6 +838,204 @@
     `;
   }
 
+  function generatedAssetKindLabel(kind) {
+    const normalized = String(kind || "").trim().toLowerCase();
+    if (normalized === "blog_html") {
+      return "博客";
+    }
+    if (normalized === "podcast_audio") {
+      return "播客";
+    }
+    if (normalized === "poster_image") {
+      return "海报";
+    }
+    return normalized || "AI 资产";
+  }
+
+  function generatedAssetReplaceHint(kind) {
+    const normalized = String(kind || "").trim().toLowerCase();
+    if (normalized === "blog_html") {
+      return "仅支持 HTML 文件（.html/.htm/.xhtml）。";
+    }
+    if (normalized === "podcast_audio") {
+      return "仅支持音频文件。";
+    }
+    if (normalized === "poster_image") {
+      return "仅支持图片文件。";
+    }
+    return "请上传与当前资产类型匹配的文件。";
+  }
+
+  function generatedAssetMediaHtml(asset) {
+    const src = asset.blob_url || "";
+    const contentType = String(asset.content_type || "").toLowerCase();
+    const fileType = normalizeEchoFileType(echoFileTypeFromAsset(asset)) || "file";
+
+    if (fileType === "web") {
+      return src
+        ? `<p><a href="${escapeHtml(src)}" target="_blank" rel="noreferrer">打开博客网页</a></p>`
+        : `<p class="muted">博客内容不可用</p>`;
+    }
+    if (src && contentType.startsWith("image/")) {
+      return `<img class="preview-image" data-previewable="1" loading="lazy" decoding="async" src="${escapeHtml(src)}" alt="${escapeHtml(asset.title || "poster")}">`;
+    }
+    if (src && contentType.startsWith("audio/")) {
+      return `<audio controls preload="none" src="${escapeHtml(src)}"></audio>`;
+    }
+    if (src && contentType.startsWith("video/")) {
+      return `<video controls preload="none" src="${escapeHtml(src)}"></video>`;
+    }
+    if (src) {
+      return `<p><a href="${escapeHtml(src)}" target="_blank" rel="noreferrer">打开 AI 资产</a></p>`;
+    }
+    return `<p class="muted">资产不可用</p>`;
+  }
+
+  function dialogGeneratedAssetMeta(asset) {
+    const visibilityText = normalizeVisibility(asset.visibility, "private") === "public" ? "公开" : "私密";
+    const parts = [
+      `发布者: ${asset.user?.username || ""}`,
+      formatTime(asset.created_at),
+      visibilityText,
+      `类型: ${generatedAssetKindLabel(asset.kind)}`,
+    ];
+    if (asset.source_day) {
+      parts.push(`归档日期: ${asset.source_day}`);
+    }
+    return parts.join(" | ");
+  }
+
+  function generatedAssetCurrentFileMetaHtml(asset) {
+    const sizeText = formatFileSize(asset.size_bytes);
+    const kindText = generatedAssetKindLabel(asset.kind);
+    return `
+      <div class="record-edit-file-current">
+        <p><strong>${escapeHtml(asset.title || kindText)}</strong></p>
+        <p class="muted">${escapeHtml(asset.content_type || "application/octet-stream")} | ${escapeHtml(sizeText)}</p>
+      </div>
+    `;
+  }
+
+  async function fetchGeneratedAsset(assetId, options = {}) {
+    const data = await api(`/api/generated-assets/${assetId}`);
+    const asset = data.asset || {};
+    const includeBlogHtml = options.includeBlogHtml === true;
+    if (includeBlogHtml && String(asset.kind || "").trim().toLowerCase() === "blog_html" && asset.blob_url) {
+      try {
+        const response = await fetch(asset.blob_url, { credentials: "same-origin" });
+        if (response.ok) {
+          asset.editable_html = await response.text();
+        }
+      } catch (_error) {
+        asset.editable_html = "";
+      }
+    }
+    return asset;
+  }
+
+  function renderGeneratedAssetDialogView(asset) {
+    dialogState.record = null;
+    dialogState.asset = asset;
+    dialogState.assetHtmlOriginal = "";
+    dialogState.mode = "asset-view";
+
+    const actions = [];
+    if (asset.can_edit) {
+      actions.push(`<button class="bubble" type="button" data-dialog-action="edit-asset" data-asset-id="${asset.id}">编辑这条资产</button>`);
+    }
+    if (asset.can_delete) {
+      actions.push(`<button class="bubble" type="button" data-dialog-action="delete-asset" data-asset-id="${asset.id}">删除这条资产</button>`);
+    }
+    if (asset.blob_url) {
+      actions.push(`<a class="bubble" href="${escapeHtml(asset.blob_url)}" target="_blank" rel="noreferrer">打开原始文件</a>`);
+    }
+
+    dialogTitle.textContent = `AI 资产 #${asset.id}`;
+    dialogBody.innerHTML = `
+      <div class="dialog-content">
+        <p class="muted">${escapeHtml(dialogGeneratedAssetMeta(asset))}</p>
+        <p><strong>${escapeHtml(asset.title || generatedAssetKindLabel(asset.kind))}</strong></p>
+        <div class="action-line">${actions.join("")}</div>
+        <section>
+          <h4>具体内容</h4>
+          <div class="record-edit-preview">
+            ${generatedAssetMediaHtml(asset)}
+          </div>
+        </section>
+      </div>
+    `;
+  }
+
+  function renderGeneratedAssetDialogEditor(asset) {
+    dialogState.record = null;
+    dialogState.asset = asset;
+    dialogState.mode = "asset-edit";
+
+    const kind = String(asset.kind || "").trim().toLowerCase();
+    const titleValue = String(asset.title || "");
+    const visibilityValue = normalizeVisibility(asset.visibility, "private");
+    const fileAccept = generatedAssetUploadAccept(kind);
+    const fileAcceptAttr = fileAccept ? ` accept="${escapeHtml(fileAccept)}"` : "";
+    const editableHtml = kind === "blog_html" ? String(asset.editable_html || "") : "";
+    dialogState.assetHtmlOriginal = editableHtml;
+
+    dialogTitle.textContent = `编辑 AI 资产 #${asset.id}`;
+    dialogBody.innerHTML = `
+      <div class="dialog-content">
+        <form class="record-edit-form stack-form" data-asset-edit-form data-asset-id="${asset.id}">
+          <p class="muted">${escapeHtml(dialogGeneratedAssetMeta(asset))}</p>
+          <div class="record-edit-grid">
+            <label>
+              标题
+              <input type="text" name="title" value="${escapeHtml(titleValue)}" placeholder="请输入资产标题">
+            </label>
+            <label>
+              可见性
+              <select name="visibility">
+                <option value="private" ${visibilityValue === "private" ? "selected" : ""}>私密</option>
+                <option value="public" ${visibilityValue === "public" ? "selected" : ""}>公开</option>
+              </select>
+            </label>
+          </div>
+          ${
+            kind === "blog_html"
+              ? `
+              <label>
+                博客 HTML 正文
+                <textarea name="html" rows="12">${escapeHtml(editableHtml)}</textarea>
+              </label>
+              <p class="muted">可直接编辑博客 HTML，或上传新的 HTML 文件替换。</p>
+            `
+              : ""
+          }
+          <section class="record-edit-file-card">
+            <h4>文件替换</h4>
+            ${generatedAssetCurrentFileMetaHtml(asset)}
+            <div class="record-edit-preview">
+              ${generatedAssetMediaHtml(asset)}
+            </div>
+            <label>
+              上传新文件（可选）
+              <input type="file" name="file" data-asset-edit-file-input${fileAcceptAttr}>
+            </label>
+            <p class="record-edit-file-hint muted" data-asset-edit-file-hint>未选择新文件，将保留当前内容。</p>
+            <p class="muted">${escapeHtml(generatedAssetReplaceHint(kind))}</p>
+          </section>
+          <p class="record-edit-feedback muted" data-asset-edit-feedback></p>
+          <div class="action-line">
+            <button type="submit" data-asset-edit-submit>保存修改</button>
+            ${
+              asset.can_delete
+                ? `<button class="bubble" type="button" data-dialog-action="delete-asset" data-asset-id="${asset.id}">删除资产</button>`
+                : ""
+            }
+            <button class="bubble" type="button" data-dialog-action="view-asset" data-asset-id="${asset.id}">返回详情</button>
+          </div>
+        </form>
+      </div>
+    `;
+  }
+
   function ensureDialogVisible() {
     if (dialog && !dialog.open) {
       dialog.showModal();
@@ -901,6 +1050,8 @@
 
   function renderRecordDialogView(record) {
     dialogState.record = record;
+    dialogState.asset = null;
+    dialogState.assetHtmlOriginal = "";
     dialogState.mode = "view";
 
     dialogTitle.textContent = `记录 #${record.record_no}`;
@@ -936,6 +1087,8 @@
 
   function renderRecordDialogEditor(record) {
     dialogState.record = record;
+    dialogState.asset = null;
+    dialogState.assetHtmlOriginal = "";
     dialogState.mode = "edit";
 
     const tagsValue = Array.isArray(record.tags) ? record.tags.join(", ") : "";
@@ -1185,56 +1338,21 @@
     }
   }
 
-  async function editGeneratedAsset(assetId) {
+  async function openGeneratedAssetDialog(assetId) {
     try {
-      const data = await api(`/api/generated-assets/${assetId}`);
-      const asset = data?.asset || {};
-      const currentTitle = String(asset.title || asset.kind || "AI 资产").trim();
-      const nextTitleInput = window.prompt("请输入资产标题", currentTitle);
-      if (nextTitleInput === null) {
-        return;
-      }
-      const nextTitle = String(nextTitleInput || "").trim();
-      const currentVisibility = normalizeVisibility(asset.visibility, "private");
-      const nextVisibilityInput = window.prompt("请输入可见性（public/private）", currentVisibility);
-      if (nextVisibilityInput === null) {
-        return;
-      }
-      const nextVisibility = normalizeVisibility(nextVisibilityInput, currentVisibility);
-
-      await api(`/api/generated-assets/${assetId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: nextTitle,
-          visibility: nextVisibility,
-        }),
-      });
-      await refreshCurrentPageData();
-      window.alert("AI 资产已更新");
+      const asset = await fetchGeneratedAsset(assetId, { includeBlogHtml: false });
+      renderGeneratedAssetDialogView(asset);
+      ensureDialogVisible();
     } catch (error) {
       window.alert(error.message);
     }
   }
 
-  async function replaceGeneratedAsset(assetId) {
+  async function editGeneratedAsset(assetId) {
     try {
-      const data = await api(`/api/generated-assets/${assetId}`);
-      const asset = data?.asset || {};
-      const accept = generatedAssetUploadAccept(asset.kind);
-      const picked = await pickSingleFile(accept);
-      if (!picked) {
-        return;
-      }
-
-      const payload = new FormData();
-      payload.set("file", picked, picked.name || "asset-upload");
-      await api(`/api/generated-assets/${assetId}`, {
-        method: "PATCH",
-        body: payload,
-      });
-      await refreshCurrentPageData();
-      window.alert("AI 资产内容已替换");
+      const asset = await fetchGeneratedAsset(assetId, { includeBlogHtml: true });
+      renderGeneratedAssetDialogEditor(asset);
+      ensureDialogVisible();
     } catch (error) {
       window.alert(error.message);
     }
@@ -1249,6 +1367,9 @@
       await api(`/api/generated-assets/${assetId}`, {
         method: "DELETE",
       });
+      if (dialog?.open && Number(dialogState.asset?.id) === assetId) {
+        dialog.close();
+      }
       await refreshCurrentPageData();
       window.alert("AI 资产已删除");
     } catch (error) {
@@ -2912,7 +3033,6 @@
     const contentType = String(asset.content_type || "").toLowerCase();
     const fileType = normalizeEchoFileType(entry.file_type || echoFileTypeFromAsset(asset)) || "file";
     const canEdit = Boolean(asset.can_edit);
-    const canReplace = Boolean(asset.can_edit);
     const canDelete = Boolean(asset.can_delete);
 
     let mediaHtml = "";
@@ -2956,8 +3076,8 @@
         <div class="echo-card-media">${mediaHtml}</div>
         <p class="muted echo-card-meta">${meta.join(" | ")}</p>
         <div class="action-line">
+          <button class="bubble" type="button" data-action="view-asset" data-asset-id="${asset.id}">查看详情</button>
           ${canEdit ? `<button class="bubble" type="button" data-action="edit-asset" data-asset-id="${asset.id}">编辑</button>` : ""}
-          ${canReplace ? `<button class="bubble" type="button" data-action="replace-asset" data-asset-id="${asset.id}">替换内容</button>` : ""}
           ${canDelete ? `<button class="bubble" type="button" data-action="delete-asset" data-asset-id="${asset.id}">删除</button>` : ""}
         </div>
       </article>
@@ -3518,36 +3638,129 @@
         if (!(event.target instanceof Element)) {
           return;
         }
-        const fileInput = event.target.closest("[data-record-edit-file-input]");
-        if (!(fileInput instanceof HTMLInputElement)) {
+        const recordFileInput = event.target.closest("[data-record-edit-file-input]");
+        if (recordFileInput instanceof HTMLInputElement) {
+          const hintEl = qs("[data-record-edit-file-hint]", dialogBody);
+          if (!hintEl) {
+            return;
+          }
+          const nextFile = recordFileInput.files && recordFileInput.files.length ? recordFileInput.files[0] : null;
+          hintEl.textContent = nextFile
+            ? `将替换为: ${nextFile.name} (${formatFileSize(nextFile.size)})`
+            : "未选择新文件，将保留当前文件。";
           return;
         }
-        const hintEl = qs("[data-record-edit-file-hint]", dialogBody);
+
+        const assetFileInput = event.target.closest("[data-asset-edit-file-input]");
+        if (!(assetFileInput instanceof HTMLInputElement)) {
+          return;
+        }
+        const hintEl = qs("[data-asset-edit-file-hint]", dialogBody);
         if (!hintEl) {
           return;
         }
-        const nextFile = fileInput.files && fileInput.files.length ? fileInput.files[0] : null;
+        const nextFile = assetFileInput.files && assetFileInput.files.length ? assetFileInput.files[0] : null;
         hintEl.textContent = nextFile
           ? `将替换为: ${nextFile.name} (${formatFileSize(nextFile.size)})`
-          : "未选择新文件，将保留当前文件。";
+          : "未选择新文件，将保留当前内容。";
       });
 
       dialogBody.addEventListener("submit", async (event) => {
-        const form = event.target instanceof Element ? event.target.closest("form[data-record-edit-form]") : null;
-        if (!(form instanceof HTMLFormElement)) {
+        if (!(event.target instanceof Element)) {
+          return;
+        }
+
+        const recordForm = event.target.closest("form[data-record-edit-form]");
+        if (recordForm instanceof HTMLFormElement) {
+          event.preventDefault();
+
+          const recordId = Number(recordForm.dataset.recordId || 0);
+          if (!recordId || dialogState.saving) {
+            return;
+          }
+
+          const formData = new FormData(recordForm);
+          const payload = new FormData();
+          const submitBtn = qs("[data-record-edit-submit]", recordForm);
+          const feedbackEl = qs("[data-record-edit-feedback]", recordForm);
+
+          dialogState.saving = true;
+          if (submitBtn instanceof HTMLButtonElement) {
+            submitBtn.disabled = true;
+          }
+          if (feedbackEl) {
+            feedbackEl.textContent = "保存中...";
+          }
+
+          try {
+            const currentRecord =
+              dialogState.record && Number(dialogState.record.id) === recordId
+                ? dialogState.record
+                : await fetchRecord(recordId, false);
+
+            const visibility = normalizeVisibility(formData.get("visibility"), currentRecord?.visibility || "private");
+            const tags = String(formData.get("tags") || "");
+            const format = String(formData.get("format") || "").trim();
+
+            payload.set("visibility", visibility);
+            payload.set("tags", tags);
+            payload.set("format", format);
+
+            if (currentRecord?.content?.kind === "text") {
+              const text = String(formData.get("text") || "").trim();
+              if (!text) {
+                throw new Error("文本内容不能为空");
+              }
+              payload.set("text", text);
+            }
+
+            const fileInput = qs("[data-record-edit-file-input]", recordForm);
+            const nextFile =
+              fileInput instanceof HTMLInputElement && fileInput.files && fileInput.files.length ? fileInput.files[0] : null;
+            if (nextFile) {
+              payload.set("file", nextFile, nextFile.name);
+            }
+
+            await api(`/api/records/${recordId}`, {
+              method: "PATCH",
+              body: payload,
+            });
+            if (feedbackEl) {
+              feedbackEl.textContent = "保存成功，正在刷新...";
+            }
+            await refreshCurrentPageData();
+            await openRecordDialog(recordId);
+            window.alert("记录已更新");
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "更新失败";
+            if (feedbackEl) {
+              feedbackEl.textContent = message;
+            }
+            window.alert(message);
+          } finally {
+            dialogState.saving = false;
+            if (submitBtn instanceof HTMLButtonElement) {
+              submitBtn.disabled = false;
+            }
+          }
+          return;
+        }
+
+        const assetForm = event.target.closest("form[data-asset-edit-form]");
+        if (!(assetForm instanceof HTMLFormElement)) {
           return;
         }
         event.preventDefault();
 
-        const recordId = Number(form.dataset.recordId || 0);
-        if (!recordId || dialogState.saving) {
+        const assetId = Number(assetForm.dataset.assetId || 0);
+        if (!assetId || dialogState.saving) {
           return;
         }
 
-        const formData = new FormData(form);
+        const formData = new FormData(assetForm);
         const payload = new FormData();
-        const submitBtn = qs("[data-record-edit-submit]", form);
-        const feedbackEl = qs("[data-record-edit-feedback]", form);
+        const submitBtn = qs("[data-asset-edit-submit]", assetForm);
+        const feedbackEl = qs("[data-asset-edit-feedback]", assetForm);
 
         dialogState.saving = true;
         if (submitBtn instanceof HTMLButtonElement) {
@@ -3558,35 +3771,32 @@
         }
 
         try {
-          const currentRecord =
-            dialogState.record && Number(dialogState.record.id) === recordId
-              ? dialogState.record
-              : await fetchRecord(recordId, false);
+          const currentAsset =
+            dialogState.asset && Number(dialogState.asset.id) === assetId
+              ? dialogState.asset
+              : await fetchGeneratedAsset(assetId, { includeBlogHtml: false });
 
-          const visibility = normalizeVisibility(formData.get("visibility"), currentRecord?.visibility || "private");
-          const tags = String(formData.get("tags") || "");
-          const format = String(formData.get("format") || "").trim();
-
+          const title = String(formData.get("title") || currentAsset?.title || "").trim();
+          const visibility = normalizeVisibility(formData.get("visibility"), currentAsset?.visibility || "private");
+          payload.set("title", title);
           payload.set("visibility", visibility);
-          payload.set("tags", tags);
-          payload.set("format", format);
 
-          if (currentRecord?.content?.kind === "text") {
-            const text = String(formData.get("text") || "").trim();
-            if (!text) {
-              throw new Error("文本内容不能为空");
-            }
-            payload.set("text", text);
-          }
-
-          const fileInput = qs("[data-record-edit-file-input]", form);
+          const fileInput = qs("[data-asset-edit-file-input]", assetForm);
           const nextFile =
             fileInput instanceof HTMLInputElement && fileInput.files && fileInput.files.length ? fileInput.files[0] : null;
           if (nextFile) {
             payload.set("file", nextFile, nextFile.name);
           }
 
-          await api(`/api/records/${recordId}`, {
+          const htmlInput = qs('textarea[name="html"]', assetForm);
+          if (!nextFile && htmlInput instanceof HTMLTextAreaElement) {
+            const htmlValue = String(formData.get("html") || "");
+            if (htmlValue !== String(dialogState.assetHtmlOriginal || "")) {
+              payload.set("html", htmlValue);
+            }
+          }
+
+          await api(`/api/generated-assets/${assetId}`, {
             method: "PATCH",
             body: payload,
           });
@@ -3594,8 +3804,8 @@
             feedbackEl.textContent = "保存成功，正在刷新...";
           }
           await refreshCurrentPageData();
-          await openRecordDialog(recordId);
-          window.alert("记录已更新");
+          await openGeneratedAssetDialog(assetId);
+          window.alert("AI 资产已更新");
         } catch (error) {
           const message = error instanceof Error ? error.message : "更新失败";
           if (feedbackEl) {
@@ -3614,6 +3824,10 @@
     if (dialog) {
       dialog.addEventListener("close", () => {
         dialogState.saving = false;
+        dialogState.record = null;
+        dialogState.asset = null;
+        dialogState.assetHtmlOriginal = "";
+        dialogState.mode = "view";
       });
     }
   }
