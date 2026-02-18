@@ -1963,8 +1963,9 @@
     setButtonBusy(submitBtn, true, { busyText: "刷新中..." });
     const formData = new FormData(form);
     const tag = String(formData.get("tag") || "").trim();
+    const days = String(formData.get("days") ?? "").trim();
     const query = buildQuery({
-      days: formData.get("days") || 7,
+      days,
       tag,
     });
     try {

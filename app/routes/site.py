@@ -1,7 +1,8 @@
-from flask import Blueprint, flash, g, redirect, render_template, request, session, url_for
+from flask import Blueprint, current_app, flash, g, redirect, render_template, request, session, url_for
 
 from ..extensions import db
 from ..models import User
+from ..utils.runtime_settings import get_setting_int
 from ..utils.session_auth import login_required, login_user, logout_user, safe_next_url
 
 
@@ -17,7 +18,10 @@ def home():
 @site_bp.route("/board")
 @login_required()
 def board():
-    return render_template("board.html", page="board", title="Board")
+    config_default = int(current_app.config.get("BOARD_DEFAULT_DAYS") or 7)
+    board_default_days = get_setting_int("BOARD_DEFAULT_DAYS", default=config_default)
+    board_default_days = min(max(board_default_days, 1), 30)
+    return render_template("board.html", page="board", title="Board", board_default_days=board_default_days)
 
 
 @site_bp.route("/echoes")
