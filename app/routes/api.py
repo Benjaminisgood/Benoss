@@ -504,6 +504,39 @@ def _normalize_echo_file_type(raw: str | None) -> str:
     return value
 
 
+def _normalize_content_text_source(raw: str | None, *, default: str = "summary") -> str:
+    value = str(raw or "").strip().lower()
+    if value in {"db", "summary", "preview", "db_preview"}:
+        return "db_preview"
+    if value in {"full", "oss"}:
+        return "oss"
+    fallback = str(default or "summary").strip().lower()
+    return "oss" if fallback in {"full", "oss"} else "db_preview"
+
+
+def _normalize_signed_url_expires(raw, *, default: int = 300) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = int(default)
+    # Keep short-lived links when enabled.
+    return min(max(value, 60), 3600)
+
+
+def _truthy(raw) -> bool:
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _signed_url_if_enabled(oss_key: str | None, *, enabled: bool, expires: int) -> str:
+    key = str(oss_key or "").strip()
+    if not enabled or not key:
+        return ""
+    try:
+        return sign_get_url(key, expires=expires) or ""
+    except Exception:
+        return ""
+
+
 def _parse_iso_datetime(raw: str) -> datetime:
     text = str(raw or "").strip()
     if text.endswith("Z"):
@@ -693,7 +726,20 @@ def _asset_echo_file_type(asset: GeneratedAsset) -> str:
     return "file"
 
 
-def _content_payload(content: Content) -> dict:
+def _content_payload(
+    content: Content,
+    *,
+    text_source: str = "oss",
+    include_signed_url: bool = False,
+    signed_url_expires: int = 300,
+) -> dict:
+    normalized_text_source = _normalize_content_text_source(text_source, default="full")
+    normalized_expires = _normalize_signed_url_expires(signed_url_expires, default=300)
+    signed_url = _signed_url_if_enabled(
+        content.oss_key,
+        enabled=bool(include_signed_url),
+        expires=normalized_expires,
+    )
     payload = {
         "id": content.id,
         "kind": content.kind,
@@ -701,12 +747,15 @@ def _content_payload(content: Content) -> dict:
         "updated_at": _iso(content.updated_at),
     }
     if content.kind == "text":
-        payload["text"] = _read_text_content(content)
+        if normalized_text_source == "db_preview":
+            payload["text"] = str(content.text_content or "")
+        else:
+            payload["text"] = _read_text_content(content)
         payload["media_type"] = "text"
         payload["size_bytes"] = int(content.size_bytes or 0)
         payload["sha256"] = content.sha256 or ""
         payload["blob_url"] = url_for("api.get_content_blob", content_id=content.id)
-        payload["signed_url"] = sign_get_url(content.oss_key, expires=3600) if content.oss_key else ""
+        payload["signed_url"] = signed_url
         return payload
 
     payload.update(
@@ -717,7 +766,7 @@ def _content_payload(content: Content) -> dict:
             "sha256": content.sha256 or "",
             "media_type": _content_media_type(content),
             "blob_url": url_for("api.get_content_blob", content_id=content.id),
-            "signed_url": sign_get_url(content.oss_key, expires=3600) if content.oss_key else "",
+            "signed_url": signed_url,
         }
     )
     return payload
@@ -742,6 +791,9 @@ def _record_payload(
     viewer: User,
     include_content: bool,
     include_comments: bool,
+    content_text_source: str = "oss",
+    include_signed_url: bool = False,
+    signed_url_expires: int = 300,
 ) -> dict:
     payload = {
         "id": record.id,
@@ -762,7 +814,12 @@ def _record_payload(
     }
 
     if include_content:
-        payload["content"] = _content_payload(record.content)
+        payload["content"] = _content_payload(
+            record.content,
+            text_source=content_text_source,
+            include_signed_url=include_signed_url,
+            signed_url_expires=signed_url_expires,
+        )
 
     if include_comments:
         comments = sorted(record.comments, key=lambda item: item.created_at or datetime.utcnow())
@@ -3160,11 +3217,22 @@ def pull_records_alias():
         return jsonify({"error": str(exc)}), 400
 
     per = min(max(int(request.args.get("per") or 200), 1), 1000)
+    content_source = _normalize_content_text_source(request.args.get("content_source"), default="summary")
+    include_signed_url = _truthy(request.args.get("include_signed_url"))
+    signed_url_expires = _normalize_signed_url_expires(request.args.get("signed_url_expires"), default=300)
     records = query.order_by(Record.created_at.desc(), Record.id.desc()).limit(per).all()
     return jsonify(
         {
             "items": [
-                _record_payload(item, viewer=user, include_content=True, include_comments=False)
+                _record_payload(
+                    item,
+                    viewer=user,
+                    include_content=True,
+                    include_comments=False,
+                    content_text_source=content_source,
+                    include_signed_url=include_signed_url,
+                    signed_url_expires=signed_url_expires,
+                )
                 for item in records
             ]
         }
@@ -3185,6 +3253,9 @@ def list_records():
     include_content = str(request.args.get("include_content") or "0") == "1"
     include_comments = str(request.args.get("include_comments") or "0") == "1"
     public_only = str(request.args.get("public_only") or "0") == "1"
+    content_source = _normalize_content_text_source(request.args.get("content_source"), default="summary")
+    include_signed_url = _truthy(request.args.get("include_signed_url"))
+    signed_url_expires = _normalize_signed_url_expires(request.args.get("signed_url_expires"), default=300)
 
     query = _record_query_for(user, include_comments=include_comments, public_only=public_only)
     try:
@@ -3212,6 +3283,9 @@ def list_records():
                     viewer=user,
                     include_content=include_content,
                     include_comments=include_comments,
+                    content_text_source=content_source,
+                    include_signed_url=include_signed_url,
+                    signed_url_expires=signed_url_expires,
                 )
                 for row in rows
             ],
@@ -3240,6 +3314,9 @@ def get_record(record_id: int):
         return jsonify({"error": "forbidden"}), 403
 
     include_comments = str(request.args.get("include_comments") or "1") != "0"
+    content_source = _normalize_content_text_source(request.args.get("content_source"), default="full")
+    include_signed_url = _truthy(request.args.get("include_signed_url"))
+    signed_url_expires = _normalize_signed_url_expires(request.args.get("signed_url_expires"), default=300)
     return jsonify(
         {
             "record": _record_payload(
@@ -3247,6 +3324,9 @@ def get_record(record_id: int):
                 viewer=user,
                 include_content=True,
                 include_comments=include_comments,
+                content_text_source=content_source,
+                include_signed_url=include_signed_url,
+                signed_url_expires=signed_url_expires,
             )
         }
     )
@@ -3758,7 +3838,14 @@ def echoes_feed():
 
     candidates = []
     for item in records:
-        record_payload = _record_payload(item, viewer=user, include_content=True, include_comments=False)
+        record_payload = _record_payload(
+            item,
+            viewer=user,
+            include_content=True,
+            include_comments=False,
+            content_text_source="db_preview",
+            include_signed_url=False,
+        )
         candidates.append(
             {
                 "entry_type": "record",
