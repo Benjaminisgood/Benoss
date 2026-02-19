@@ -2739,6 +2739,47 @@ button.echoes-chip.active {
   padding: 0.88rem;
 }
 
+.board-side {
+  display: grid;
+  gap: 0.62rem;
+}
+
+.board-side h3 {
+  margin: 0;
+}
+
+.board-digest-view {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.board-digest-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.board-digest-actions .bubble {
+  border-radius: var(--radius-pill);
+  padding: 0.28rem 0.65rem;
+  border: 1px solid #bfd9d9;
+  background: #eff9f9;
+  color: #114949;
+  text-decoration: none;
+}
+
+.board-digest-actions .bubble:hover {
+  background: #def4f4;
+  text-decoration: none;
+}
+
+.board-digest-frame {
+  width: 100%;
+  min-height: 640px;
+  border: 1px solid #c6dbe9;
+  border-radius: 0.72rem;
+  background: #f5f9fc;
+}
+
 .board-table-wrap {
   overflow: visible;
   display: grid;
@@ -3131,6 +3172,10 @@ button.echoes-chip.active {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .board-digest-frame {
+    min-height: 560px;
+  }
+
   .board-legend-tag {
     margin-left: 0;
   }
@@ -3396,20 +3441,16 @@ button.secondary.is-busy::after,
   text-align: center;
 }
 
-#home-panel-ai,
-#home-panel-vector,
-#home-panel-quick {
+.home-panel {
   min-width: 0;
   overflow-x: clip;
 }
 
-#home-panel-ai :is(pre, .feedback-inline),
-#home-panel-vector :is(pre, .feedback-inline) {
+.home-panel :is(pre, .feedback-inline) {
   max-width: 100%;
   min-width: 0;
 }
 
-#ai-status,
 #vector-chat-answer {
   margin: 0;
   white-space: pre-wrap;
@@ -3418,18 +3459,20 @@ button.secondary.is-busy::after,
   overflow-x: auto;
 }
 
-#today-assets-list,
 #vector-chat-hits {
   min-width: 0;
 }
 
-#today-assets-list > *,
 #vector-chat-hits > * {
   min-width: 0;
   max-width: 100%;
 }
 
 @media (max-width: 640px) {
+  .board-digest-frame {
+    min-height: 480px;
+  }
+
   .home-panel-nav {
     grid-template-columns: 1fr;
   }

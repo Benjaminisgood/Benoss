@@ -25,43 +25,11 @@
 <section class="card home-workbench" data-reveal="80">
   <div class="home-workbench-head">
     <h2>今日工作台</h2>
-    <p class="muted">先选择模式，再在下方完成发布、查看 AI 生成或向量问答。</p>
-  </div>
-  <div class="home-panel-nav" role="tablist" aria-label="Home 功能切换">
-    <button
-      type="button"
-      class="home-panel-tab is-active"
-      role="tab"
-      aria-selected="true"
-      aria-controls="home-panel-quick"
-      data-home-panel-tab="quick"
-    >
-      快速发布
-    </button>
-    <button
-      type="button"
-      class="home-panel-tab"
-      role="tab"
-      aria-selected="false"
-      aria-controls="home-panel-ai"
-      data-home-panel-tab="ai"
-    >
-      AI 生成
-    </button>
-    <button
-      type="button"
-      class="home-panel-tab"
-      role="tab"
-      aria-selected="false"
-      aria-controls="home-panel-vector"
-      data-home-panel-tab="vector"
-    >
-      向量机器人
-    </button>
+    <p class="muted">在这里快速发布学习记录，并通过智能机器人完成检索问答。</p>
   </div>
 
   <div class="home-panels">
-    <article id="home-panel-quick" class="home-panel quick-publish-card" role="tabpanel" data-home-panel="quick">
+    <article class="home-panel quick-publish-card">
       <h2>快速发布</h2>
       <form id="quick-publish-form" class="stack-form" enctype="multipart/form-data">
         <div class="inline-fields">
@@ -115,20 +83,9 @@
       </form>
     </article>
 
-    <article id="home-panel-ai" class="home-panel ai-card" role="tabpanel" data-home-panel="ai" hidden>
-      <h2>AI 生成状态</h2>
-      <p class="muted" id="today-date"></p>
-      <pre id="ai-status"></pre>
-      <p class="muted">系统会在自然日结束后，自动根据上一日公开内容生成博客、播客和海报。</p>
-      <p class="muted" id="archive-status"></p>
-      <h3>已闭合日自动生成内容</h3>
-      <p class="muted" id="digest-status"></p>
-      <div id="today-assets-list" class="notice-feed"></div>
-    </article>
-
-    <article id="home-panel-vector" class="home-panel vector-chat-card" role="tabpanel" data-home-panel="vector" hidden>
+    <article class="home-panel vector-chat-card">
       <div class="section-head">
-        <h2>本地向量机器人</h2>
+        <h2>智能机器人</h2>
         <button type="button" class="secondary" id="vector-rebuild-btn">重建向量索引</button>
       </div>
       <p class="muted" id="vector-status">向量索引未加载</p>

@@ -21,10 +21,11 @@
   </article>
 </section>
 
-<section class="board-records" data-reveal="120">
+<section id="board-digest-section" class="board-records" data-reveal="120" data-digest-day="{{ board_digest_day }}">
   <article class="card board-side">
-    <h3 id="board-side-title">点击上方行/列/格子，在这里查看记录</h3>
-    <div id="board-side-list" class="record-list"></div>
+    <h3 id="board-digest-title">{{ board_digest_day }} 的 AI 博客</h3>
+    <p id="board-digest-meta" class="muted">日报时区：{{ digest_timezone }}</p>
+    <div id="board-digest-view" class="board-digest-view"></div>
   </article>
 </section>
 {% endblock %}

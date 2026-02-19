@@ -2618,23 +2618,112 @@
     `;
   }
 
-  async function loadBoardSide(title, path) {
-    const titleEl = qs("#board-side-title");
-    const listEl = qs("#board-side-list");
-    if (!listEl) {
+  function buildBoardNoticePath(filters) {
+    const normalized = normalizeNoticeFilters({
+      ...filters,
+      order: "asc",
+    });
+    const query = buildQuery(normalized);
+    return query ? `/notice?${query}` : "/notice";
+  }
+
+  function openBoardNotice(filters, opts = {}) {
+    const path = buildBoardNoticePath(filters);
+    const openInNewTab = Boolean(opts.newTab);
+    if (openInNewTab) {
+      window.open(path, "_blank", "noopener,noreferrer");
       return;
     }
-    if (titleEl) {
-      titleEl.textContent = title;
+    window.location.assign(path);
+  }
+
+  async function loadBoardDigestBlog(dayValue = "") {
+    const titleEl = qs("#board-digest-title");
+    const metaEl = qs("#board-digest-meta");
+    const viewEl = qs("#board-digest-view");
+    if (!viewEl) {
+      return;
     }
 
-    listEl.innerHTML = boardSideLoadingHtml();
-    try {
-      const data = await api(path);
-      renderBoardRecordList(listEl, data.items || [], { emptyText: "无匹配记录" });
-    } catch (error) {
-      listEl.innerHTML = `<p class="feedback-inline" data-tone="error">读取失败: ${escapeHtml(error.message || "未知错误")}</p>`;
+    const day = String(dayValue || "").trim();
+    if (titleEl) {
+      titleEl.textContent = day ? `${day} 的 AI 博客` : "最近 AI 博客";
     }
+    if (metaEl) {
+      setFeedback(metaEl, "正在加载博客...", "info");
+    }
+    viewEl.innerHTML = boardSideLoadingHtml();
+
+    const baseParams = {
+      visibility: "public",
+      daily_digest: 1,
+      kind: "blog_html",
+      per: 1,
+    };
+    let items = [];
+    try {
+      if (day) {
+        const byDay = await api(`/api/generated-assets?${buildQuery({ ...baseParams, day })}`);
+        items = Array.isArray(byDay.items) ? byDay.items : [];
+      }
+      if (!items.length) {
+        const latest = await api(`/api/generated-assets?${buildQuery(baseParams)}`);
+        items = Array.isArray(latest.items) ? latest.items : [];
+      }
+    } catch (error) {
+      const message = String(error?.message || "读取失败");
+      viewEl.innerHTML = `<p class="feedback-inline" data-tone="error">博客读取失败: ${escapeHtml(message)}</p>`;
+      if (metaEl) {
+        setFeedback(metaEl, `加载失败: ${message}`, "error");
+      }
+      return;
+    }
+
+    if (!items.length) {
+      viewEl.innerHTML = `<p class="muted">暂无可展示的日报博客</p>`;
+      if (metaEl) {
+        setFeedback(metaEl, "上一日尚未生成博客", "warning");
+      }
+      return;
+    }
+
+    const asset = items[0] || {};
+    const blobUrl = String(asset.blob_url || "").trim();
+    const sourceDay = String(asset.source_day || "").trim();
+    const title = String(asset.title || "日报博客");
+    const owner = String(asset.user?.username || "-").trim();
+    const created = formatTime(asset.created_at);
+
+    if (titleEl && sourceDay) {
+      titleEl.textContent = `${sourceDay} 的 AI 博客`;
+    }
+    if (metaEl) {
+      const metaParts = [];
+      if (owner) {
+        metaParts.push(`作者: ${owner}`);
+      }
+      if (created) {
+        metaParts.push(`生成时间: ${created}`);
+      }
+      setFeedback(metaEl, metaParts.join(" | ") || "已加载博客", "success");
+    }
+
+    if (!blobUrl) {
+      viewEl.innerHTML = `<p class="muted">博客文件不可用</p>`;
+      return;
+    }
+
+    viewEl.innerHTML = `
+      <div class="board-digest-actions">
+        <a class="bubble" href="${escapeHtml(blobUrl)}" target="_blank" rel="noreferrer">在新窗口打开博客</a>
+      </div>
+      <iframe
+        class="board-digest-frame"
+        src="${escapeHtml(blobUrl)}"
+        title="${escapeHtml(title)}"
+        loading="lazy"
+      ></iframe>
+    `;
   }
 
   async function loadBoard() {
@@ -2665,11 +2754,14 @@
   }
 
   async function initBoard() {
+    const digestSection = qs("#board-digest-section");
+    const digestDay = String(digestSection?.dataset?.digestDay || "").trim();
     const form = qs("#board-filter-form");
     if (form) {
       form.addEventListener("submit", (event) => {
         event.preventDefault();
         loadBoard().catch((error) => window.console.error(error));
+        loadBoardDigestBlog(digestDay).catch((error) => window.console.error(error));
       });
     }
 
@@ -2686,23 +2778,51 @@
 
         const action = trigger.dataset.boardAction;
         const tag = trigger.dataset.tag || "";
-        const tagQuery = tag ? `&tag=${encodeURIComponent(tag)}` : "";
+        const openInNewTab = event instanceof MouseEvent && (event.metaKey || event.ctrlKey);
 
         switch (action) {
           case "user": {
             const userId = trigger.dataset.userId;
-            loadBoardSide(`用户 #${userId} 的可见记录`, `/api/board/user/${userId}/records?${buildQuery({ tag })}`).catch((error) => window.console.error(error));
+            if (!userId) {
+              return;
+            }
+            openBoardNotice(
+              {
+                user_id: userId,
+                tag,
+              },
+              { newTab: openInNewTab },
+            );
             break;
           }
           case "day": {
             const day = trigger.dataset.day;
-            loadBoardSide(`${day} 的公开记录`, `/api/board/date/${day}?${buildQuery({ tag })}`).catch((error) => window.console.error(error));
+            if (!day) {
+              return;
+            }
+            openBoardNotice(
+              {
+                day,
+                tag,
+              },
+              { newTab: openInNewTab },
+            );
             break;
           }
           case "cell": {
             const userId = trigger.dataset.userId;
             const day = trigger.dataset.day;
-            loadBoardSide(`用户 #${userId} 在 ${day} 的记录`, `/api/board/cell?user_id=${encodeURIComponent(userId)}&day=${encodeURIComponent(day)}${tagQuery}`).catch((error) => window.console.error(error));
+            if (!userId || !day) {
+              return;
+            }
+            openBoardNotice(
+              {
+                user_id: userId,
+                day,
+                tag,
+              },
+              { newTab: openInNewTab },
+            );
             break;
           }
           default:
@@ -2711,7 +2831,7 @@
       });
     }
 
-    await loadBoard();
+    await Promise.all([loadBoard(), loadBoardDigestBlog(digestDay)]);
   }
 
   function normalizeEchoFileType(value) {

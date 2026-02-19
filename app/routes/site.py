@@ -1,8 +1,11 @@
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
 from flask import Blueprint, current_app, flash, g, redirect, render_template, request, session, url_for
 
 from ..extensions import db
 from ..models import User
-from ..utils.runtime_settings import get_setting_int
+from ..utils.runtime_settings import get_setting_int, get_setting_str
 from ..utils.session_auth import login_required, login_user, logout_user, safe_next_url
 
 
@@ -21,7 +24,25 @@ def board():
     config_default = int(current_app.config.get("BOARD_DEFAULT_DAYS") or 7)
     board_default_days = get_setting_int("BOARD_DEFAULT_DAYS", default=config_default)
     board_default_days = min(max(board_default_days, 1), 30)
-    return render_template("board.html", page="board", title="Board", board_default_days=board_default_days)
+    configured_timezone = get_setting_str(
+        "DIGEST_TIMEZONE",
+        default=str(current_app.config.get("DIGEST_TIMEZONE") or "Asia/Shanghai"),
+    ).strip() or "Asia/Shanghai"
+    try:
+        digest_tz = ZoneInfo(configured_timezone)
+        digest_timezone = configured_timezone
+    except Exception:
+        digest_tz = timezone.utc
+        digest_timezone = "UTC"
+    board_digest_day = (datetime.now(digest_tz).date() - timedelta(days=1)).isoformat()
+    return render_template(
+        "board.html",
+        page="board",
+        title="Board",
+        board_default_days=board_default_days,
+        board_digest_day=board_digest_day,
+        digest_timezone=digest_timezone,
+    )
 
 
 @site_bp.route("/echoes")

@@ -2606,7 +2606,7 @@ def _digest_media_section_html(*, poster_asset_id: int | None, podcast_asset_id:
     if not poster_src and not podcast_src:
         return ""
 
-    items: list[str] = ['<section class="benoss-media-appendix">', "<h2>多媒体附录</h2>"]
+    items: list[str] = ['<section class="benoss-media-appendix">']
     if poster_src:
         items.extend(
             [
@@ -2666,9 +2666,10 @@ def _wrap_blog_html_document(
         "    pre { white-space: pre-wrap; }\n"
         "    img, video, audio { max-width: 100%; border-radius: 10px; }\n"
         "    .benoss-media-appendix { margin-top: 24px; padding-top: 14px; border-top: 1px solid #dbe5ef; }\n"
-        "    .benoss-media-appendix h2 { margin: 0 0 10px; font-size: 1.2rem; }\n"
         "    .benoss-media-appendix h3 { margin: 12px 0 8px; font-size: 1rem; }\n"
-        "    .benoss-media-appendix figure { margin: 0; }\n"
+        "    .benoss-media-appendix figure { margin: 0 auto; width: min(560px, 100%); }\n"
+        "    .benoss-media-appendix img { display: block; width: 100%; height: auto; border-radius: 10px; }\n"
+        "    .benoss-media-appendix audio { width: min(560px, 100%); }\n"
         "    .benoss-media-appendix figcaption { margin-top: 6px; color: #64748b; font-size: 0.92rem; }\n"
         "  </style>\n"
         "</head>\n"
@@ -2836,6 +2837,9 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
     job.started_at = datetime.utcnow()
     job.finished_at = None
     job.error = ""
+    job.blog_asset_id = None
+    job.podcast_asset_id = None
+    job.poster_asset_id = None
     db.session.add(job)
     db.session.commit()
 
@@ -2913,19 +2917,7 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
         "timezone": tz_name,
         "job": "daily_digest",
     }
-    digest_podcast_style = _normalize_podcast_style(
-        get_setting_str("PODCAST_DEFAULT_STYLE", default="dialogue")
-    )
-
     kind_map = {
-        "podcast_audio": {
-            "title": f"Daily Digest Podcast {day_value.isoformat()}",
-            "job_field": "podcast_asset_id",
-        },
-        "poster_image": {
-            "title": f"Daily Digest Poster {day_value.isoformat()}",
-            "job_field": "poster_asset_id",
-        },
         "blog_html": {
             "title": f"Daily Digest Blog {day_value.isoformat()}",
             "job_field": "blog_asset_id",
@@ -2955,44 +2947,16 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
             continue
 
         try:
-            if kind == "blog_html":
-                poster_asset = assets.get("poster_image")
-                podcast_asset = assets.get("podcast_audio")
-                asset, _ = _generate_blog_asset(
-                    user=owner,
-                    records_text=records_text,
-                    image_urls=image_urls,
-                    filters=base_filters,
-                    title=meta["title"],
-                    visibility="public",
-                    poster_asset_id=(poster_asset.id if poster_asset else None),
-                    podcast_asset_id=(podcast_asset.id if podcast_asset else None),
-                    source_day=day_value,
-                    is_daily_digest=True,
-                )
-            elif kind == "podcast_audio":
-                asset, _ = _generate_podcast_asset(
-                    user=owner,
-                    records_text=records_text,
-                    image_urls=image_urls,
-                    filters=base_filters,
-                    title=meta["title"],
-                    visibility="public",
-                    podcast_style=digest_podcast_style,
-                    source_day=day_value,
-                    is_daily_digest=True,
-                )
-            else:
-                asset, _ = _generate_poster_asset(
-                    user=owner,
-                    records_text=records_text,
-                    image_urls=image_urls,
-                    filters=base_filters,
-                    title=meta["title"],
-                    visibility="public",
-                    source_day=day_value,
-                    is_daily_digest=True,
-                )
+            asset, _ = _generate_blog_asset(
+                user=owner,
+                records_text=records_text,
+                image_urls=image_urls,
+                filters=base_filters,
+                title=meta["title"],
+                visibility="public",
+                source_day=day_value,
+                is_daily_digest=True,
+            )
             assets[kind] = asset
             setattr(job, meta["job_field"], asset.id)
         except RuntimeError as exc:
@@ -3094,6 +3058,7 @@ def _daily_digest_assets_for_day(day_value: date) -> list[GeneratedAsset]:
     return (
         GeneratedAsset.query.options(joinedload(GeneratedAsset.user))
         .filter(
+            GeneratedAsset.kind == "blog_html",
             GeneratedAsset.visibility == "public",
             GeneratedAsset.status == "ready",
             GeneratedAsset.is_daily_digest.is_(True),
@@ -3142,7 +3107,7 @@ def _maybe_auto_build_digest_for_day(*, day_value: date, timezone_name: str, rec
 
     ready_assets = _daily_digest_assets_for_day(day_value)
     ready_kinds = {item.kind for item in ready_assets}
-    required_kinds = {"blog_html", "podcast_audio", "poster_image"}
+    required_kinds = {"blog_html"}
     if required_kinds.issubset(ready_kinds):
         state["status"] = "ready"
         state["message"] = "assets already ready"
