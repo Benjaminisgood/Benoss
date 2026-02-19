@@ -247,6 +247,9 @@ data/
   - `public_only=1` 时仅公开。
 - 支持按 `user_id/tag/day` 过滤（`_apply_filter_values`）。
 - 返回结构由 `_record_payload` 统一组装。
+- 列表接口默认使用 `content_source=summary`：文本内容优先走 DB 里的概述字段，不在 feed 阶段回源 OSS。
+- 详情接口（`GET /api/records/<id>`）默认使用 `content_source=full`：按需读取对象存储中的完整文本/文件。
+- 若确需签名直链，可显式传 `include_signed_url=1`（并可用 `signed_url_expires` 控制时效，默认短时）。
 
 ### 6.3 更新记录
 
@@ -391,7 +394,7 @@ data/
 - `sha256`
 - `media_type`（`image/video/audio/text/file`）
 - `blob_url`（通过后端鉴权下载）
-- `signed_url`（有配置时可用签名直链）
+- `signed_url`（默认空；仅在显式请求 `include_signed_url=1` 时返回短时签名直链）
 
 Echoes 的 `entries[]` 额外字段：
 - `entry_type`：`record | asset`
@@ -503,11 +506,15 @@ benoss-sync init --base-url http://127.0.0.1:80 --default-tag math
 benoss-sync status --username alice
 benoss-sync push --username alice --text "today progress" --visibility public
 benoss-sync pull --username alice --output ./pulled_records
+benoss-sync pull --username alice --content-source full --output ./pulled_records_full
 ```
 
 说明：
 - 会在当前目录写入 `.benoss/config.json` 保存 base_url 和默认 tag。
 - `pull` 会把每条记录写成独立目录（含 `record.json` 与内容文件）。
+- `pull --content-source summary|full`：
+  - `summary`（默认）只拉 DB 概述文本；
+  - `full` 按需拉对象存储中的完整文本。
 
 ## 13. 环境变量说明
 

@@ -2637,6 +2637,128 @@
     window.location.assign(path);
   }
 
+  function boardDigestToolbarButtonHtml(mode, active, label) {
+    const toneClass = active ? "is-active" : "";
+    return `<button type="button" class="board-digest-mode-btn ${toneClass}" data-board-digest-mode="${escapeHtml(mode)}">${escapeHtml(label)}</button>`;
+  }
+
+  function renderBoardDigestView(asset, sourceHtml = "", mode = "preview") {
+    const viewEl = qs("#board-digest-view");
+    if (!viewEl) {
+      return;
+    }
+
+    const normalizedMode = mode === "source" ? "source" : "preview";
+    const canEdit = Boolean(asset?.can_edit);
+    const sourceText = String(sourceHtml || "");
+    const sourcePreview = sourceText.length > 0 ? sourceText : "<p class=\"muted\">博客源码为空</p>";
+    const sourceReadOnlyAttr = canEdit ? "" : " readonly";
+    const saveButton = canEdit
+      ? '<button type="button" class="board-digest-save-btn" data-board-digest-action="save">保存源码</button>'
+      : '<span class="muted">当前账号仅可查看源码</span>';
+
+    viewEl.innerHTML = `
+      <div class="board-digest-toolbar">
+        <div class="board-digest-mode-switch" role="tablist" aria-label="博客查看模式">
+          ${boardDigestToolbarButtonHtml("preview", normalizedMode === "preview", "渲染阅读")}
+          ${boardDigestToolbarButtonHtml("source", normalizedMode === "source", "HTML源码")}
+        </div>
+        <div class="board-digest-toolbar-actions">
+          ${saveButton}
+        </div>
+      </div>
+
+      <section class="board-digest-panel ${normalizedMode === "preview" ? "is-active" : ""}" data-board-digest-panel="preview" ${
+        normalizedMode === "preview" ? "" : "hidden"
+      }>
+        <iframe
+          class="board-digest-frame"
+          title="${escapeHtml(String(asset?.title || "日报博客"))}"
+          data-board-digest-preview
+        ></iframe>
+      </section>
+
+      <section class="board-digest-panel ${normalizedMode === "source" ? "is-active" : ""}" data-board-digest-panel="source" ${
+        normalizedMode === "source" ? "" : "hidden"
+      }>
+        <textarea class="board-digest-source" data-board-digest-source${sourceReadOnlyAttr}>${escapeHtml(sourceText)}</textarea>
+      </section>
+    `;
+
+    const frame = qs("[data-board-digest-preview]", viewEl);
+    if (frame instanceof HTMLIFrameElement) {
+      frame.srcdoc = sourcePreview;
+    }
+  }
+
+  function setBoardDigestMode(mode) {
+    const viewEl = qs("#board-digest-view");
+    if (!viewEl) {
+      return;
+    }
+    const normalizedMode = mode === "source" ? "source" : "preview";
+    const buttons = Array.from(viewEl.querySelectorAll("[data-board-digest-mode]"));
+    buttons.forEach((button) => {
+      if (!(button instanceof HTMLButtonElement)) {
+        return;
+      }
+      const active = String(button.dataset.boardDigestMode || "") === normalizedMode;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+
+    const previewPanel = qs('[data-board-digest-panel="preview"]', viewEl);
+    const sourcePanel = qs('[data-board-digest-panel="source"]', viewEl);
+    if (previewPanel) {
+      previewPanel.hidden = normalizedMode !== "preview";
+    }
+    if (sourcePanel) {
+      sourcePanel.hidden = normalizedMode !== "source";
+    }
+
+    if (normalizedMode === "preview") {
+      const sourceEl = qs("[data-board-digest-source]", viewEl);
+      const frame = qs("[data-board-digest-preview]", viewEl);
+      if (sourceEl instanceof HTMLTextAreaElement && frame instanceof HTMLIFrameElement) {
+        frame.srcdoc = String(sourceEl.value || "");
+      }
+    }
+  }
+
+  async function saveBoardDigestSourceHtml(asset, metaEl) {
+    const viewEl = qs("#board-digest-view");
+    if (!viewEl || !asset || !asset.id || !asset.can_edit) {
+      return;
+    }
+    const sourceEl = qs("[data-board-digest-source]", viewEl);
+    const saveBtn = qs('[data-board-digest-action="save"]', viewEl);
+    if (!(sourceEl instanceof HTMLTextAreaElement)) {
+      return;
+    }
+    const payload = new FormData();
+    payload.set("html", String(sourceEl.value || ""));
+    try {
+      setButtonBusy(saveBtn, true, { busyText: "保存中..." });
+      await api(`/api/generated-assets/${asset.id}`, {
+        method: "PATCH",
+        body: payload,
+      });
+      if (metaEl) {
+        setFeedback(metaEl, "源码已保存", "success");
+      }
+      const frame = qs("[data-board-digest-preview]", viewEl);
+      if (frame instanceof HTMLIFrameElement) {
+        frame.srcdoc = String(sourceEl.value || "");
+      }
+    } catch (error) {
+      if (metaEl) {
+        setFeedback(metaEl, `保存失败: ${String(error?.message || "未知错误")}`, "error");
+      }
+    } finally {
+      setButtonBusy(saveBtn, false);
+    }
+  }
+
   async function loadBoardDigestBlog(dayValue = "") {
     const titleEl = qs("#board-digest-title");
     const metaEl = qs("#board-digest-meta");
@@ -2713,17 +2835,39 @@
       return;
     }
 
-    viewEl.innerHTML = `
-      <div class="board-digest-actions">
-        <a class="bubble" href="${escapeHtml(blobUrl)}" target="_blank" rel="noreferrer">在新窗口打开博客</a>
-      </div>
-      <iframe
-        class="board-digest-frame"
-        src="${escapeHtml(blobUrl)}"
-        title="${escapeHtml(title)}"
-        loading="lazy"
-      ></iframe>
-    `;
+    let sourceHtml = "";
+    try {
+      const response = await fetch(blobUrl, { credentials: "same-origin" });
+      if (!response.ok) {
+        throw new Error(`Request failed (${response.status})`);
+      }
+      sourceHtml = await response.text();
+    } catch (error) {
+      viewEl.innerHTML = `<p class="feedback-inline" data-tone="error">读取源码失败: ${escapeHtml(String(error?.message || "未知错误"))}</p>`;
+      return;
+    }
+
+    renderBoardDigestView(asset, sourceHtml, "preview");
+
+    viewEl.onclick = (event) => {
+      if (!(event.target instanceof Element)) {
+        return;
+      }
+      const modeBtn = event.target.closest("[data-board-digest-mode]");
+      if (modeBtn) {
+        const mode = String(modeBtn.getAttribute("data-board-digest-mode") || "");
+        setBoardDigestMode(mode);
+        return;
+      }
+      const actionBtn = event.target.closest("[data-board-digest-action]");
+      if (!actionBtn) {
+        return;
+      }
+      const action = String(actionBtn.getAttribute("data-board-digest-action") || "").trim();
+      if (action === "save") {
+        saveBoardDigestSourceHtml(asset, metaEl).catch((error) => window.console.error(error));
+      }
+    };
   }
 
   async function loadBoard() {

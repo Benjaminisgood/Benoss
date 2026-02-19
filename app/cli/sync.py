@@ -113,10 +113,21 @@ class BenossClient:
             raise RuntimeError(message)
         return response.json()
 
-    def pull_records(self, *, tag: str = "", day: str = "", per: int = 500) -> list[dict[str, Any]]:
+    def pull_records(
+        self,
+        *,
+        tag: str = "",
+        day: str = "",
+        per: int = 500,
+        content_source: str = "summary",
+    ) -> list[dict[str, Any]]:
+        source = str(content_source or "summary").strip().lower()
+        if source not in {"summary", "full"}:
+            source = "summary"
         params = {
             "include_content": 1,
             "per": int(per),
+            "content_source": source,
         }
         if tag:
             params["tag"] = tag
@@ -242,7 +253,12 @@ def cmd_pull(args: argparse.Namespace) -> int:
     client = BenossClient(runtime.base_url, runtime.username, runtime.password)
     client.login()
 
-    items = client.pull_records(tag=runtime.default_tag, day=(args.day or ""), per=args.per)
+    items = client.pull_records(
+        tag=runtime.default_tag,
+        day=(args.day or ""),
+        per=args.per,
+        content_source=args.content_source,
+    )
     if not items:
         print("no records")
         return 0
@@ -358,6 +374,12 @@ def build_parser() -> argparse.ArgumentParser:
     pull_parser = subparsers.add_parser("pull", parents=[common], help="pull records")
     pull_parser.add_argument("--day", default="", help="YYYY-MM-DD")
     pull_parser.add_argument("--per", type=int, default=500)
+    pull_parser.add_argument(
+        "--content-source",
+        default="summary",
+        choices=["summary", "full"],
+        help="text content mode: summary (DB overview) or full (full text from object storage)",
+    )
     pull_parser.add_argument("--output", default="./pulled_records", help="output directory")
     pull_parser.set_defaults(func=cmd_pull)
 

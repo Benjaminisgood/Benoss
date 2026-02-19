@@ -2753,23 +2753,57 @@ button.echoes-chip.active {
   gap: 0.55rem;
 }
 
-.board-digest-actions {
+.board-digest-toolbar {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
 }
 
-.board-digest-actions .bubble {
+.board-digest-mode-switch {
+  display: inline-flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.board-digest-mode-btn,
+.board-digest-save-btn {
   border-radius: var(--radius-pill);
-  padding: 0.28rem 0.65rem;
   border: 1px solid #bfd9d9;
   background: #eff9f9;
   color: #114949;
-  text-decoration: none;
+  padding: 0.28rem 0.68rem;
+  font-size: 0.84rem;
+  line-height: 1.2;
 }
 
-.board-digest-actions .bubble:hover {
-  background: #def4f4;
-  text-decoration: none;
+.board-digest-mode-btn.is-active {
+  background: #0a6072;
+  border-color: #0a6072;
+  color: #fff;
+}
+
+.board-digest-panel {
+  display: block;
+}
+
+.board-digest-panel[hidden] {
+  display: none !important;
+}
+
+.board-digest-source {
+  width: 100%;
+  min-height: 560px;
+  border-radius: 0.72rem;
+  border: 1px solid #c6dbe9;
+  background: #f7fbfe;
+  color: #143345;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  padding: 0.7rem;
+  resize: vertical;
 }
 
 .board-digest-frame {
@@ -3176,6 +3210,10 @@ button.echoes-chip.active {
     min-height: 560px;
   }
 
+  .board-digest-source {
+    min-height: 520px;
+  }
+
   .board-legend-tag {
     margin-left: 0;
   }
@@ -3471,6 +3509,10 @@ button.secondary.is-busy::after,
 @media (max-width: 640px) {
   .board-digest-frame {
     min-height: 480px;
+  }
+
+  .board-digest-source {
+    min-height: 420px;
   }
 
   .home-panel-nav {
