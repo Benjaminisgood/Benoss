@@ -62,6 +62,8 @@ _DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _AUTO_TAG_PATTERN = re.compile(r"(?:^|[^0-9A-Za-z_:/#])#([0-9A-Za-z_\-\u3400-\u9fff]{1,40})")
 _URL_PATTERN = re.compile(r"(?:https?://|www\.)[^\s<>'\"`]+", re.IGNORECASE)
 _URL_TRAILING_CHARS = ".,;:!?)]}，。；：！？）】》、"
+_MARKDOWN_CODE_FENCE_RE = re.compile(r"^\s*```(?:[a-zA-Z0-9_-]+)?\s*([\s\S]*?)\s*```\s*$", re.IGNORECASE)
+_MARKDOWN_CODE_BLOCK_RE = re.compile(r"```(?:[a-zA-Z0-9_-]+)?\s*([\s\S]*?)```", re.IGNORECASE)
 _PODCAST_STYLE_GUIDE = {
     "dialogue": "对话式：双人主持人口吻，包含主持人A/主持人B轮流发言，节奏自然。",
     "speech": "演讲式：单人演讲结构，逻辑清晰，重点突出。",
@@ -1790,6 +1792,228 @@ def _ai_request_binary(
     return response.content, content_type, settings
 
 
+def _download_binary_file(url: str, *, timeout: int) -> tuple[bytes, str]:
+    remote_url = str(url or "").strip()
+    if not remote_url:
+        raise RuntimeError("download url is empty")
+    try:
+        response = requests.get(remote_url, timeout=timeout)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"download failed: {exc}") from exc
+    payload = response.content
+    if not payload:
+        raise RuntimeError("downloaded payload is empty")
+    content_type = str(response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    return payload, content_type
+
+
+def _guess_content_type_and_ext(
+    *,
+    content_type: str,
+    source_url: str = "",
+    default_content_type: str,
+    default_ext: str,
+) -> tuple[str, str]:
+    normalized_type = str(content_type or "").split(";", 1)[0].strip().lower()
+    clean_url = str(source_url or "").strip()
+    ext = ""
+    if clean_url:
+        ext = Path(clean_url.split("?", 1)[0]).suffix.lower()
+    if not ext and normalized_type:
+        guessed = mimetypes.guess_extension(normalized_type) or ""
+        ext = guessed.lower()
+    if ext == ".jpe":
+        ext = ".jpg"
+    if not ext:
+        ext = default_ext
+
+    final_type = normalized_type
+    if not final_type:
+        guessed_type = mimetypes.guess_type(f"file{ext}")[0] if ext else ""
+        final_type = str(guessed_type or default_content_type).split(";", 1)[0].strip().lower()
+    if not final_type:
+        final_type = default_content_type
+    return final_type, ext
+
+
+def _aliyun_native_generation_endpoint(settings: dict) -> str:
+    base_url = str(settings.get("base_url") or "").strip().rstrip("/")
+    if not base_url:
+        return "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+    marker = "/compatible-mode/v1"
+    lower = base_url.lower()
+    index = lower.find(marker)
+    if index >= 0:
+        origin = base_url[:index].rstrip("/")
+    else:
+        origin = base_url.rstrip("/")
+    if not origin:
+        origin = "https://dashscope.aliyuncs.com"
+    return origin + "/api/v1/services/aigc/multimodal-generation/generation"
+
+
+def _aliyun_native_generation_request(
+    *,
+    payload: dict,
+    timeout: int,
+    settings: dict,
+) -> tuple[dict, dict]:
+    endpoint = _aliyun_native_generation_endpoint(settings)
+    headers = {
+        "Authorization": f"Bearer {settings['api_key']}",
+        "Content-Type": "application/json",
+    }
+    response = None
+    last_exc: Exception | None = None
+    for _ in range(3):
+        try:
+            response = requests.post(endpoint, headers=headers, json=payload, timeout=timeout)
+            if response.status_code >= 500:
+                continue
+            break
+        except requests.RequestException as exc:
+            last_exc = exc
+            continue
+    if response is None:
+        raise RuntimeError(f"provider request error: {last_exc}") from last_exc
+
+    if not response.ok:
+        detail = response.text.strip().replace("\n", " ")
+        if len(detail) > 320:
+            detail = detail[:320] + "..."
+        raise RuntimeError(f"provider request failed ({response.status_code}): {detail}")
+
+    try:
+        data = response.json()
+    except Exception as exc:
+        raise RuntimeError("provider returned non-json payload") from exc
+    return data, settings
+
+
+def _aliyun_tts_voice(voice: str) -> str:
+    selected = str(voice or "").strip()
+    if not selected:
+        return "Cherry"
+    if selected.lower() in {"alloy", "echo", "fable", "onyx", "nova", "shimmer"}:
+        return "Cherry"
+    return selected
+
+
+def _ai_tts_audio_aliyun_native(
+    *,
+    settings: dict,
+    text: str,
+    voice: str,
+    timeout: int,
+) -> tuple[bytes, str, str, dict]:
+    mapped_voice = _aliyun_tts_voice(voice)
+    payload = {
+        "model": settings["model"],
+        "input": {
+            "text": text,
+            "voice": mapped_voice,
+            "language_type": "Chinese",
+        },
+    }
+    data, used = _aliyun_native_generation_request(payload=payload, timeout=timeout, settings=settings)
+    output = data.get("output") if isinstance(data, dict) else {}
+    audio_block = output.get("audio") if isinstance(output, dict) else {}
+    if not isinstance(audio_block, dict):
+        audio_block = {}
+
+    audio_bytes = b""
+    media_type = ""
+    remote_url = str(audio_block.get("url") or "").strip()
+    b64_audio = str(audio_block.get("data") or "").strip()
+
+    if b64_audio:
+        try:
+            audio_bytes = base64.b64decode(b64_audio)
+        except Exception as exc:
+            raise RuntimeError(f"provider json audio decode failed: {exc}") from exc
+    elif remote_url:
+        audio_bytes, media_type = _download_binary_file(remote_url, timeout=timeout)
+    else:
+        raise RuntimeError("provider returned json without audio bytes/url")
+
+    if not audio_bytes:
+        raise RuntimeError("provider returned empty audio")
+
+    content_type, ext = _guess_content_type_and_ext(
+        content_type=media_type,
+        source_url=remote_url,
+        default_content_type="audio/wav",
+        default_ext=".wav",
+    )
+    return (
+        audio_bytes,
+        content_type,
+        ext,
+        {
+            "provider": used["provider"],
+            "model": used["model"],
+            "voice": mapped_voice,
+        },
+    )
+
+
+def _ai_generate_poster_image_aliyun_native(
+    *,
+    settings: dict,
+    prompt: str,
+    timeout: int,
+) -> tuple[bytes, str, str, dict]:
+    payload = {
+        "model": settings["model"],
+        "input": {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"text": prompt}],
+                }
+            ]
+        },
+        "parameters": {
+            "size": "1328*1328",
+            "watermark": False,
+            "prompt_extend": True,
+        },
+    }
+    data, used = _aliyun_native_generation_request(payload=payload, timeout=timeout, settings=settings)
+    output = data.get("output") if isinstance(data, dict) else {}
+    image_url = ""
+
+    if isinstance(output, dict):
+        choices = output.get("choices") or []
+        if isinstance(choices, list) and choices:
+            first_choice = choices[0] if isinstance(choices[0], dict) else {}
+            message = first_choice.get("message") if isinstance(first_choice, dict) else {}
+            content_items = message.get("content") if isinstance(message, dict) else []
+            if isinstance(content_items, list):
+                for item in content_items:
+                    if not isinstance(item, dict):
+                        continue
+                    candidate = str(item.get("image") or item.get("url") or item.get("image_url") or "").strip()
+                    if candidate:
+                        image_url = candidate
+                        break
+        if not image_url:
+            image_url = str(output.get("url") or "").strip()
+
+    if not image_url:
+        raise RuntimeError("provider response missing image url")
+
+    image_bytes, media_type = _download_binary_file(image_url, timeout=timeout)
+    content_type, ext = _guess_content_type_and_ext(
+        content_type=media_type,
+        source_url=image_url,
+        default_content_type="image/png",
+        default_ext=".png",
+    )
+    return image_bytes, content_type, ext, {"provider": used["provider"], "model": used["model"]}
+
+
 def _audio_format_meta(audio_format: str) -> tuple[str, str]:
     value = str(audio_format or "").strip().lower()
     mapping = {
@@ -1869,13 +2093,22 @@ def _ai_tts_audio(script: str, *, podcast_style: str) -> tuple[bytes, str, str, 
     errors: list[str] = []
 
     for settings in _capability_settings_candidates("tts"):
-        payload = {
-            "model": settings["model"],
-            "voice": tts_voice,
-            "input": f"{style_hint}\n\n{safe_text}",
-            "response_format": response_format,
-        }
         try:
+            if settings.get("provider") == "aliyun":
+                audio_bytes, content_type, ext, meta = _ai_tts_audio_aliyun_native(
+                    settings=settings,
+                    text=f"{style_hint}\n\n{safe_text}",
+                    voice=tts_voice,
+                    timeout=timeout,
+                )
+                return audio_bytes, content_type, ext, meta
+
+            payload = {
+                "model": settings["model"],
+                "voice": tts_voice,
+                "input": f"{style_hint}\n\n{safe_text}",
+                "response_format": response_format,
+            }
             audio_bytes, returned_content_type, used = _ai_request_binary(
                 "/audio/speech",
                 payload,
@@ -1920,13 +2153,20 @@ def _ai_generate_poster_image(prompt: str) -> tuple[bytes, str, str, dict]:
     errors: list[str] = []
 
     for settings in _capability_settings_candidates("image"):
-        payload = {
-            "model": settings["model"],
-            "prompt": prompt,
-            "size": "1024x1024",
-            "response_format": "b64_json",
-        }
         try:
+            if settings.get("provider") == "aliyun":
+                return _ai_generate_poster_image_aliyun_native(
+                    settings=settings,
+                    prompt=prompt,
+                    timeout=timeout,
+                )
+
+            payload = {
+                "model": settings["model"],
+                "prompt": prompt,
+                "size": "1024x1024",
+                "response_format": "b64_json",
+            }
             data, used = _ai_request_json("/images/generations", payload, timeout=timeout, settings=settings)
         except RuntimeError as exc:
             errors.append(f"{settings['provider']}:{settings['model']} => {exc}")
@@ -2325,11 +2565,93 @@ def _save_generated_asset(
     return asset
 
 
-def _wrap_blog_html_document(body_html: str, *, title: str) -> str:
-    raw = str(body_html or "").strip()
-    if "<html" in raw.lower():
+def _strip_markdown_code_fence(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+
+    match = _MARKDOWN_CODE_FENCE_RE.match(raw)
+    if match:
+        return str(match.group(1) or "").strip()
+
+    if "```" in raw:
+        blocks = [str(item or "").strip() for item in _MARKDOWN_CODE_BLOCK_RE.findall(raw)]
+        html_blocks = [item for item in blocks if "<" in item and ">" in item]
+        if html_blocks:
+            return max(html_blocks, key=len)
+        lines = [line for line in raw.splitlines() if not line.strip().startswith("```")]
+        compact = "\n".join(lines).strip()
+        if compact:
+            return compact
+    return raw
+
+
+def _inject_html_before_closing_tag(doc_html: str, snippet_html: str, tag_name: str) -> str:
+    raw = str(doc_html or "")
+    snippet = str(snippet_html or "").strip()
+    closing = str(tag_name or "").strip().lower()
+    if not raw or not snippet or not closing:
         return raw
+    marker = f"</{closing}>"
+    lower_raw = raw.lower()
+    index = lower_raw.rfind(marker)
+    if index < 0:
+        return raw
+    return f"{raw[:index]}\n{snippet}\n{raw[index:]}"
+
+
+def _digest_media_section_html(*, poster_asset_id: int | None, podcast_asset_id: int | None) -> str:
+    poster_src = f"/api/generated-assets/{int(poster_asset_id)}/blob" if poster_asset_id else ""
+    podcast_src = f"/api/generated-assets/{int(podcast_asset_id)}/blob" if podcast_asset_id else ""
+    if not poster_src and not podcast_src:
+        return ""
+
+    items: list[str] = ['<section class="benoss-media-appendix">', "<h2>多媒体附录</h2>"]
+    if poster_src:
+        items.extend(
+            [
+                "<figure>",
+                f'  <img src="{html.escape(poster_src, quote=True)}" alt="日报海报">',
+                "  <figcaption>日报配图</figcaption>",
+                "</figure>",
+            ]
+        )
+    if podcast_src:
+        items.extend(
+            [
+                "<div>",
+                "  <h3>日报播客</h3>",
+                f'  <audio controls preload="none" src="{html.escape(podcast_src, quote=True)}"></audio>',
+                "</div>",
+            ]
+        )
+    items.append("</section>")
+    return "\n".join(items)
+
+
+def _wrap_blog_html_document(
+    body_html: str,
+    *,
+    title: str,
+    poster_asset_id: int | None = None,
+    podcast_asset_id: int | None = None,
+) -> str:
+    raw = _strip_markdown_code_fence(body_html)
+    media_html = _digest_media_section_html(
+        poster_asset_id=poster_asset_id,
+        podcast_asset_id=podcast_asset_id,
+    )
+    if "<html" in raw.lower():
+        doc = raw
+        if media_html:
+            for tag in ("main", "article", "body", "html"):
+                updated = _inject_html_before_closing_tag(doc, media_html, tag)
+                if updated != doc:
+                    doc = updated
+                    break
+        return doc
     safe_title = html.escape(title or "Daily Digest")
+    media_part = f"\n{media_html}\n" if media_html else ""
     return (
         "<!doctype html>\n"
         "<html lang=\"zh-CN\">\n"
@@ -2343,11 +2665,17 @@ def _wrap_blog_html_document(body_html: str, *, title: str) -> str:
         "    h1, h2, h3 { line-height: 1.35; }\n"
         "    pre { white-space: pre-wrap; }\n"
         "    img, video, audio { max-width: 100%; border-radius: 10px; }\n"
+        "    .benoss-media-appendix { margin-top: 24px; padding-top: 14px; border-top: 1px solid #dbe5ef; }\n"
+        "    .benoss-media-appendix h2 { margin: 0 0 10px; font-size: 1.2rem; }\n"
+        "    .benoss-media-appendix h3 { margin: 12px 0 8px; font-size: 1rem; }\n"
+        "    .benoss-media-appendix figure { margin: 0; }\n"
+        "    .benoss-media-appendix figcaption { margin-top: 6px; color: #64748b; font-size: 0.92rem; }\n"
         "  </style>\n"
         "</head>\n"
         "<body>\n"
         "  <main>\n"
         f"{raw}\n"
+        f"{media_part}"
         "  </main>\n"
         "</body>\n"
         "</html>\n"
@@ -2362,6 +2690,8 @@ def _generate_blog_asset(
     filters: dict,
     title: str,
     visibility: str,
+    poster_asset_id: int | None = None,
+    podcast_asset_id: int | None = None,
     source_day: date | None = None,
     is_daily_digest: bool = False,
 ) -> tuple[GeneratedAsset, str]:
@@ -2370,7 +2700,12 @@ def _generate_blog_asset(
         temperature=0.25,
         max_tokens=2000,
     )
-    html_doc = _wrap_blog_html_document(output, title=title)
+    html_doc = _wrap_blog_html_document(
+        output,
+        title=title,
+        poster_asset_id=poster_asset_id,
+        podcast_asset_id=podcast_asset_id,
+    )
     asset = _save_generated_asset(
         user=user,
         kind="blog_html",
@@ -2583,10 +2918,6 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
     )
 
     kind_map = {
-        "blog_html": {
-            "title": f"Daily Digest Blog {day_value.isoformat()}",
-            "job_field": "blog_asset_id",
-        },
         "podcast_audio": {
             "title": f"Daily Digest Podcast {day_value.isoformat()}",
             "job_field": "podcast_asset_id",
@@ -2594,6 +2925,10 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
         "poster_image": {
             "title": f"Daily Digest Poster {day_value.isoformat()}",
             "job_field": "poster_asset_id",
+        },
+        "blog_html": {
+            "title": f"Daily Digest Blog {day_value.isoformat()}",
+            "job_field": "blog_asset_id",
         },
     }
     assets: dict[str, GeneratedAsset] = {}
@@ -2621,6 +2956,8 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
 
         try:
             if kind == "blog_html":
+                poster_asset = assets.get("poster_image")
+                podcast_asset = assets.get("podcast_audio")
                 asset, _ = _generate_blog_asset(
                     user=owner,
                     records_text=records_text,
@@ -2628,6 +2965,8 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
                     filters=base_filters,
                     title=meta["title"],
                     visibility="public",
+                    poster_asset_id=(poster_asset.id if poster_asset else None),
+                    podcast_asset_id=(podcast_asset.id if podcast_asset else None),
                     source_day=day_value,
                     is_daily_digest=True,
                 )
