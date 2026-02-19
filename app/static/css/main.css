@@ -1778,12 +1778,16 @@ a.tag-pill:hover {
   background:
     linear-gradient(138deg, rgba(11, 106, 126, 0.06), rgba(255, 255, 255, 0.95)),
     #fff;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .echoes-type-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem;
+  min-width: 0;
+  max-width: 100%;
 }
 
 button.echoes-chip {
@@ -1793,6 +1797,7 @@ button.echoes-chip {
   border-radius: var(--radius-pill);
   padding: 0.28rem 0.72rem;
   line-height: 1.2;
+  max-width: 100%;
 }
 
 button.echoes-chip:hover {
@@ -2966,22 +2971,7 @@ button.echoes-chip.active {
   align-items: center;
   gap: 0.45rem;
   margin-left: auto;
-}
-
-.echoes-density-switch {
-  display: inline-flex;
-  gap: 0.35rem;
-}
-
-.echoes-density-switch button {
-  min-width: 4.1rem;
-}
-
-.echoes-density-switch button.is-active {
-  border-color: transparent;
-  background: linear-gradient(135deg, #0f6677, #10889d);
-  color: #fff;
-  box-shadow: 0 9px 20px rgba(13, 93, 112, 0.24);
+  flex: 0 0 auto;
 }
 
 .echoes-grid {
@@ -3007,6 +2997,8 @@ button.echoes-chip.active {
 
 .echo-card-media audio {
   width: 100%;
+  max-width: 100%;
+  display: block;
 }
 
 .echo-card-meta {
@@ -3014,40 +3006,6 @@ button.echoes-chip.active {
   flex-wrap: wrap;
   gap: 0.35rem;
   align-items: center;
-}
-
-.echoes-grid.is-compact {
-  grid-template-columns: repeat(auto-fill, minmax(228px, 1fr));
-  gap: 0.62rem;
-}
-
-.echoes-grid.is-compact .echo-card {
-  gap: 0.42rem;
-  padding: 0.52rem;
-  border-radius: 0.72rem;
-}
-
-.echoes-grid.is-compact .echo-card-head {
-  align-items: flex-start;
-}
-
-.echoes-grid.is-compact .echo-card-head .muted {
-  font-size: 0.76rem;
-}
-
-.echoes-grid.is-compact .echo-text {
-  font-size: 0.84rem;
-  padding: 0.52rem;
-  max-height: 142px;
-}
-
-.echoes-grid.is-compact .echo-card-meta {
-  font-size: 0.77rem;
-}
-
-.echoes-grid.is-compact .action-line .bubble {
-  font-size: 0.74rem;
-  padding: 0.2rem 0.56rem;
 }
 
 .board-card {
@@ -3398,16 +3356,21 @@ button.echoes-chip.active {
     #fff;
   box-shadow: 0 8px 22px rgba(10, 41, 63, 0.12);
   backdrop-filter: blur(8px);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .notice-reader-group {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.32rem;
   border: 1px solid #d0dfeb;
   border-radius: 999px;
   background: #f8fbfe;
   padding: 0.2rem;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .notice-reader-group button {
@@ -3419,6 +3382,8 @@ button.echoes-chip.active {
   color: #2c4f66;
   box-shadow: none;
   padding: 0.24rem 0.56rem;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .notice-reader-group select {
@@ -3430,6 +3395,8 @@ button.echoes-chip.active {
   line-height: 1.1;
   padding: 0.2rem 0.5rem;
   min-height: 1.9rem;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .notice-reader-group-translate {
@@ -3528,12 +3495,8 @@ button.echoes-chip.active {
 @media (max-width: 980px) {
   .echoes-toolbar-actions {
     width: 100%;
-    justify-content: space-between;
+    justify-content: flex-end;
     margin-left: 0;
-  }
-
-  .echoes-density-switch {
-    flex-wrap: wrap;
   }
 
   .board-insight {
@@ -3580,17 +3543,11 @@ button.echoes-chip.active {
 
 @media (max-width: 640px) {
   .echoes-toolbar-actions {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .echoes-density-switch {
     width: 100%;
   }
 
-  .echoes-density-switch button,
   .echoes-toolbar-actions > button {
-    flex: 1;
+    width: 100%;
   }
 
   .echoes-grid {
@@ -3611,15 +3568,17 @@ button.echoes-chip.active {
 
   .notice-reader-group {
     width: 100%;
-    justify-content: center;
+    justify-content: flex-start;
   }
 
   .notice-reader-group button {
-    flex: 1;
+    flex: 1 1 auto;
+    min-width: 0;
   }
 
   .notice-reader-group select {
-    flex: 1;
+    flex: 1 1 auto;
+    min-width: 0;
   }
 }
 
@@ -3714,8 +3673,7 @@ button.is-busy::after {
 }
 
 button.secondary.is-busy::after,
-.notice-reader-group button.is-busy::after,
-.echoes-density-switch button.is-busy::after {
+.notice-reader-group button.is-busy::after {
   border-color: rgba(18, 70, 96, 0.28);
   border-top-color: #1f617e;
 }
@@ -3856,7 +3814,21 @@ button.secondary.is-busy::after,
 }
 
 /* -------- Echoes Narrow-Screen Overflow Guard -------- */
+.site-header,
+.site-header-inner,
+.site-header-right,
+.site-nav,
+.account-nav,
+.page-main {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .echoes-shell,
+.echoes-toolbar,
+.echoes-toolbar > *,
+.echoes-type-chips,
+.echoes-type-chips > *,
 .echoes-grid,
 .echoes-grid > .echo-card,
 .echo-card,
@@ -3870,6 +3842,7 @@ button.secondary.is-busy::after,
 
 .echo-card-media :is(p, a, span, strong),
 .echo-card-meta,
+.echo-card-head > .muted,
 .echo-text,
 .echo-text a {
   max-width: 100%;
@@ -3882,7 +3855,13 @@ button.secondary.is-busy::after,
 }
 
 .echo-card-media a {
-  display: inline-block;
+  display: block;
+  min-width: 0;
+  white-space: normal;
+}
+
+.echo-card-media :is(audio, video, img) {
+  max-width: 100%;
 }
 
 @media (max-width: 640px) {
@@ -3891,23 +3870,25 @@ button.secondary.is-busy::after,
   }
 
   .echoes-toolbar {
+    align-items: stretch;
     gap: 0.55rem;
     padding: 0.55rem;
   }
 
   .echoes-type-chips {
     width: 100%;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    overscroll-behavior-x: contain;
-    -webkit-overflow-scrolling: touch;
-    padding-bottom: 0.1rem;
-    scrollbar-width: thin;
+    flex-wrap: wrap;
+    overflow-x: visible;
+    overscroll-behavior-x: auto;
+    -webkit-overflow-scrolling: auto;
+    padding-bottom: 0;
+    scrollbar-width: auto;
   }
 
   .echoes-type-chips button.echoes-chip {
-    flex: 0 0 auto;
-    white-space: nowrap;
+    flex: 0 1 auto;
+    max-width: 100%;
+    white-space: normal;
   }
 
   .echo-card {
@@ -3940,6 +3921,10 @@ button.secondary.is-busy::after,
     min-width: 0;
     text-align: center;
   }
+
+  .echoes-toolbar-actions {
+    margin-left: 0;
+  }
 }
 
 @media (max-width: 420px) {
@@ -3949,6 +3934,11 @@ button.secondary.is-busy::after,
 }
 
 /* -------- Notice Text Overflow Guard -------- */
+#notice-render-panel,
+#notice-render-panel .notice-reader-toolbar,
+#notice-render-panel .notice-reader-group,
+#notice-render-panel .notice-reader-group button,
+#notice-render-panel .notice-reader-group select,
 #notice-render-html,
 #notice-render-panel .optimized-html,
 .notice-render,

@@ -79,6 +79,7 @@ _DIGEST_MEDIA_APPENDIX_RE = re.compile(
     r"<section\s+class=[\"']benoss-media-appendix[\"'][\s\S]*?</section>",
     re.IGNORECASE,
 )
+_BLOG_SLOT_MARKER_RE = re.compile(r"<!--\s*BENOSS_SLOT:([a-z0-9][a-z0-9_-]{0,63})\s*-->", re.IGNORECASE)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _DIRECT_UPLOAD_TOKEN_SALT = "benoss.direct-upload.v1"
 _PODCAST_STYLE_GUIDE = {
@@ -1927,6 +1928,210 @@ def _notice_image_urls_from_archive_rows(rows: list[dict]) -> list[str]:
     return urls
 
 
+def _source_images_from_records(records: list[Record], *, max_items: int) -> list[dict]:
+    limit = max(0, min(int(max_items or 0), 60))
+    if limit <= 0:
+        return []
+
+    items: list[dict] = []
+    seen_content_ids: set[int] = set()
+    for record in records:
+        if len(items) >= limit:
+            break
+        content = record.content
+        if not content or str(content.kind or "").strip().lower() != "file":
+            continue
+        if _rechecked_content_file_type(content) != "image":
+            continue
+
+        content_id = int(content.id or 0)
+        if content_id <= 0 or content_id in seen_content_ids:
+            continue
+        seen_content_ids.add(content_id)
+
+        tags = [item for item in record.get_tags() if item]
+        tags_text = ", ".join(tags[:5])
+        preview = _trim_text_balanced(_normalize_prompt_text(record.preview or ""), limit=180)
+        filename = str(content.filename or "").strip() or f"record-{int(record.id)}.image"
+
+        note_parts = [f"record#{int(record.id)}"]
+        if tags_text:
+            note_parts.append(f"tags={tags_text}")
+        if preview:
+            note_parts.append(f"preview={preview}")
+        note = " | ".join(note_parts)
+
+        index = len(items) + 1
+        items.append(
+            {
+                "id": f"img-{index}",
+                "record_id": int(record.id),
+                "content_id": content_id,
+                "slot_hint": _normalize_slot_name(tags[0] if tags else "", fallback_index=index),
+                "src": f"/api/contents/{content_id}/blob",
+                "title": filename[:120],
+                "caption": preview[:200] if preview else filename[:120],
+                "note": note[:480],
+            }
+        )
+    return items
+
+
+def _source_images_compact_text(source_images: list[dict]) -> str:
+    lines: list[str] = []
+    for item in source_images:
+        if not isinstance(item, dict):
+            continue
+        image_id = str(item.get("id") or "").strip()
+        if not image_id:
+            continue
+        title = str(item.get("title") or "").strip()
+        note = str(item.get("note") or "").strip()
+        slot_hint = str(item.get("slot_hint") or "").strip()
+        pieces = [image_id]
+        if slot_hint:
+            pieces.append(f"hint={slot_hint}")
+        if title:
+            pieces.append(f"title={title}")
+        if note:
+            pieces.append(f"note={note}")
+        lines.append(" | ".join(pieces))
+    return "\n".join(lines).strip()
+
+
+def _assign_source_images_to_slots(*, plan: dict, source_images: list[dict]) -> dict[str, list[str]]:
+    images = [item for item in source_images if isinstance(item, dict) and str(item.get("id") or "").strip()]
+    if not images:
+        return {}
+
+    sections_raw = plan.get("sections") or []
+    sections = sections_raw if isinstance(sections_raw, list) else []
+    slot_order: list[str] = []
+    slot_limits: dict[str, int] = {}
+    for idx, section in enumerate(sections, start=1):
+        if not isinstance(section, dict):
+            continue
+        slot = _normalize_slot_name(section.get("slot"), fallback_index=idx)
+        if slot in slot_limits:
+            continue
+        count = max(0, min(_safe_int(section.get("image_count"), default=0), 4))
+        slot_order.append(slot)
+        slot_limits[slot] = count
+
+    if not slot_order:
+        slot_order = ["slot-1"]
+        slot_limits = {"slot-1": max(1, min(len(images), 3))}
+    elif max(slot_limits.values() or [0]) <= 0:
+        slot_limits[slot_order[0]] = max(1, min(len(images), 3))
+
+    def _fallback_assign(image_ids: list[str], existing: dict[str, list[str]] | None = None) -> dict[str, list[str]]:
+        result = {slot: list((existing or {}).get(slot) or []) for slot in slot_order}
+        candidates = [slot for slot in slot_order if int(slot_limits.get(slot) or 0) > 0]
+        if not candidates:
+            return {}
+
+        cursor = 0
+        for image_id in image_ids:
+            placed = False
+            for _ in range(len(candidates)):
+                slot = candidates[cursor % len(candidates)]
+                cursor += 1
+                limit = int(slot_limits.get(slot) or 0)
+                if limit <= 0:
+                    continue
+                if len(result[slot]) >= limit:
+                    continue
+                if image_id in result[slot]:
+                    placed = True
+                    break
+                result[slot].append(image_id)
+                placed = True
+                break
+            if not placed:
+                break
+        return {slot: ids for slot, ids in result.items() if ids}
+
+    ordered_ids = [str(item.get("id")) for item in images]
+    fallback = _fallback_assign(ordered_ids)
+
+    assignments_raw = None
+    try:
+        output, _ = _ai_chat(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是媒体编排助手。你只输出 JSON，不要解释。",
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "请把原图分配到各段落 slot。\n"
+                        "规则：\n"
+                        "1) 只能使用给定 slot 与图片 id；\n"
+                        "2) 每个图片最多分配到一个 slot；\n"
+                        "3) 每个 slot 的图片数量不超过该 slot 的 limit；\n"
+                        "4) 若不确定，优先按内容相关性分配。\n\n"
+                        f"slot limits:\n{json.dumps(slot_limits, ensure_ascii=False)}\n\n"
+                        f"source images:\n{_source_images_compact_text(images)}\n\n"
+                        "输出 JSON：\n"
+                        '{\n'
+                        '  "assignments": [\n'
+                        '    {"slot": "slot-1", "source_image_ids": ["img-1"]}\n'
+                        "  ]\n"
+                        "}\n"
+                    ),
+                },
+            ],
+            temperature=0.12,
+            max_tokens=1000,
+        )
+        parsed = _parse_ai_json_object(output)
+        assignments_raw = parsed.get("assignments")
+    except Exception as exc:
+        current_app.logger.warning("source image slot assignment fallback: %s", exc)
+        assignments_raw = None
+
+    if not isinstance(assignments_raw, list):
+        return fallback
+
+    valid_slots = set(slot_order)
+    valid_ids = set(ordered_ids)
+    used_ids: set[str] = set()
+    result: dict[str, list[str]] = {slot: [] for slot in slot_order}
+
+    for entry in assignments_raw:
+        if not isinstance(entry, dict):
+            continue
+        slot = _normalize_slot_name(entry.get("slot"), fallback_index=1)
+        if slot not in valid_slots:
+            continue
+        limit = int(slot_limits.get(slot) or 0)
+        if limit <= 0:
+            continue
+        ids_raw = entry.get("source_image_ids")
+        if not isinstance(ids_raw, list):
+            ids_raw = entry.get("image_ids")
+        if not isinstance(ids_raw, list):
+            continue
+        for raw_id in ids_raw:
+            image_id = str(raw_id or "").strip()
+            if not image_id or image_id not in valid_ids:
+                continue
+            if image_id in used_ids:
+                continue
+            if len(result[slot]) >= limit:
+                break
+            result[slot].append(image_id)
+            used_ids.add(image_id)
+
+    remaining_ids = [image_id for image_id in ordered_ids if image_id not in used_ids]
+    if remaining_ids:
+        result = _fallback_assign(remaining_ids, existing=result)
+
+    cleaned = {slot: ids for slot, ids in result.items() if ids}
+    return cleaned or fallback
+
+
 def _normalize_podcast_style(raw) -> str:
     value = str(raw or "").strip().lower()
     aliases = {
@@ -2007,6 +2212,319 @@ def _build_notice_ai_prompt(
             "content": user_content,
         },
     ]
+
+
+def _safe_int(value, *, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _normalize_slot_name(raw: str, *, fallback_index: int) -> str:
+    text = str(raw or "").strip().lower()
+    text = re.sub(r"[^a-z0-9_-]+", "-", text)
+    text = re.sub(r"-{2,}", "-", text).strip("-_")
+    if not text:
+        text = f"slot-{max(1, int(fallback_index or 1))}"
+    return text[:64]
+
+
+def _parse_ai_json_object(raw: str) -> dict:
+    text = _strip_markdown_code_fence(raw)
+    candidates: list[str] = []
+    if text:
+        candidates.append(text)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(text[start : end + 1])
+
+    for candidate in candidates:
+        try:
+            loaded = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(loaded, dict):
+            return loaded
+    raise ValueError("invalid ai json output")
+
+
+def _digest_collab_enabled() -> bool:
+    return get_setting_bool("DIGEST_COLLAB_ENABLED", default=True)
+
+
+def _digest_collab_max_sections() -> int:
+    return max(1, min(get_setting_int("DIGEST_COLLAB_MAX_SECTIONS", default=4), 8))
+
+
+def _digest_collab_max_image_assets() -> int:
+    return max(0, min(get_setting_int("DIGEST_COLLAB_MAX_IMAGE_ASSETS", default=4), 12))
+
+
+def _digest_collab_max_source_images() -> int:
+    return max(0, min(get_setting_int("DIGEST_COLLAB_MAX_SOURCE_IMAGES", default=12), 30))
+
+
+def _digest_collab_max_audio_assets() -> int:
+    return max(0, min(get_setting_int("DIGEST_COLLAB_MAX_AUDIO_ASSETS", default=3), 10))
+
+
+def _digest_collab_review_rounds() -> int:
+    return max(0, min(get_setting_int("DIGEST_COLLAB_REVIEW_ROUNDS", default=2), 3))
+
+
+def _build_digest_collab_plan(records_text: str) -> tuple[dict, dict | None]:
+    max_sections = _digest_collab_max_sections()
+    max_images = _digest_collab_max_image_assets()
+    max_audios = _digest_collab_max_audio_assets()
+
+    fallback_section = {
+        "slot": "slot-1",
+        "title": "核心摘要",
+        "focus": _trim_text_balanced(records_text, limit=1400),
+        "image_count": 1 if max_images > 0 else 0,
+        "audio_count": 1 if max_audios > 0 else 0,
+    }
+    fallback_plan = {"lead": "", "sections": [fallback_section]}
+
+    if not _digest_collab_enabled():
+        return fallback_plan, None
+
+    system_prompt = (
+        "你是 Benoss 的 Planner Agent。"
+        "你负责把输入记录拆分成可并行生成媒体的章节计划。"
+        "只输出 JSON，不要解释。"
+    )
+    user_prompt = (
+        "请把输入记录规划为日报博客章节，并给出每章建议媒体数量。\n"
+        f"限制：sections 最多 {max_sections} 个；全局 image_count 总和不超过 {max_images}；"
+        f"audio_count 总和不超过 {max_audios}。\n"
+        "输出 JSON 结构：\n"
+        '{\n'
+        '  "lead": "一句话定位（可选）",\n'
+        '  "sections": [\n'
+        '    {\n'
+        '      "slot": "slot-1",\n'
+        '      "title": "章节标题",\n'
+        '      "focus": "章节摘要（1-3 句）",\n'
+        '      "image_count": 0,\n'
+        '      "audio_count": 0\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        f"输入记录：\n{records_text}"
+    )
+
+    try:
+        output, settings = _ai_chat(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.18,
+            max_tokens=1200,
+        )
+        parsed = _parse_ai_json_object(output)
+    except Exception as exc:
+        current_app.logger.warning("digest planner fallback: %s", exc)
+        return fallback_plan, None
+
+    sections_raw = parsed.get("sections") or []
+    if not isinstance(sections_raw, list):
+        sections_raw = []
+
+    sections: list[dict] = []
+    seen_slots: set[str] = set()
+    for item in sections_raw:
+        if len(sections) >= max_sections:
+            break
+        if not isinstance(item, dict):
+            continue
+        idx = len(sections) + 1
+        title = _normalize_prompt_text(str(item.get("title") or item.get("heading") or "").strip())
+        title = title[:80] or f"章节 {idx}"
+        focus_raw = str(item.get("focus") or item.get("summary") or item.get("description") or "").strip()
+        focus = _trim_text_balanced(focus_raw or title, limit=1200)
+        slot = _normalize_slot_name(
+            str(item.get("slot") or item.get("id") or title),
+            fallback_index=idx,
+        )
+        if slot in seen_slots:
+            slot = _normalize_slot_name(f"{slot}-{idx}", fallback_index=idx)
+        seen_slots.add(slot)
+        image_count = max(0, min(_safe_int(item.get("image_count"), default=0), 3))
+        audio_count = max(0, min(_safe_int(item.get("audio_count"), default=0), 3))
+        sections.append(
+            {
+                "slot": slot,
+                "title": title,
+                "focus": focus,
+                "image_count": image_count,
+                "audio_count": audio_count,
+            }
+        )
+
+    if not sections:
+        sections = [fallback_section]
+
+    remaining_images = max_images
+    for section in sections:
+        allowed = min(int(section.get("image_count") or 0), remaining_images)
+        section["image_count"] = allowed
+        remaining_images -= allowed
+    if max_images > 0 and sum(int(item.get("image_count") or 0) for item in sections) <= 0:
+        sections[0]["image_count"] = 1
+
+    remaining_audios = max_audios
+    for section in sections:
+        allowed = min(int(section.get("audio_count") or 0), remaining_audios)
+        section["audio_count"] = allowed
+        remaining_audios -= allowed
+    if max_audios > 0 and sum(int(item.get("audio_count") or 0) for item in sections) <= 0:
+        sections[0]["audio_count"] = 1
+
+    plan = {
+        "lead": _trim_text_balanced(str(parsed.get("lead") or "").strip(), limit=220),
+        "sections": sections,
+    }
+    return plan, settings
+
+
+def _collab_plan_compact_text(plan: dict) -> str:
+    sections = plan.get("sections") or []
+    lines: list[str] = []
+    lead = str(plan.get("lead") or "").strip()
+    if lead:
+        lines.append(f"定位：{lead}")
+    for idx, section in enumerate(sections, start=1):
+        slot = str(section.get("slot") or f"slot-{idx}")
+        title = str(section.get("title") or f"章节 {idx}")
+        focus = str(section.get("focus") or "")
+        images = int(section.get("image_count") or 0)
+        audios = int(section.get("audio_count") or 0)
+        lines.append(f"{idx}. slot={slot} title={title} images={images} audios={audios}")
+        if focus:
+            lines.append(f"   focus={focus}")
+    return "\n".join(lines).strip()
+
+
+def _build_collab_blog_html(
+    *,
+    title: str,
+    records_text: str,
+    image_urls: list[str] | None,
+    plan: dict,
+) -> tuple[str, dict]:
+    task = get_setting_str("PROMPT_NOTICE_BLOG_TASK", default=DEFAULT_NOTICE_BLOG_TASK).strip()
+    system_prompt = (
+        get_setting_str("PROMPT_NOTICE_SYSTEM", default=DEFAULT_NOTICE_SYSTEM_PROMPT).strip()
+        + "\n你是 Writer Agent，负责写可直接发布的中文博客 HTML。"
+    )
+    sections_text = _collab_plan_compact_text(plan)
+    user_text = (
+        f"{task}\n\n"
+        "请基于下面的章节计划输出完整 HTML。要求：\n"
+        "1) 仅输出 HTML，不要 markdown 代码块。\n"
+        "2) 每个章节必须包含对应 slot 标记，格式严格为 <!-- BENOSS_SLOT:slot-id -->。\n"
+        "3) slot 标记位置放在该章节正文末尾，用于后续自动注入图片/音频。\n"
+        "4) 保持信息准确，避免臆造。\n\n"
+        f"标题：{title}\n\n"
+        f"章节计划：\n{sections_text}\n\n"
+        f"输入记录：\n{records_text}"
+    )
+
+    clean_urls = [str(url or "").strip() for url in (image_urls or []) if str(url or "").strip()]
+    user_content: str | list[dict] = user_text
+    if clean_urls:
+        parts: list[dict] = [
+            {
+                "type": "text",
+                "text": (
+                    f"{user_text}\n\n"
+                    "附加图片作为事实线索。只能基于可见信息写作，不要臆造。"
+                ),
+            }
+        ]
+        for image_url in clean_urls:
+            parts.append({"type": "image_url", "image_url": {"url": image_url}})
+        user_content = parts
+
+    output, settings = _ai_chat(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+        temperature=0.26,
+        max_tokens=2400,
+    )
+    return output, settings
+
+
+def _collab_blog_review_feedback(*, plan: dict, blog_html: str) -> tuple[dict, dict]:
+    system_prompt = "你是 Critic Agent。你只做质量审查，输出严格 JSON。"
+    user_prompt = (
+        "请审查以下博客 HTML 是否满足计划与事实约束。\n"
+        "只输出 JSON：\n"
+        '{\n'
+        '  "approved": true,\n'
+        '  "issues": ["最多 5 条问题"],\n'
+        '  "rewrite_instruction": "若不通过，给出明确改写指令"\n'
+        "}\n\n"
+        f"章节计划：\n{_collab_plan_compact_text(plan)}\n\n"
+        f"博客 HTML：\n{blog_html}"
+    )
+    output, settings = _ai_chat(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.1,
+        max_tokens=900,
+    )
+    parsed = _parse_ai_json_object(output)
+    approved = bool(parsed.get("approved"))
+    issues = parsed.get("issues") if isinstance(parsed.get("issues"), list) else []
+    rewrite_instruction = _trim_text_balanced(str(parsed.get("rewrite_instruction") or "").strip(), limit=1000)
+    return {
+        "approved": approved,
+        "issues": [str(item or "").strip() for item in issues if str(item or "").strip()][:5],
+        "rewrite_instruction": rewrite_instruction,
+    }, settings
+
+
+def _collab_blog_rewrite(
+    *,
+    title: str,
+    plan: dict,
+    records_text: str,
+    current_html: str,
+    review_feedback: dict,
+) -> tuple[str, dict]:
+    task = get_setting_str("PROMPT_NOTICE_BLOG_TASK", default=DEFAULT_NOTICE_BLOG_TASK).strip()
+    issues = review_feedback.get("issues") or []
+    instruction = str(review_feedback.get("rewrite_instruction") or "").strip()
+    issue_text = "\n".join(f"- {str(item)}" for item in issues) if issues else "- 无显式问题列表"
+    user_prompt = (
+        f"{task}\n\n"
+        "请基于审稿意见重写完整 HTML（只输出 HTML，不要代码块），并保留所有 slot 标记。\n"
+        "slot 标记格式：<!-- BENOSS_SLOT:slot-id -->。\n\n"
+        f"标题：{title}\n\n"
+        f"章节计划：\n{_collab_plan_compact_text(plan)}\n\n"
+        f"审稿问题：\n{issue_text}\n\n"
+        f"改写指令：\n{instruction or '请在不改变事实的前提下优化结构与可读性。'}\n\n"
+        f"输入记录：\n{records_text}\n\n"
+        f"当前 HTML：\n{current_html}"
+    )
+    output, settings = _ai_chat(
+        messages=[
+            {"role": "system", "content": "你是 Writer Agent。你根据审稿意见迭代博客 HTML。"},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.24,
+        max_tokens=2400,
+    )
+    return output, settings
 
 
 def _ai_request_json(
@@ -2947,6 +3465,110 @@ def _digest_media_section_html(*, poster_asset_id: int | None, podcast_asset_id:
     return "\n".join(items)
 
 
+def _digest_media_section_assets_html(
+    *,
+    poster_assets: list[GeneratedAsset],
+    podcast_assets: list[GeneratedAsset],
+    source_images: list[dict] | None = None,
+    heading: str = "日报多媒体",
+    class_name: str = "benoss-media-appendix",
+) -> str:
+    posters = [item for item in poster_assets if item]
+    podcasts = [item for item in podcast_assets if item]
+    sources = [item for item in (source_images or []) if isinstance(item, dict)]
+    if not posters and not podcasts and not sources:
+        return ""
+
+    class_token = html.escape((class_name or "benoss-media-appendix").strip(), quote=True)
+    heading_text = html.escape((heading or "").strip(), quote=False)
+    lines: list[str] = [f'<section class="{class_token}">']
+    if heading_text:
+        lines.append(f"  <h3>{heading_text}</h3>")
+
+    for source in sources:
+        src = str(source.get("src") or "").strip()
+        if not src:
+            continue
+        title = html.escape((source.get("title") or "原图").strip() or "原图", quote=False)
+        caption = html.escape((source.get("caption") or title).strip() or title, quote=False)
+        lines.extend(
+            [
+                "  <figure>",
+                f'    <img src="{html.escape(src, quote=True)}" alt="{title}">',
+                f"    <figcaption>{caption}</figcaption>",
+                "  </figure>",
+            ]
+        )
+
+    for asset in posters:
+        src = f"/api/generated-assets/{int(asset.id)}/blob"
+        caption = html.escape((asset.title or "日报配图").strip() or "日报配图", quote=False)
+        lines.extend(
+            [
+                "  <figure>",
+                f'    <img src="{html.escape(src, quote=True)}" alt="{caption}">',
+                f"    <figcaption>{caption}</figcaption>",
+                "  </figure>",
+            ]
+        )
+
+    for asset in podcasts:
+        src = f"/api/generated-assets/{int(asset.id)}/blob"
+        title = html.escape((asset.title or "日报播客").strip() or "日报播客", quote=False)
+        lines.extend(
+            [
+                '  <div class="benoss-media-audio-item">',
+                f"    <h4>{title}</h4>",
+                f'    <audio controls preload="none" src="{html.escape(src, quote=True)}"></audio>',
+                "  </div>",
+            ]
+        )
+
+    lines.append("</section>")
+    return "\n".join(lines)
+
+
+def _asset_filters(asset: GeneratedAsset) -> dict:
+    raw = str(asset.source_filters_json or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    if isinstance(parsed, dict):
+        return parsed
+    return {}
+
+
+def _asset_slot_name(asset: GeneratedAsset) -> str:
+    filters = _asset_filters(asset)
+    slot_raw = str(filters.get("slot") or "").strip()
+    if not slot_raw:
+        return ""
+    return _normalize_slot_name(slot_raw, fallback_index=1)
+
+
+def _inject_slot_media_markers(
+    blog_html: str,
+    *,
+    slot_media_html: dict[str, str],
+) -> tuple[str, set[str]]:
+    used_slots: set[str] = set()
+
+    def _replace(match: re.Match) -> str:
+        slot_raw = str(match.group(1) or "").strip()
+        slot = _normalize_slot_name(slot_raw, fallback_index=1)
+        block = str(slot_media_html.get(slot) or "").strip()
+        if block:
+            used_slots.add(slot)
+            return block
+        return ""
+
+    output = _BLOG_SLOT_MARKER_RE.sub(_replace, str(blog_html or ""))
+    return output, used_slots
+
+
 def _strip_digest_media_section(doc_html: str) -> str:
     raw = str(doc_html or "")
     if not raw:
@@ -3033,12 +3655,13 @@ def _wrap_blog_html_document(
         "    h1, h2, h3 { line-height: 1.35; }\n"
         "    pre { white-space: pre-wrap; }\n"
         "    img, video, audio { max-width: 100%; border-radius: 10px; }\n"
-        "    .benoss-media-appendix { margin-bottom: 24px; padding-bottom: 14px; border-bottom: 1px solid #dbe5ef; }\n"
-        "    .benoss-media-appendix h3 { margin: 12px 0 8px; font-size: 1rem; }\n"
-        "    .benoss-media-appendix figure { margin: 0 auto; width: min(560px, 100%); }\n"
-        "    .benoss-media-appendix img { display: block; width: 100%; height: auto; border-radius: 10px; }\n"
-        "    .benoss-media-appendix audio { width: min(560px, 100%); }\n"
-        "    .benoss-media-appendix figcaption { margin-top: 6px; color: #64748b; font-size: 0.92rem; }\n"
+        "    .benoss-media-appendix, .benoss-slot-media { margin-bottom: 24px; padding-bottom: 14px; border-bottom: 1px solid #dbe5ef; }\n"
+        "    .benoss-media-appendix h3, .benoss-slot-media h3 { margin: 12px 0 8px; font-size: 1rem; }\n"
+        "    .benoss-media-appendix h4, .benoss-slot-media h4 { margin: 10px 0 6px; font-size: 0.94rem; color: #334155; }\n"
+        "    .benoss-media-appendix figure, .benoss-slot-media figure { margin: 0 auto 12px; width: min(560px, 100%); }\n"
+        "    .benoss-media-appendix img, .benoss-slot-media img { display: block; width: 100%; height: auto; border-radius: 10px; }\n"
+        "    .benoss-media-appendix audio, .benoss-slot-media audio { width: min(560px, 100%); }\n"
+        "    .benoss-media-appendix figcaption, .benoss-slot-media figcaption { margin-top: 6px; color: #64748b; font-size: 0.92rem; }\n"
         "  </style>\n"
         "</head>\n"
         "<body>\n"
@@ -3260,6 +3883,7 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
     rows_for_generation = archive_rows[:generation_limit] if archive_rows else []
     records_text = _records_for_ai_prompt_from_archive(rows_for_generation)
     image_urls = _notice_image_urls_from_archive_rows(rows_for_generation)
+    source_images = _source_images_from_records(records, max_items=_digest_collab_max_source_images())
     record_count_total = len(archive_rows) if archive_rows else len(records)
     if not records_text:
         records_text = _records_for_ai_prompt(records[:generation_limit])
@@ -3285,26 +3909,16 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
         "timezone": tz_name,
         "job": "daily_digest",
     }
-    kind_map = {
-        "blog_html": {
-            "title": f"Daily Digest Blog {day_value.isoformat()}",
-            "job_field": "blog_asset_id",
-        },
-        "podcast_audio": {
-            "title": f"Daily Digest Podcast {day_value.isoformat()}",
-            "job_field": "podcast_asset_id",
-        },
-        "poster_image": {
-            "title": f"Daily Digest Poster {day_value.isoformat()}",
-            "job_field": "poster_asset_id",
-        },
+    title_map = {
+        "blog_html": f"Daily Digest Blog {day_value.isoformat()}",
+        "podcast_audio": f"Daily Digest Podcast {day_value.isoformat()}",
+        "poster_image": f"Daily Digest Poster {day_value.isoformat()}",
     }
-    assets: dict[str, GeneratedAsset] = {}
     errors: list[str] = []
 
-    def _lookup_existing_asset(kind: str) -> GeneratedAsset | None:
+    def _list_existing_assets(kind: str) -> list[GeneratedAsset]:
         if force:
-            return None
+            return []
         return (
             GeneratedAsset.query.options(joinedload(GeneratedAsset.user))
             .filter(
@@ -3315,91 +3929,330 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
                 GeneratedAsset.source_day == day_value,
             )
             .order_by(GeneratedAsset.created_at.desc(), GeneratedAsset.id.desc())
-            .first()
+            .all()
         )
 
-    def _bind_asset(kind: str, asset: GeneratedAsset) -> None:
-        assets[kind] = asset
-        setattr(job, kind_map[kind]["job_field"], asset.id)
+    existing_by_kind = {
+        "blog_html": _list_existing_assets("blog_html"),
+        "podcast_audio": _list_existing_assets("podcast_audio"),
+        "poster_image": _list_existing_assets("poster_image"),
+    }
 
-    existing_assets = {kind: _lookup_existing_asset(kind) for kind in kind_map}
+    blog_asset: GeneratedAsset | None = None
+    podcast_assets: list[GeneratedAsset] = []
+    poster_assets: list[GeneratedAsset] = []
 
-    for kind in ("poster_image", "podcast_audio"):
-        existing = existing_assets.get(kind)
-        if existing is not None:
-            _bind_asset(kind, existing)
-            continue
-
-        try:
-            if kind == "poster_image":
-                generated, _ = _generate_poster_asset(
-                    user=owner,
-                    records_text=records_text,
-                    image_urls=image_urls,
-                    filters=base_filters,
-                    title=kind_map[kind]["title"],
-                    visibility="public",
-                    source_day=day_value,
-                    is_daily_digest=True,
-                )
-            else:
-                generated, _ = _generate_podcast_asset(
-                    user=owner,
-                    records_text=records_text,
-                    image_urls=image_urls,
-                    filters=base_filters,
-                    title=kind_map[kind]["title"],
-                    visibility="public",
-                    source_day=day_value,
-                    is_daily_digest=True,
-                )
-            _bind_asset(kind, generated)
-        except RuntimeError as exc:
-            errors.append(f"{kind}: {exc}")
-        except Exception as exc:
-            errors.append(f"{kind}: {exc}")
-
-    poster_asset = assets.get("poster_image")
-    podcast_asset = assets.get("podcast_audio")
-    poster_asset_id = poster_asset.id if poster_asset else None
-    podcast_asset_id = podcast_asset.id if podcast_asset else None
-
-    existing_blog = existing_assets.get("blog_html")
-    if existing_blog is not None:
+    existing_blog = existing_by_kind.get("blog_html") or []
+    if existing_blog and not force:
+        blog_asset = existing_blog[0]
+        podcast_assets = list(existing_by_kind.get("podcast_audio") or [])
+        poster_assets = list(existing_by_kind.get("poster_image") or [])
         try:
             _refresh_existing_blog_asset_media(
-                existing_blog,
-                poster_asset_id=poster_asset_id,
-                podcast_asset_id=podcast_asset_id,
+                blog_asset,
+                poster_asset_id=poster_assets[0].id if poster_assets else None,
+                podcast_asset_id=podcast_assets[0].id if podcast_assets else None,
             )
-            _bind_asset("blog_html", existing_blog)
         except Exception as exc:
-            current_app.logger.warning("daily digest blog media refresh failed, regenerate blog: %s", exc)
-            existing_blog = None
+            current_app.logger.warning("daily digest blog media refresh failed: %s", exc)
+    else:
+        if not _digest_collab_enabled():
+            if _digest_collab_max_image_assets() > 0:
+                try:
+                    generated_poster, _ = _generate_poster_asset(
+                        user=owner,
+                        records_text=records_text,
+                        image_urls=image_urls,
+                        filters=dict(base_filters, pipeline="legacy"),
+                        title=title_map["poster_image"],
+                        visibility="public",
+                        source_day=day_value,
+                        is_daily_digest=True,
+                    )
+                    poster_assets.append(generated_poster)
+                except Exception as exc:
+                    errors.append(f"poster_image: {exc}")
 
-    if existing_blog is None:
-        try:
-            generated_blog, _ = _generate_blog_asset(
-                user=owner,
-                records_text=records_text,
-                image_urls=image_urls,
-                filters=base_filters,
-                title=kind_map["blog_html"]["title"],
-                visibility="public",
-                poster_asset_id=poster_asset_id,
-                podcast_asset_id=podcast_asset_id,
-                source_day=day_value,
-                is_daily_digest=True,
-            )
-            _bind_asset("blog_html", generated_blog)
-        except RuntimeError as exc:
-            errors.append(f"blog_html: {exc}")
-        except Exception as exc:
-            errors.append(f"blog_html: {exc}")
+            if _digest_collab_max_audio_assets() > 0:
+                try:
+                    generated_audio, _ = _generate_podcast_asset(
+                        user=owner,
+                        records_text=records_text,
+                        image_urls=image_urls,
+                        filters=dict(base_filters, pipeline="legacy"),
+                        title=title_map["podcast_audio"],
+                        visibility="public",
+                        source_day=day_value,
+                        is_daily_digest=True,
+                    )
+                    podcast_assets.append(generated_audio)
+                except Exception as exc:
+                    errors.append(f"podcast_audio: {exc}")
 
-    if len(assets) == len(kind_map):
+            try:
+                blog_asset, _ = _generate_blog_asset(
+                    user=owner,
+                    records_text=records_text,
+                    image_urls=image_urls,
+                    filters=dict(base_filters, pipeline="legacy"),
+                    title=title_map["blog_html"],
+                    visibility="public",
+                    poster_asset_id=poster_assets[0].id if poster_assets else None,
+                    podcast_asset_id=podcast_assets[0].id if podcast_assets else None,
+                    source_day=day_value,
+                    is_daily_digest=True,
+                )
+            except Exception as exc:
+                errors.append(f"blog_html: {exc}")
+        else:
+            plan, planner_settings = _build_digest_collab_plan(records_text)
+            sections_raw = plan.get("sections") or []
+            sections = sections_raw if isinstance(sections_raw, list) else []
+            slot_source_image_ids = _assign_source_images_to_slots(plan=plan, source_images=source_images)
+            source_image_index = {
+                str(item.get("id")): item
+                for item in source_images
+                if isinstance(item, dict) and str(item.get("id") or "").strip()
+            }
+            slot_media_assets: dict[str, dict[str, list[GeneratedAsset]]] = {}
+
+            for idx, section in enumerate(sections, start=1):
+                if not isinstance(section, dict):
+                    continue
+                slot = _normalize_slot_name(section.get("slot"), fallback_index=idx)
+                section_title = str(section.get("title") or f"章节 {idx}").strip()[:80] or f"章节 {idx}"
+                section_focus = _trim_text_balanced(str(section.get("focus") or section_title), limit=1200)
+                image_count = max(0, min(_safe_int(section.get("image_count"), default=0), 4))
+                audio_count = max(0, min(_safe_int(section.get("audio_count"), default=0), 3))
+                slot_media_assets.setdefault(slot, {"images": [], "audios": []})
+                section_context = _trim_text_balanced(
+                    f"章节标题：{section_title}\n章节重点：{section_focus}\n\n上下文记录：\n{records_text}",
+                    limit=5600,
+                )
+
+                for media_index in range(image_count):
+                    media_filters = dict(base_filters)
+                    media_filters.update(
+                        {
+                            "pipeline": "collab",
+                            "slot": slot,
+                            "slot_title": section_title,
+                            "slot_index": idx,
+                            "media_kind": "poster_image",
+                            "media_index": media_index + 1,
+                        }
+                    )
+                    media_title = f"{title_map['poster_image']} - {section_title} #{media_index + 1}"
+                    try:
+                        generated_poster, _ = _generate_poster_asset(
+                            user=owner,
+                            records_text=section_context,
+                            image_urls=image_urls,
+                            filters=media_filters,
+                            title=media_title[:255],
+                            visibility="public",
+                            source_day=day_value,
+                            is_daily_digest=True,
+                        )
+                        slot_media_assets[slot]["images"].append(generated_poster)
+                        poster_assets.append(generated_poster)
+                    except RuntimeError as exc:
+                        errors.append(f"poster_image[{slot}#{media_index + 1}]: {exc}")
+                    except Exception as exc:
+                        errors.append(f"poster_image[{slot}#{media_index + 1}]: {exc}")
+
+                for media_index in range(audio_count):
+                    media_filters = dict(base_filters)
+                    media_filters.update(
+                        {
+                            "pipeline": "collab",
+                            "slot": slot,
+                            "slot_title": section_title,
+                            "slot_index": idx,
+                            "media_kind": "podcast_audio",
+                            "media_index": media_index + 1,
+                        }
+                    )
+                    media_title = f"{title_map['podcast_audio']} - {section_title} #{media_index + 1}"
+                    try:
+                        generated_audio, _ = _generate_podcast_asset(
+                            user=owner,
+                            records_text=section_context,
+                            image_urls=image_urls,
+                            filters=media_filters,
+                            title=media_title[:255],
+                            visibility="public",
+                            source_day=day_value,
+                            is_daily_digest=True,
+                        )
+                        slot_media_assets[slot]["audios"].append(generated_audio)
+                        podcast_assets.append(generated_audio)
+                    except RuntimeError as exc:
+                        errors.append(f"podcast_audio[{slot}#{media_index + 1}]: {exc}")
+                    except Exception as exc:
+                        errors.append(f"podcast_audio[{slot}#{media_index + 1}]: {exc}")
+
+            primary_poster_id = poster_assets[0].id if poster_assets else None
+            primary_podcast_id = podcast_assets[0].id if podcast_assets else None
+
+            try:
+                blog_draft, writer_settings = _build_collab_blog_html(
+                    title=title_map["blog_html"],
+                    records_text=records_text,
+                    image_urls=image_urls,
+                    plan=plan,
+                )
+                iter_html = blog_draft
+                for round_index in range(_digest_collab_review_rounds()):
+                    try:
+                        review_feedback, _ = _collab_blog_review_feedback(plan=plan, blog_html=iter_html)
+                    except Exception as exc:
+                        errors.append(f"critic_round_{round_index + 1}: {exc}")
+                        break
+                    if review_feedback.get("approved"):
+                        break
+                    try:
+                        iter_html, _ = _collab_blog_rewrite(
+                            title=title_map["blog_html"],
+                            plan=plan,
+                            records_text=records_text,
+                            current_html=iter_html,
+                            review_feedback=review_feedback,
+                        )
+                    except Exception as exc:
+                        errors.append(f"rewrite_round_{round_index + 1}: {exc}")
+                        break
+
+                slot_media_html: dict[str, str] = {}
+                slot_source_id_map: dict[str, list[str]] = {}
+                for idx, section in enumerate(sections, start=1):
+                    if not isinstance(section, dict):
+                        continue
+                    slot = _normalize_slot_name(section.get("slot"), fallback_index=idx)
+                    title = str(section.get("title") or f"章节 {idx}").strip()[:80] or f"章节 {idx}"
+                    media_group = slot_media_assets.get(slot) or {}
+                    assigned_source_ids = [str(item or "").strip() for item in (slot_source_image_ids.get(slot) or [])]
+                    slot_source_images: list[dict] = []
+                    valid_source_ids: list[str] = []
+                    for image_id in assigned_source_ids:
+                        source_item = source_image_index.get(image_id)
+                        if not source_item:
+                            continue
+                        slot_source_images.append(source_item)
+                        valid_source_ids.append(image_id)
+                    slot_source_id_map[slot] = valid_source_ids
+                    slot_block = _digest_media_section_assets_html(
+                        poster_assets=list(media_group.get("images") or []),
+                        podcast_assets=list(media_group.get("audios") or []),
+                        source_images=slot_source_images,
+                        heading=f"{title} · 多媒体",
+                        class_name="benoss-slot-media",
+                    )
+                    if slot_block:
+                        slot_media_html[slot] = slot_block
+
+                blog_with_slots, used_slots = _inject_slot_media_markers(
+                    iter_html,
+                    slot_media_html=slot_media_html,
+                )
+                used_source_ids: set[str] = set()
+                for slot in used_slots:
+                    used_source_ids.update(slot_source_id_map.get(slot) or [])
+
+                leftover_posters = [asset for asset in poster_assets if _asset_slot_name(asset) not in used_slots]
+                leftover_podcasts = [asset for asset in podcast_assets if _asset_slot_name(asset) not in used_slots]
+                leftover_source_images = [
+                    item
+                    for item in source_images
+                    if str(item.get("id") or "").strip() and str(item.get("id") or "").strip() not in used_source_ids
+                ]
+                if leftover_posters or leftover_podcasts or leftover_source_images:
+                    leftover_html = _digest_media_section_assets_html(
+                        poster_assets=leftover_posters,
+                        podcast_assets=leftover_podcasts,
+                        source_images=leftover_source_images,
+                        heading="补充媒体",
+                        class_name="benoss-media-appendix",
+                    )
+                    if leftover_html:
+                        injected = blog_with_slots
+                        if "<html" in injected.lower():
+                            for tag in ("main", "article", "body"):
+                                updated = _inject_html_after_opening_tag(injected, leftover_html, tag)
+                                if updated != injected:
+                                    injected = updated
+                                    break
+                            else:
+                                for tag in ("body", "html"):
+                                    updated = _inject_html_before_closing_tag(injected, leftover_html, tag)
+                                    if updated != injected:
+                                        injected = updated
+                                        break
+                        else:
+                            injected = f"{leftover_html}\n{injected}"
+                        blog_with_slots = injected
+
+                final_html = _wrap_blog_html_document(
+                    blog_with_slots,
+                    title=title_map["blog_html"],
+                    poster_asset_id=primary_poster_id if not slot_media_html else None,
+                    podcast_asset_id=primary_podcast_id if not slot_media_html else None,
+                )
+                model_label = f"{writer_settings.get('model')} + collab"
+                if (
+                    planner_settings
+                    and planner_settings.get("model")
+                    and planner_settings.get("model") != writer_settings.get("model")
+                ):
+                    model_label = f"{writer_settings.get('model')} + planner"
+                blog_asset = _save_generated_asset(
+                    user=owner,
+                    kind="blog_html",
+                    title=title_map["blog_html"],
+                    provider=str(writer_settings.get("provider") or "ai"),
+                    model=str(model_label or "collab")[:128],
+                    content_type="text/html; charset=utf-8",
+                    ext=".html",
+                    data=final_html.encode("utf-8"),
+                    filters=dict(base_filters, pipeline="collab"),
+                    visibility="public",
+                    source_day=day_value,
+                    is_daily_digest=True,
+                )
+            except Exception as exc:
+                errors.append(f"blog_html_collab: {exc}")
+                try:
+                    blog_asset, _ = _generate_blog_asset(
+                        user=owner,
+                        records_text=records_text,
+                        image_urls=image_urls,
+                        filters=base_filters,
+                        title=title_map["blog_html"],
+                        visibility="public",
+                        poster_asset_id=primary_poster_id,
+                        podcast_asset_id=primary_podcast_id,
+                        source_day=day_value,
+                        is_daily_digest=True,
+                    )
+                except RuntimeError as fallback_exc:
+                    errors.append(f"blog_html_fallback: {fallback_exc}")
+                except Exception as fallback_exc:
+                    errors.append(f"blog_html_fallback: {fallback_exc}")
+
+    primary_poster = poster_assets[0] if poster_assets else None
+    primary_podcast = podcast_assets[0] if podcast_assets else None
+    job.blog_asset_id = blog_asset.id if blog_asset else None
+    job.poster_asset_id = primary_poster.id if primary_poster else None
+    job.podcast_asset_id = primary_podcast.id if primary_podcast else None
+
+    needs_poster = _digest_collab_max_image_assets() > 0
+    needs_podcast = _digest_collab_max_audio_assets() > 0
+    poster_ready = bool(primary_poster or not needs_poster)
+    podcast_ready = bool(primary_podcast or not needs_podcast)
+
+    if blog_asset and poster_ready and podcast_ready:
         job.status = "ready"
-    elif "blog_html" in assets:
+    elif blog_asset:
         job.status = "partial"
     else:
         job.status = "failed"
@@ -3408,7 +4261,15 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
     db.session.add(job)
     db.session.commit()
 
-    ordered_assets = [assets[kind] for kind in ("blog_html", "podcast_audio", "poster_image") if kind in assets]
+    ordered_assets: list[GeneratedAsset] = []
+    seen_ids: set[int] = set()
+    for item in [blog_asset] + podcast_assets + poster_assets:
+        if not item:
+            continue
+        if int(item.id) in seen_ids:
+            continue
+        seen_ids.add(int(item.id))
+        ordered_assets.append(item)
     return {
         "day": day_value.isoformat(),
         "timezone": tz_name,
@@ -4219,7 +5080,7 @@ def board_day_records(day: str):
 @login_required()
 def echoes_feed():
     user = g.get("user")
-    scope = str(request.args.get("scope") or "public").strip().lower()
+    scope = str(request.args.get("scope") or "with_mine").strip().lower()
     if scope not in {"public", "with_mine"}:
         return jsonify({"error": "invalid scope"}), 400
 

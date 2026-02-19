@@ -4,7 +4,7 @@
   <div>
     <p class="muted">Timeline</p>
     <h1>Echoes 记录流</h1>
-    <p class="muted">统一浏览学习记录与生成资产，支持范围/类型筛选和连续加载。</p>
+    <p class="muted">统一浏览学习记录与生成资产，默认展示公开与我的私密，支持类型筛选和连续加载。</p>
   </div>
 </section>
 
@@ -21,10 +21,6 @@
   </div>
 
   <div class="echoes-toolbar">
-    <div id="echoes-scope-chips" class="echoes-type-chips" role="group" aria-label="内容范围筛选">
-      <button class="echoes-chip active" type="button" data-scope="with_mine" aria-pressed="true">公开 + 我的私密</button>
-      <button class="echoes-chip" type="button" data-scope="public" aria-pressed="false">仅公开</button>
-    </div>
     <div id="echoes-type-chips" class="echoes-type-chips" role="group" aria-label="文件类型筛选">
       <button class="echoes-chip active" type="button" data-file-type="" aria-pressed="true">全部</button>
       <button class="echoes-chip" type="button" data-file-type="text" aria-pressed="false">文本</button>
@@ -39,10 +35,6 @@
       <button class="echoes-chip" type="button" data-file-type="file" aria-pressed="false">文件</button>
     </div>
     <div class="echoes-toolbar-actions">
-      <div class="echoes-density-switch" role="group" aria-label="卡片密度">
-        <button id="echoes-density-cozy" type="button" class="secondary" data-echoes-density="cozy" aria-pressed="true">舒展</button>
-        <button id="echoes-density-compact" type="button" class="secondary" data-echoes-density="compact" aria-pressed="false">紧凑</button>
-      </div>
       <button id="echoes-refresh-btn" class="secondary" type="button">刷新</button>
     </div>
   </div>

@@ -36,10 +36,6 @@
     "edit-asset": editGeneratedAsset,
     "delete-asset": deleteGeneratedAsset,
   };
-  const echoScopeLabels = Object.freeze({
-    with_mine: "公开 + 我的私密",
-    public: "仅公开",
-  });
   const echoFileTypeLabels = Object.freeze({
     text: "文本",
     web: "网页",
@@ -92,24 +88,19 @@
     visibleCount: 0,
     observer: null,
     pageSize: 24,
-    density: "cozy",
   };
   const homePanelStorageKey = "benoss.home.active_panel";
-  const echoesDensityStorageKey = "benoss.echoes.density";
   const noticeReaderStorageKey = "benoss.notice.reader";
   const validVisibilityValues = new Set(["public", "private"]);
-  const validEchoesDensity = new Set(["cozy", "compact"]);
   const validEchoesScopes = new Set(["public", "with_mine"]);
   const defaultNoticeReaderPrefs = Object.freeze({
     font: "md",
-    width: "normal",
     media: "expand",
     family: "sans",
     context: "show",
     translateLang: "en",
   });
   const validNoticeFontValues = new Set(["md", "lg"]);
-  const validNoticeWidthValues = new Set(["normal", "wide"]);
   const validNoticeMediaValues = new Set(["expand", "collapse"]);
   const validNoticeFamilyValues = new Set(["sans", "serif", "wenkai", "mono"]);
   const validNoticeContextValues = new Set(["hide", "show"]);
@@ -510,54 +501,9 @@
     revealBlocks.forEach((block) => observer.observe(block));
   }
 
-  function normalizeEchoesDensity(value) {
-    const normalized = String(value || "").trim().toLowerCase();
-    return validEchoesDensity.has(normalized) ? normalized : "cozy";
-  }
-
   function normalizeEchoesScope(value) {
     const normalized = String(value || "").trim().toLowerCase();
     return validEchoesScopes.has(normalized) ? normalized : "with_mine";
-  }
-
-  function readStoredEchoesDensity() {
-    try {
-      return normalizeEchoesDensity(window.localStorage.getItem(echoesDensityStorageKey));
-    } catch (_error) {
-      return "cozy";
-    }
-  }
-
-  function saveEchoesDensity(value) {
-    try {
-      window.localStorage.setItem(echoesDensityStorageKey, normalizeEchoesDensity(value));
-    } catch (_error) {
-      // Ignore storage failures.
-    }
-  }
-
-  function applyEchoesDensity(value, opts = {}) {
-    const mode = normalizeEchoesDensity(value);
-    echoesState.density = mode;
-
-    const grid = qs("#echoes-grid");
-    if (grid) {
-      grid.classList.toggle("is-compact", mode === "compact");
-    }
-
-    const buttons = document.querySelectorAll("[data-echoes-density]");
-    buttons.forEach((button) => {
-      if (!(button instanceof HTMLButtonElement)) {
-        return;
-      }
-      const isActive = normalizeEchoesDensity(button.dataset.echoesDensity) === mode;
-      button.classList.toggle("is-active", isActive);
-      button.setAttribute("aria-pressed", isActive ? "true" : "false");
-    });
-
-    if (opts.persist !== false) {
-      saveEchoesDensity(mode);
-    }
   }
 
   function normalizeNoticeReaderPrefs(value) {
@@ -565,9 +511,6 @@
     const font = validNoticeFontValues.has(String(raw.font || "").trim().toLowerCase())
       ? String(raw.font).trim().toLowerCase()
       : defaultNoticeReaderPrefs.font;
-    const width = validNoticeWidthValues.has(String(raw.width || "").trim().toLowerCase())
-      ? String(raw.width).trim().toLowerCase()
-      : defaultNoticeReaderPrefs.width;
     const media = validNoticeMediaValues.has(String(raw.media || "").trim().toLowerCase())
       ? String(raw.media).trim().toLowerCase()
       : defaultNoticeReaderPrefs.media;
@@ -580,7 +523,7 @@
     const translateLang = validNoticeTranslateLangValues.has(String(raw.translateLang || "").trim())
       ? String(raw.translateLang).trim()
       : defaultNoticeReaderPrefs.translateLang;
-    return { font, width, media, family, context, translateLang };
+    return { font, media, family, context, translateLang };
   }
 
   function readStoredNoticeReaderPrefs() {
@@ -607,13 +550,15 @@
 
   function applyNoticeReaderPrefs(value, opts = {}) {
     noticeReaderPrefs = normalizeNoticeReaderPrefs(value);
-    const effectiveContext = isNoticeNarrowViewport() ? "hide" : noticeReaderPrefs.context;
+    const narrowViewport = isNoticeNarrowViewport();
+    const effectiveContext = narrowViewport ? "hide" : noticeReaderPrefs.context;
+    const effectiveWidth = narrowViewport ? "wide" : "normal";
 
     const panel = qs("#notice-render-panel");
     const html = qs("#notice-render-html");
     if (panel && html) {
       panel.classList.toggle("notice-font-lg", noticeReaderPrefs.font === "lg");
-      panel.classList.toggle("notice-width-wide", noticeReaderPrefs.width === "wide");
+      panel.classList.toggle("notice-width-wide", effectiveWidth === "wide");
       panel.classList.toggle("notice-media-collapsed", noticeReaderPrefs.media === "collapse");
       panel.classList.toggle("notice-family-serif", noticeReaderPrefs.family === "serif");
       panel.classList.toggle("notice-family-wenkai", noticeReaderPrefs.family === "wenkai");
@@ -627,16 +572,6 @@
         return;
       }
       const active = String(button.dataset.noticeFont || "") === noticeReaderPrefs.font;
-      button.classList.toggle("is-active", active);
-      button.setAttribute("aria-pressed", active ? "true" : "false");
-    });
-
-    const widthButtons = document.querySelectorAll("[data-notice-width]");
-    widthButtons.forEach((button) => {
-      if (!(button instanceof HTMLButtonElement)) {
-        return;
-      }
-      const active = String(button.dataset.noticeWidth || "") === noticeReaderPrefs.width;
       button.classList.toggle("is-active", active);
       button.setAttribute("aria-pressed", active ? "true" : "false");
     });
@@ -669,7 +604,7 @@
       const active = String(button.dataset.noticeContext || "") === effectiveContext;
       button.classList.toggle("is-active", active);
       button.setAttribute("aria-pressed", active ? "true" : "false");
-      button.disabled = isNoticeNarrowViewport();
+      button.disabled = narrowViewport;
     });
 
     const langSelect = qs("#notice-translate-lang");
@@ -3311,8 +3246,7 @@
       return;
     }
     const typeLabel = echoesState.fileType ? (echoFileTypeLabels[echoesState.fileType] || "全部") : "全部";
-    const scopeLabel = echoScopeLabels[echoesState.scope] || "公开 + 我的私密";
-    countEl.textContent = `已显示 ${echoesState.visibleCount} 条 · ${typeLabel} · ${scopeLabel}`;
+    countEl.textContent = `已显示 ${echoesState.visibleCount} 条 · ${typeLabel} · 含我的私密`;
   }
 
   function setActiveEchoesScope(scope) {
@@ -3674,7 +3608,6 @@
     const scopeWrap = qs("#echoes-scope-chips");
     const chipsWrap = qs("#echoes-type-chips");
     const refreshBtn = qs("#echoes-refresh-btn");
-    const densityWrap = qs(".echoes-density-switch");
 
     if (scopeWrap) {
       scopeWrap.addEventListener("click", (event) => {
@@ -3716,23 +3649,6 @@
       });
     }
 
-    if (densityWrap) {
-      densityWrap.addEventListener("click", (event) => {
-        if (!(event.target instanceof Element)) {
-          return;
-        }
-        const button = event.target.closest("button[data-echoes-density]");
-        if (!button) {
-          return;
-        }
-        const nextMode = normalizeEchoesDensity(button.dataset.echoesDensity || "");
-        if (nextMode === echoesState.density) {
-          return;
-        }
-        applyEchoesDensity(nextMode);
-      });
-    }
-
     if (refreshBtn) {
       refreshBtn.addEventListener("click", () => {
         loadEchoes({ reset: true }).catch((error) => window.console.error(error));
@@ -3741,7 +3657,6 @@
   }
 
   async function initEchoes() {
-    applyEchoesDensity(readStoredEchoesDensity(), { persist: false });
     setActiveEchoesScope(echoesState.scope);
     setActiveEchoesType(echoesState.fileType);
     setEchoesCount();
@@ -3927,19 +3842,6 @@
           {
             ...noticeReaderPrefs,
             font: nextFont,
-          },
-          { persist: true },
-        );
-        return;
-      }
-
-      const widthBtn = event.target.closest("button[data-notice-width]");
-      if (widthBtn) {
-        const nextWidth = String(widthBtn.getAttribute("data-notice-width") || "");
-        applyNoticeReaderPrefs(
-          {
-            ...noticeReaderPrefs,
-            width: nextWidth,
           },
           { persist: true },
         );
