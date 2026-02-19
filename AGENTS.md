@@ -24,7 +24,7 @@ Benoss 是一个 Flask 单体应用，核心能力：
 - 用户发布学习记录（文本或文件）
 - 记录可打标签、设 public/private、评论互动
 - Notice 页面按筛选渲染整页内容
-- 系统可按天自动生成公开日报资产（HTML 博客、播客音频、海报图片）
+- 系统可按天自动生成公开日报资产（HTML 博客、播客音频、海报图片），支持多 Agent 协作与多媒体分节注入
 - 本地保存每日归档并构建向量索引，支持首页 RAG 问答
 
 架构风格：
@@ -163,6 +163,7 @@ data/
 - `status`（`running` | `ready` | `partial` | `failed`）
 - `started_at`, `finished_at`, `error`
 - `blog_asset_id`, `podcast_asset_id`, `poster_asset_id`（FK -> `GeneratedAsset.id`）
+- 说明：这 3 个字段保存主资产 ID（通常是首个博客/音频/海报）；同日其他协作媒体资产仍保存在 `GeneratedAsset`，通过 `source_day + is_daily_digest` 关联
 - `created_at`, `updated_at`
 
 ### 索引（模型中显式定义）
@@ -184,6 +185,7 @@ data/
 - `User 1:N Comment`
 - `User 1:N GeneratedAsset`
 - `DailyDigestJob 1:0..3 GeneratedAsset`
+- 业务补充：同一 `source_day` 可以有多条 `podcast_audio/poster_image`；`DailyDigestJob` 仅直连主资产
 
 ---
 
@@ -284,6 +286,15 @@ AI provider 别名归一化：
 - 向量：`AI_EMBEDDING_PROVIDER`
 - TTS：`AI_TTS_PROVIDER`
 - 图片：`AI_IMAGE_PROVIDER`
+
+日报协作关键配置：
+
+- `DIGEST_COLLAB_ENABLED`：是否启用 Planner/Writer/Critic 协作链路
+- `DIGEST_COLLAB_MAX_SECTIONS`：Planner 最多拆分章节数
+- `DIGEST_COLLAB_MAX_IMAGE_ASSETS`：单次日报最多生成图片资产数
+- `DIGEST_COLLAB_MAX_SOURCE_IMAGES`：单次日报最多注入原始记录图片数
+- `DIGEST_COLLAB_MAX_AUDIO_ASSETS`：单次日报最多生成音频资产数
+- `DIGEST_COLLAB_REVIEW_ROUNDS`：Writer/Critic 最大审稿轮次
 
 归档与保留关键配置：
 
@@ -447,6 +458,10 @@ Flask CLI 命令：
 - `POST /api/vector/rebuild`
 - `POST /api/vector/chat`
 
+补充：
+
+- `GET /api/echoes` 默认 `scope=with_mine`（公开 + 自己私密）；可传 `scope=public` 仅看公开。
+
 ---
 
 ## 10. 关键业务流程（必须理解）
@@ -532,14 +547,20 @@ Flask CLI 命令：
 AI 生成链路：
 
 1. 先构造记录上下文（优先从归档 `records[].text`）
-2. 博客：`_generate_blog_asset()` -> `chat/completions` -> 包装 HTML 文档
-3. 播客：`_generate_podcast_asset()` -> 先生成脚本再走 `/audio/speech`
-4. 海报：`_generate_poster_asset()` -> 先生成图像提示词再走 `/images/generations`
-5. TTS/图片会经 `_capability_settings_candidates()` 做候选 provider/model 路由（分流 provider -> 备用 provider）
-6. 若外部能力不可用：
+2. 协作模式（`DIGEST_COLLAB_ENABLED=1`）：
+   - Planner：`_build_digest_collab_plan()` 产出章节计划（slot、标题、focus、image_count/audio_count）
+   - Writer：`_build_collab_blog_html()` 按计划输出含 `<!-- BENOSS_SLOT:slot-id -->` 的 HTML
+   - Critic：`_collab_blog_review_feedback()` + `_collab_blog_rewrite()` 迭代审稿
+3. 原图注入：`_source_images_from_records()` 提取记录原图，`_assign_source_images_to_slots()` 分配到 slot
+4. 媒体生成：
+   - 播客：`_generate_podcast_asset()` -> 先生成脚本再走 `/audio/speech`
+   - 海报：`_generate_poster_asset()` -> 先生成图像提示词再走 `/images/generations`
+5. slot 注入：`_inject_slot_media_markers()` 把每个 slot 的原图/海报/音频插入博客对应章节
+6. TTS/图片会经 `_capability_settings_candidates()` 做候选 provider/model 路由（分流 provider -> 备用 provider）
+7. 若外部能力不可用：
    - `AI_TTS_FALLBACK_LOCAL=1` 时，播客音频降级到本机 `say`（通常输出 `.aiff`）
    - `AI_IMAGE_FALLBACK_LOCAL=1` 时，海报降级为本地 SVG
-7. `_save_generated_asset()` 保存文件与数据库元数据
+8. `_save_generated_asset()` 保存文件与数据库元数据
 
 ---
 
@@ -553,11 +574,12 @@ AI 生成链路：
 2. 查询该本地日窗口内公开记录（按 timezone 转换为 UTC 边界）
 3. 先执行归档保留策略清理（会删除过期 `daily-archive/*.json` 与 `_objects/<day>/`）
 4. 保存当日公开记录归档；若归档有变化或清理删了历史天，会按需重建向量索引（`_archive_and_index_records`）
-5. 准备 AI 输入文本和图片附件 URL
+5. 准备 AI 输入文本、图片附件 URL、可注入原图列表
 6. 检查是否已有同日 `ready` 资产（`force=False` 时复用）
-7. 分别生成 `blog_html/podcast_audio/poster_image`
-8. 根据成功数把任务状态设为 `ready/partial/failed`
-9. 写回资产关联 ID 和错误信息
+7. 协作模式下先生成章节计划，再按章节生成可变数量的 `podcast_audio/poster_image`
+8. Writer/Critic 产出博客并通过 slot 注入媒体；未命中的媒体会放到“补充媒体”区块
+9. 写回主资产关联 ID（首个 blog/podcast/poster）与错误信息
+10. 按“博客是否成功 + 必需媒体能力是否命中（图片/音频各至少一条，或该能力上限为 0）”计算 `ready/partial/failed`
 
 无公开记录时也会执行一次保留清理；若清理删除了历史天且 `VECTOR_AUTO_REBUILD=1`，仍会触发向量重建。
 
@@ -671,6 +693,8 @@ benoss-sync pull --username <user> --output ./pulled_records
 - 失败必须返回可诊断错误，不吞异常
 - 长文本必须走截断策略（总长度与单条长度双限制）
 - 图片附件要尊重 `AI_NOTICE_ATTACH_IMAGES` 和数量上限
+- 协作博客要保留并消费 slot 标记：`<!-- BENOSS_SLOT:slot-id -->`
+- 原图分配要保持“每张原图最多一个 slot”与每 slot 上限约束
 
 ### 12.5 改向量流程时
 
@@ -694,8 +718,15 @@ benoss-sync pull --username <user> --output ./pulled_records
   - 先检查 `AI_CHAT_PROVIDER` 与该 provider 的 `*_TRANSCRIBE_MODEL`（如 `OPENAI_TRANSCRIBE_MODEL`）
   - 若 provider 不支持转写，可把该 `*_TRANSCRIBE_MODEL` 设为 `unsupported`，系统会跳过音视频转写并保留文件本体归档
 - Home 没看到手动生成资产：
-  - Home `today_assets` 仅展示 `public + is_daily_digest=true + source_day=今天` 的资产
+  - Home `today_assets` 仅展示 `public + is_daily_digest=true + source_day=digest_day（通常是昨天）` 的资产
   - 手动脚本默认常用 `visibility=private`，不会出现在 Home 卡片
+- 原图没有插进博客段落：
+  - 检查 `DIGEST_COLLAB_ENABLED` 是否开启
+  - 检查 `DIGEST_COLLAB_MAX_SOURCE_IMAGES` 是否 > 0
+  - 检查 Writer 输出是否保留了 `<!-- BENOSS_SLOT:slot-id -->` 标记（标记缺失会回退到“补充媒体”）
+- 想生成多张图/多段音频但只有 1 条：
+  - 检查 `DIGEST_COLLAB_MAX_IMAGE_ASSETS` / `DIGEST_COLLAB_MAX_AUDIO_ASSETS`
+  - 检查 Planner 输出章节 `image_count/audio_count` 是否被全局上限裁剪
 - `content unavailable` / `asset unavailable`：
   - 检查 `oss_key`、OSS 凭据或本地 `data/oss-local` 文件
 - 直传总是失败并回退服务端上传：
@@ -740,5 +771,7 @@ benoss-sync pull --username <user> --output ./pulled_records
 - 归档文件本体默认保存到 `data/daily-archive/_objects`（`ARCHIVE_STORE_FILE_BLOB=1`）
 - 归档是事实来源之一，向量索引由归档构建，不直接扫数据库
 - 非文本归档解析跟随 `AI_CHAT_PROVIDER`，音视频转写模型按 provider 的 `*_TRANSCRIBE_MODEL` 读取
+- 日报协作默认开启（`DIGEST_COLLAB_ENABLED=1`），可按章节生成多图多音频
+- 原图注入由 `DIGEST_COLLAB_MAX_SOURCE_IMAGES` 控制上限；超出部分进入“补充媒体”
 - Home 页面是自动化入口：会触发归档、向量状态检查、可选日报自动补齐
 - Home 的 `today_assets` 不等于“今天新生成的所有资产”，只展示公开且标记为日报产物的资产

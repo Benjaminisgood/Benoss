@@ -1,6 +1,6 @@
 # Benoss
 
-Benoss 是一个“学习记录流”应用：用户可以发布文本或文件记录，按标签筛选、评论互动；Notice 页面用于筛选并拼接整页内容，系统会在自然日结束后，自动基于上一日公开内容生成博客、播客和海报并展示到 Home。
+Benoss 是一个“学习记录流”应用：用户可以发布文本或文件记录，按标签筛选、评论互动；Notice 页面用于筛选并拼接整页内容，系统会在自然日结束后自动基于上一日公开内容生成日报资产（博客/播客/海报），并支持多 Agent 协作、多图多音频与原图自动插段落。
 
 项目当前是一个完整的 Flask 单体应用（Web 页面 + API + 数据库 + 对象存储 + AI 调用）。
 
@@ -16,12 +16,14 @@ Benoss 是一个“学习记录流”应用：用户可以发布文本或文件�
 - 看板视图：
 - `Home`：今天公开记录概览 + 快速发布 + 已闭合日自动生成资产；
   - `Board`：按用户 × 日期统计热力表 以及记录查看；
-  - `Echoes`：公开内容流；
+  - `Echoes`：记录流（默认公开 + 自己私密）；
   - `Notice`：按筛选条件拼接整页内容（不含页面内 AI 生成入口）。
 - 资产生成（可选）：
   - AI 生成博客网页（html）；
   - AI 生成播客音频（本地脚本 + TTS，支持对话/演讲/访谈/播报风格）；
-  - AI 生成海报图片（png，失败时可本地兜底为 svg）。
+  - AI 生成海报图片（png，失败时可本地兜底为 svg）；
+  - 日报协作链路（Planner -> Writer -> Critic）可按章节生成多段音频与多张配图；
+  - 可自动抽取记录原图并分配到对应章节，注入博客对应段落。
   - 自动按天保存本地归档（JSON），向量库采用本地持久化 + embedding 增量 upsert。
   - Home 页内置本地向量问答机器人（RAG 检索 + 可选 AI 回答）。
 
@@ -159,6 +161,7 @@ data/
 - `status`：`running/ready/partial/failed`。
 - `started_at`, `finished_at`, `error`：任务执行信息。
 - `blog_asset_id`, `podcast_asset_id`, `poster_asset_id`：关联 `GeneratedAsset`。
+- 说明：以上三个 `*_asset_id` 保存“主资产”（首个博客/播客/海报）；协作模式下其他同日资产仍保存在 `GeneratedAsset`，通过 `source_day + is_daily_digest` 查询。
 
 ### 4.7 模型关系图（文字版）
 
@@ -168,6 +171,7 @@ data/
 - `User 1 -> N Comment`
 - `User 1 -> N GeneratedAsset`
 - `DailyDigestJob 1 -> 0..3 GeneratedAsset`
+- 业务补充：同一 `source_day` 可能存在多条 `podcast_audio/poster_image`，`DailyDigestJob` 仅直连其中主资产。
 
 ## 5. 后端请求是怎么跑起来的
 
@@ -311,12 +315,13 @@ data/
 - 用 SQL 聚合 `count(record.id)`；
 - 前端再渲染成热力表（`app/static/js/site.js`）。
 
-### 7.2 Echoes（公开流）
+### 7.2 Echoes（记录流）
 
 入口：`GET /api/echoes`
 
 实现点：
-- 查公开记录 + 公开 AI 资产；
+- 默认查公开记录 + 自己私密记录，以及公开资产 + 自己私密资产（`scope=with_mine`）；
+- 传 `scope=public` 时仅查公开记录与公开资产；
 - 支持分页；
 - 支持按 `file_type` 过滤（`text/web/image/video/audio/log/database/archive/document/file`）；
 - 返回内容 payload，可直接渲染图片/音频/视频/文件链接；
@@ -337,10 +342,14 @@ data/
 - `_records_for_ai_prompt`：构建 AI 上下文，优先注入记录全文；文本文件会尝试读取并提取正文（受长度/字节预算限制）。
 - `save_daily_archive`：将当天记录完整写入本地 JSON 归档（含文本全文、文件元信息、可提取文本）；该归档落在 `LOCAL_DAILY_ARCHIVE_DIR`，不是数据库表。
 - `_capability_settings_candidates`：按“能力 provider -> 备用 provider”选择候选模型。
+- `_build_digest_collab_plan`：Planner Agent 先把日报拆为多章节（每章可声明图片/音频数量）。
+- `_build_collab_blog_html` + `_collab_blog_review_feedback` + `_collab_blog_rewrite`：Writer/Critic 迭代生成博客 HTML。
+- `_assign_source_images_to_slots`：把原始记录图片分配到章节 slot（支持 AI 分配 + 回退策略）。
+- `_inject_slot_media_markers`：把 `<!-- BENOSS_SLOT:slot-id -->` 标记替换成章节媒体块。
 - `_generate_podcast_asset`：先生成多风格播客脚本，再调用 TTS；外部 TTS 全失败时可本机 `say` 兜底（`audio/aiff`）。
 - `_ai_generate_poster_image`：调用 `/images/generations`；外部图像接口全失败时可本地 SVG 兜底。
 - `_save_generated_asset`：将 AI 结果写入对象存储 + `GeneratedAsset` 表。
-- `build_daily_public_digest`：按日汇总公开内容，产出博客/播客/海报并归档。
+- `build_daily_public_digest`：按日汇总公开内容；协作模式可生成“单博客 + 多播客 + 多海报 + 原图插段落”，传统模式走单次生成。
 
 ## 8. 对象存储设计（OSS 与本地兜底）
 
@@ -411,6 +420,7 @@ Echoes 的 `entries[]` 额外字段：
   - 快速发布：`POST /api/push`
   - 查看系统自动生成的上一日博客/播客/海报
   - `today_assets` 仅包含：`visibility=public` 且 `is_daily_digest=true` 且 `source_day=已闭合日` 的资产
+  - 协作模式下 `today_assets` 可能包含同一天的多条 `podcast_audio/poster_image`（博客仍为主文档）
   - 手动测试生成的 `private` 资产不会出现在 Home 卡片中
   - 本地向量问答：`POST /api/vector/chat`
   - 重建向量索引：`POST /api/vector/rebuild`
@@ -418,7 +428,7 @@ Echoes 的 `entries[]` 额外字段：
   - 主表：`GET /api/board`
   - 点击行/列/单元格触发对应详情 API
 - Echoes 页面：
-  - `GET /api/echoes`（记录 + 公开资产）
+  - `GET /api/echoes`（默认记录 + 资产均含“公开 + 自己私密”）
 - Notice 页面：
   - `GET /api/users` 填充用户筛选；
   - `GET /api/notice/render` 直接渲染。
@@ -470,12 +480,13 @@ Echoes 的 `entries[]` 额外字段：
   - 读取 `/api/board` 并渲染热力矩阵；
   - 天数配置已从页面输入移到管理台运行时配置。
 - Echoes：
-  - 按范围/类型筛选；
+  - 按类型筛选（页面默认包含自己的私密）；
   - IntersectionObserver 无限滚动加载；
   - 空状态、加载态、结束态统一反馈。
 - Notice：
   - 拉取用户筛选并请求 `/api/notice/render`；
-  - 阅读工具栏（字号、宽度、字体、媒体折叠、翻译、回顶）统一状态控制。
+  - 阅读工具栏（字号、字体、媒体折叠、翻译、回顶）统一状态控制；
+  - 宽度策略自动化：窄屏宽版，桌面标准宽度。
 
 `admin.js` 结构：
 - 拉取配置：`GET /api/admin/settings`，按分组动态渲染字段（string/int/bool/choice/text）。
@@ -647,6 +658,12 @@ benoss-sync pull --username alice --content-source full --output ./pulled_record
 - `VECTOR_EMBEDDING_BATCH_SIZE`
 - `VECTOR_EMBEDDING_MAX_INPUT_CHARS`
 - `DIGEST_TIMEZONE`（默认 `Asia/Shanghai`，用于“每日结束”切分日期）
+- `DIGEST_COLLAB_ENABLED`（日报是否启用 Planner/Writer/Critic 协作链路）
+- `DIGEST_COLLAB_MAX_SECTIONS`（单次日报最多章节数）
+- `DIGEST_COLLAB_MAX_IMAGE_ASSETS`（单次日报最多生成图片资产数）
+- `DIGEST_COLLAB_MAX_SOURCE_IMAGES`（单次日报最多注入原始记录图片数）
+- `DIGEST_COLLAB_MAX_AUDIO_ASSETS`（单次日报最多生成音频资产数）
+- `DIGEST_COLLAB_REVIEW_ROUNDS`（Writer/Critic 最大审稿轮次）
 - `ARCHIVE_RETENTION_DAYS`（默认 `7`，`0` 表示永久保留）
 - `ARCHIVE_STORE_FILE_BLOB`（是否在本地归档保存文件本体副本）
 
@@ -665,6 +682,7 @@ benoss-sync pull --username alice --content-source full --output ./pulled_record
 - 聊天（博客正文/播客脚本/海报提示词）只走 `AI_CHAT_PROVIDER`。
 - 向量 embedding 只走 `AI_EMBEDDING_PROVIDER`（读取该 provider 的 `*_EMBEDDING_MODEL`）。
 - TTS / 图片先走 `AI_TTS_PROVIDER` / `AI_IMAGE_PROVIDER`，失败再尝试备用 provider。
+- 日报协作链路（Planner/Writer/Critic + 原图分配）也走聊天能力，即 `AI_CHAT_PROVIDER`。
 - 若 `AI_TTS_FALLBACK_LOCAL=1`，外部 TTS 全失败时自动降级到本机 `say`（产物通常为 `.aiff`）。
 - 若 `AI_IMAGE_FALLBACK_LOCAL=1`，外部图像全失败时自动降级到本地 SVG 海报。
 
