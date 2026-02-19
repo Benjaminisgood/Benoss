@@ -4,15 +4,12 @@
   <h2>学习记录 Board</h2>
   <form id="board-filter-form" class="inline-form">
     <label>
-      天数
-      <input type="number" name="days" value="{{ board_default_days or 7 }}" min="1" max="30">
-    </label>
-    <label>
       标签
       <input type="text" name="tag" placeholder="可选，按标签筛选">
     </label>
     <button type="submit">刷新 Board</button>
   </form>
+  <p class="muted">展示天数由管理台运行时配置 <code>BOARD_DEFAULT_DAYS</code> 统一控制。</p>
 </section>
 
 <section class="board-layout" data-reveal="80">

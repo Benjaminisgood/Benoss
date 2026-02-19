@@ -5,7 +5,7 @@ from flask import Blueprint, current_app, flash, g, redirect, render_template, r
 
 from ..extensions import db
 from ..models import User
-from ..utils.runtime_settings import get_setting_int, get_setting_str
+from ..utils.runtime_settings import get_setting_str
 from ..utils.session_auth import login_required, login_user, logout_user, safe_next_url
 
 
@@ -21,9 +21,6 @@ def home():
 @site_bp.route("/board")
 @login_required()
 def board():
-    config_default = int(current_app.config.get("BOARD_DEFAULT_DAYS") or 7)
-    board_default_days = get_setting_int("BOARD_DEFAULT_DAYS", default=config_default)
-    board_default_days = min(max(board_default_days, 1), 30)
     configured_timezone = get_setting_str(
         "DIGEST_TIMEZONE",
         default=str(current_app.config.get("DIGEST_TIMEZONE") or "Asia/Shanghai"),
@@ -39,7 +36,6 @@ def board():
         "board.html",
         page="board",
         title="Board",
-        board_default_days=board_default_days,
         board_digest_day=board_digest_day,
         digest_timezone=digest_timezone,
     )

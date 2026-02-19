@@ -22,6 +22,8 @@
   const linkPattern = /(?:https?:\/\/|www\.)[^\s<>"']+/gi;
   const linkTrailingChars = new Set([".", ",", ";", ":", "!", "?", ")", "]", "}", "，", "。", "；", "：", "！", "？", "）", "】", "》", "、"]);
   const autoTagPattern = /(?:^|[^0-9A-Za-z_:/#])#([0-9A-Za-z_\-\u3400-\u9fff]{1,40})/g;
+  const autoTagCommittedPattern = /(?:^|[^0-9A-Za-z_:/#])#([0-9A-Za-z_\-\u3400-\u9fff]{1,40})(?=[\s,.;:!?，。；：！？、)\]】}》])/g;
+  const autoTagCommitBoundaryPattern = /[\s,.;:!?，。；：！？、)\]】}》]$/;
   const recordActionHandlers = {
     "view-record": openRecordDialog,
     "edit-record": editRecord,
@@ -251,12 +253,14 @@
     return normalizeTagList(text.split(","));
   }
 
-  function extractAutoTagsFromText(raw) {
+  function extractAutoTagsFromText(raw, opts = {}) {
     const source = String(raw || "");
     if (!source) {
       return [];
     }
-    const pattern = new RegExp(autoTagPattern.source, "g");
+    const committedOnly = opts.committedOnly !== false;
+    const sourcePattern = committedOnly ? autoTagCommittedPattern : autoTagPattern;
+    const pattern = new RegExp(sourcePattern.source, "g");
     const tags = [];
     let match = pattern.exec(source);
     while (match) {
@@ -267,6 +271,32 @@
       match = pattern.exec(source);
     }
     return normalizeTagList(tags);
+  }
+
+  function shouldSyncTagsOnTextInput(event, textInput, isComposing = false) {
+    if (!(textInput instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+    if (isComposing || event?.isComposing) {
+      return false;
+    }
+    const inputType = String(event?.inputType || "");
+    if (inputType.startsWith("insertComposition")) {
+      return false;
+    }
+    if (!inputType) {
+      return autoTagCommitBoundaryPattern.test(textInput.value);
+    }
+    if (inputType.startsWith("insertFromPaste") || inputType.startsWith("insertFromDrop")) {
+      return true;
+    }
+    if (inputType === "insertLineBreak" || inputType === "insertParagraph") {
+      return true;
+    }
+    if (inputType.startsWith("delete")) {
+      return false;
+    }
+    return autoTagCommitBoundaryPattern.test(textInput.value);
   }
 
   function tagsSignature(tags) {
@@ -280,7 +310,7 @@
       return;
     }
     const currentTags = parseTagInput(tagsInput.value);
-    const autoTags = extractAutoTagsFromText(textInput.value);
+    const autoTags = extractAutoTagsFromText(textInput.value, { committedOnly: true });
     if (!autoTags.length) {
       return;
     }
@@ -700,6 +730,81 @@
       throw new Error(message);
     }
     return data;
+  }
+
+  function shortErrorText(error, fallback = "未知错误") {
+    return String(error?.message || error || fallback).trim().slice(0, 260);
+  }
+
+  function buildDirectUploadPreparePayload(file) {
+    return {
+      filename: String(file?.name || "upload.bin"),
+      content_type: String(file?.type || ""),
+      size_bytes: Math.max(0, Number(file?.size || 0)),
+    };
+  }
+
+  async function requestDirectUploadPlan(file) {
+    return api("/api/uploads/prepare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildDirectUploadPreparePayload(file)),
+    });
+  }
+
+  async function uploadFileToSignedUrl(directConfig, file) {
+    const url = String(directConfig?.url || "").trim();
+    if (!url) {
+      throw new Error("direct upload url missing");
+    }
+    const method = String(directConfig?.method || "PUT").trim().toUpperCase() || "PUT";
+    const headers = {};
+    for (const [key, value] of Object.entries(directConfig?.headers || {})) {
+      const headerKey = String(key || "").trim();
+      const headerValue = String(value || "").trim();
+      if (!headerKey || !headerValue) {
+        continue;
+      }
+      headers[headerKey] = headerValue;
+    }
+
+    const response = await fetch(url, {
+      method,
+      mode: "cors",
+      credentials: "omit",
+      headers,
+      body: file,
+    });
+    if (!response.ok) {
+      throw new Error(`direct upload failed (${response.status})`);
+    }
+  }
+
+  async function tryDirectUpload(file) {
+    if (!(file instanceof File) || !file.name) {
+      return { token: "", fallbackReason: "invalid_file" };
+    }
+
+    let plan;
+    try {
+      plan = await requestDirectUploadPlan(file);
+    } catch (error) {
+      return { token: "", fallbackReason: shortErrorText(error) };
+    }
+
+    const token = String(plan?.upload_token || "").trim();
+    const direct = plan?.direct || {};
+    const enabled = Boolean(direct?.enabled);
+    if (!enabled || !token || !direct?.url) {
+      return { token: "", fallbackReason: String(direct?.reason || "not_available").trim() || "not_available" };
+    }
+
+    try {
+      await uploadFileToSignedUrl(direct, file);
+      return { token, fallbackReason: "" };
+    } catch (error) {
+      return { token: "", fallbackReason: shortErrorText(error) };
+    }
   }
 
   async function getUsers() {
@@ -1159,9 +1264,23 @@
     const editorTagsInput = qs('input[name="tags"]', formEl || dialogBody);
     const editorTextInput = qs('textarea[name="text"]', formEl || dialogBody);
     if (editorTagsInput && editorTextInput) {
-      const syncEditorTags = () => syncTagsInputFromText(editorTagsInput, editorTextInput);
-      editorTextInput.addEventListener("input", syncEditorTags);
-      syncEditorTags();
+      let editorTextComposing = false;
+      const syncEditorTags = (event = null) => {
+        if (!shouldSyncTagsOnTextInput(event, editorTextInput, editorTextComposing)) {
+          return;
+        }
+        syncTagsInputFromText(editorTagsInput, editorTextInput);
+      };
+      editorTextInput.addEventListener("compositionstart", () => {
+        editorTextComposing = true;
+      });
+      editorTextInput.addEventListener("compositionend", () => {
+        editorTextComposing = false;
+        syncEditorTags();
+      });
+      editorTextInput.addEventListener("input", (event) => syncEditorTags(event));
+      editorTextInput.addEventListener("blur", () => syncEditorTags());
+      syncTagsInputFromText(editorTagsInput, editorTextInput);
     }
   }
 
@@ -1704,10 +1823,10 @@
     const vectorForm = qs("#vector-chat-form");
     const vectorAnswerEl = qs("#vector-chat-answer");
     const vectorStatusEl = qs("#vector-status");
-    const vectorRebuildBtn = qs("#vector-rebuild-btn");
 
     if (form) {
-      const visibilityInput = qs('select[name="visibility"]', form);
+      const visibilitySelect = qs('select[name="visibility"]', form);
+      const visibilityRadioInputs = Array.from(form.querySelectorAll('input[name="visibility"]'));
       const tagsInput = qs('input[name="tags"]', form);
       const textInput = qs('textarea[name="text"]', form);
       const fileInput = qs("#quick-publish-file-input", form);
@@ -1739,15 +1858,25 @@
       let selectedFiles = [];
       let dragDepth = 0;
       let isPublishing = false;
+      let isTextInputComposing = false;
 
       const trimUploadError = (error) => String(error?.message || error || "未知错误").trim().slice(0, 260);
       const newUploadId = () => `upload-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const publishVisibilityValue = () => {
+        const checkedRadio = visibilityRadioInputs.find(
+          (input) => input instanceof HTMLInputElement && input.checked,
+        );
+        if (checkedRadio instanceof HTMLInputElement) {
+          return normalizeVisibility(checkedRadio.value || "private");
+        }
+        return normalizeVisibility(visibilitySelect?.value || "private");
+      };
       const publishFields = () => {
         if (tagsInput && textInput) {
           syncTagsInputFromText(tagsInput, textInput);
         }
         return {
-          visibility: normalizeVisibility(visibilityInput?.value || "private"),
+          visibility: publishVisibilityValue(),
           tags: String(tagsInput?.value || "").trim(),
           text: String(textInput?.value || "").trim(),
         };
@@ -1787,8 +1916,16 @@
       const setPublishingState = (value) => {
         isPublishing = Boolean(value);
         setButtonBusy(submitBtn, isPublishing, { busyText: "发布中..." });
-        if (visibilityInput) {
-          visibilityInput.disabled = isPublishing;
+        if (visibilitySelect) {
+          visibilitySelect.disabled = isPublishing;
+        }
+        visibilityRadioInputs.forEach((input) => {
+          if (input instanceof HTMLInputElement) {
+            input.disabled = isPublishing;
+          }
+        });
+        if (dropzone) {
+          dropzone.classList.toggle("is-disabled", isPublishing);
         }
         if (tagsInput) {
           tagsInput.disabled = isPublishing;
@@ -1807,9 +1944,6 @@
         }
         if (folderPickerBtn) {
           folderPickerBtn.disabled = isPublishing;
-        }
-        if (dropzone) {
-          dropzone.classList.toggle("is-disabled", isPublishing);
         }
       };
 
@@ -2016,7 +2150,7 @@
         return collectFilesFromInput(dataTransfer?.files);
       };
 
-      const buildUploadPayload = ({ visibility, tags, text = "", file = null }) => {
+      const buildUploadPayload = ({ visibility, tags, text = "", file = null, uploadedFileToken = "" }) => {
         const payload = new FormData();
         payload.set("visibility", visibility || "private");
         if (tags) {
@@ -2025,7 +2159,9 @@
         if (text) {
           payload.set("text", text);
         }
-        if (file) {
+        if (uploadedFileToken) {
+          payload.set("uploaded_file_token", uploadedFileToken);
+        } else if (file) {
           payload.append("file", file, file.name);
         }
         return payload;
@@ -2048,14 +2184,39 @@
         item.error = "";
         item.attempts += 1;
         renderSelectedFiles();
-        await api("/api/push", {
-          method: "POST",
-          body: buildUploadPayload({
-            visibility,
-            tags,
-            file: item.file,
-          }),
-        });
+
+        const direct = await tryDirectUpload(item.file);
+        const useDirectToken = Boolean(direct?.token);
+        if (useDirectToken) {
+          try {
+            await api("/api/push", {
+              method: "POST",
+              body: buildUploadPayload({
+                visibility,
+                tags,
+                uploadedFileToken: direct.token,
+              }),
+            });
+          } catch (error) {
+            await api("/api/push", {
+              method: "POST",
+              body: buildUploadPayload({
+                visibility,
+                tags,
+                file: item.file,
+              }),
+            });
+          }
+        } else {
+          await api("/api/push", {
+            method: "POST",
+            body: buildUploadPayload({
+              visibility,
+              tags,
+              file: item.file,
+            }),
+          });
+        }
         item.status = "success";
         item.error = "";
       };
@@ -2293,13 +2454,27 @@
         });
       }
       if (textInput) {
-        textInput.addEventListener("input", () => {
+        textInput.addEventListener("compositionstart", () => {
+          isTextInputComposing = true;
+        });
+        textInput.addEventListener("compositionend", () => {
+          isTextInputComposing = false;
           if (tagsInput) {
+            syncTagsInputFromText(tagsInput, textInput);
+          }
+        });
+        textInput.addEventListener("input", (event) => {
+          if (tagsInput && shouldSyncTagsOnTextInput(event, textInput, isTextInputComposing)) {
             syncTagsInputFromText(tagsInput, textInput);
           }
           if (textTask.status !== "uploading") {
             resetTextTask();
             renderSelectedFiles();
+          }
+        });
+        textInput.addEventListener("blur", () => {
+          if (tagsInput) {
+            syncTagsInputFromText(tagsInput, textInput);
           }
         });
         if (tagsInput) {
@@ -2348,7 +2523,6 @@
           window.alert("请输入问题");
           return;
         }
-        const topK = Number(formData.get("top_k") || 6);
         const useAiChecked = Boolean(qs('input[name="use_ai"]', vectorForm)?.checked);
         const submitBtn = qs('button[type="submit"]', vectorForm);
         setButtonBusy(submitBtn, true, { busyText: "检索中..." });
@@ -2362,7 +2536,6 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               query,
-              top_k: topK,
               use_ai: useAiChecked,
             }),
           });
@@ -2385,36 +2558,6 @@
           }
         } finally {
           setButtonBusy(submitBtn, false);
-        }
-      });
-    }
-
-    if (vectorRebuildBtn) {
-      vectorRebuildBtn.addEventListener("click", async () => {
-        setButtonBusy(vectorRebuildBtn, true, { busyText: "重建中..." });
-        if (vectorStatusEl) {
-          setFeedback(vectorStatusEl, "正在重建向量索引...", "info");
-        }
-        try {
-          const data = await api("/api/vector/rebuild", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
-          });
-          if (vectorStatusEl) {
-            setFeedback(vectorStatusEl, `索引已重建：文档 ${data.doc_count || 0} 条，语料文件 ${data.archive_count || 0} 个`, "success");
-          }
-          if (vectorAnswerEl) {
-            vectorAnswerEl.hidden = false;
-            vectorAnswerEl.textContent = `向量索引重建完成\nbuilt_at=${data.built_at || ""}`;
-          }
-          renderVectorHits([]);
-        } catch (error) {
-          if (vectorStatusEl) {
-            setFeedback(vectorStatusEl, `重建失败: ${error.message || "未知错误"}`, "error");
-          }
-        } finally {
-          setButtonBusy(vectorRebuildBtn, false);
         }
       });
     }
@@ -2938,13 +3081,10 @@
     setButtonBusy(submitBtn, true, { busyText: "刷新中..." });
     const formData = new FormData(form);
     const tag = String(formData.get("tag") || "").trim();
-    const days = String(formData.get("days") ?? "").trim();
-    const query = buildQuery({
-      days,
-      tag,
-    });
+    const query = buildQuery({ tag });
+    const path = query ? `/api/board?${query}` : "/api/board";
     try {
-      const data = await api(`/api/board?${query}`);
+      const data = await api(path);
       renderBoardTable(data, tag);
     } catch (error) {
       if (wrap) {
@@ -3205,7 +3345,7 @@
     }
   }
 
-  function setEchoesEmptyVisible(visible, text = "暂无内容") {
+  function setEchoesEmptyVisible(visible, text = "暂无匹配内容，试试调整筛选条件。") {
     const emptyEl = qs("#echoes-empty");
     if (emptyEl) {
       setFeedback(emptyEl, text, "warning");
@@ -4129,7 +4269,12 @@
             const nextFile =
               fileInput instanceof HTMLInputElement && fileInput.files && fileInput.files.length ? fileInput.files[0] : null;
             if (nextFile) {
-              payload.set("file", nextFile, nextFile.name);
+              const direct = await tryDirectUpload(nextFile);
+              if (direct?.token) {
+                payload.set("uploaded_file_token", direct.token);
+              } else {
+                payload.set("file", nextFile, nextFile.name);
+              }
             }
 
             await api(`/api/records/${recordId}`, {

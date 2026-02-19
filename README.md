@@ -208,6 +208,7 @@ data/
 ### 6.1 发布记录（文本或文件）
 
 入口：
+- `POST /api/uploads/prepare`（可选：申请直传 OSS 签名与 upload token）
 - `POST /api/push`（别名）
 - `POST /api/records`（标准接口）
 
@@ -217,7 +218,8 @@ data/
 1. 读取 JSON/Form 参数。
 2. 解析标签（`_parse_tags`）与可见性（`_normalize_visibility`）。
 3. 判断是否上传文件：
-   - 有文件：走 `_file_to_content`，先保存到临时目录 `data/uploads/`，计算 `sha256`，上传到 OSS（或本地对象目录），生成 `Content(kind=file)`。
+   - 直传成功：前端先请求 `/api/uploads/prepare`，拿到签名 URL 上传后，提交 `uploaded_file_token` 落库。
+   - 直传不可用或失败：回退 `_file_to_content`，先保存到临时目录 `data/uploads/`，计算 `sha256`，上传到 OSS（或本地对象目录），生成 `Content(kind=file)`。
    - 无文件：要求 `text` 非空，生成 `Content(kind=text)`。
 4. 创建 `Record` 并关联 `Content`，写入 `preview/tags/visibility`。
 5. `db.session.commit()`。
@@ -421,6 +423,77 @@ Echoes 的 `entries[]` 额外字段：
   - `GET /api/users` 填充用户筛选；
   - `GET /api/notice/render` 直接渲染。
 
+### 10.1 前端 CSS 属性与组件总结（输入框/勾选框等）
+
+核心样式文件：`app/static/css/main.css`
+
+- 全局表单控件（输入框/下拉框/文本域）：
+  - `input, textarea, select` 统一使用 `border + border-radius + padding + background`，保证跨页面一致性。
+  - `textarea` 默认 `resize: vertical`，避免横向拖拽破坏布局。
+- 按钮系统：
+  - 基础按钮：主色背景，圆角，hover 亮度变化。
+  - 次级按钮：`.secondary`，用于低频或次要操作（如管理页手动重建索引）。
+- 勾选与开关：
+  - 传统勾选：`.inline-check`（保留兼容）。
+  - 新统一开关：`.inline-switch` / `.inline-switch-sm` / `.inline-switch-ui` / `.inline-switch-knob` / `.inline-switch-copy`。
+  - 已用于登录页“记住登录状态”、管理页“仅看前端覆盖”、管理页布尔配置项。
+- Home 页专用交互控件：
+  - 可见性分段选择：`.quick-visibility-switch`（radio + pill）。
+  - “AI 增强回答”开关：`.vector-ai-toggle`（checkbox + switch UI）。
+- 反馈与状态：
+  - 统一状态条：`.feedback-inline`（`info/success/warning/error` 色阶）。
+  - 按钮忙碌态：`.is-busy` + 旋转指示器。
+- 移动端与防溢出策略（重点）：
+  - 在容器链路上大量使用 `min-width: 0`，避免 flex/grid 子项撑开页面。
+  - 文本容器统一 `overflow-wrap: anywhere` + `word-break: break-word`。
+  - 需要保留横向浏览的区域（如 Board 表格）使用局部 `overflow-x: auto`，而不是让页面整体横向滚动。
+  - 管理页补充窄屏规则：filter 输入可收缩、分组网格在小屏自动单列、长 key 可换行。
+
+### 10.2 前端 JavaScript 实现总结（你提到的“java 实现”按 JavaScript 汇总）
+
+核心脚本：
+- 页面交互主脚本：`app/static/js/site.js`
+- 管理台脚本：`app/static/js/admin.js`
+
+`site.js` 结构（按页面分发）：
+- 启动入口 `boot()` 基于 `body[data-page]` 路由到 `initHome/initBoard/initEchoes/initNotice`。
+- 公共能力：
+  - 统一请求封装 `api()`；
+  - 反馈展示 `setFeedback()`；
+  - 记录弹窗、图片预览、全局操作绑定。
+- Home：
+  - 快速发布（文本/多文件队列）。
+  - 文件优先尝试直传 OSS：`/api/uploads/prepare` + signed URL；失败自动回退普通上传。
+  - 标签自动补全：仅在“提交边界”触发（空格/标点/换行/粘贴），并规避中文输入法 composition 中间态。
+  - 检索问答：`/api/vector/chat`，AI 回答开关由前端 toggle 控制。
+- Board：
+  - 读取 `/api/board` 并渲染热力矩阵；
+  - 天数配置已从页面输入移到管理台运行时配置。
+- Echoes：
+  - 按范围/类型筛选；
+  - IntersectionObserver 无限滚动加载；
+  - 空状态、加载态、结束态统一反馈。
+- Notice：
+  - 拉取用户筛选并请求 `/api/notice/render`；
+  - 阅读工具栏（字号、宽度、字体、媒体折叠、翻译、回顶）统一状态控制。
+
+`admin.js` 结构：
+- 拉取配置：`GET /api/admin/settings`，按分组动态渲染字段（string/int/bool/choice/text）。
+- 保存配置：`PUT /api/admin/settings`（支持“回退默认”批量提交）。
+- 管理体验：
+  - 搜索 key/名称/描述；
+  - “仅看前端覆盖”过滤；
+  - 布尔项统一开关式控件；
+  - 手动向量重建入口（低频兜底）。
+
+### 10.3 设计思考（UI 与交互）
+
+1. 一致性优先：输入、开关、按钮、反馈都做统一组件化命名，降低页面间风格跳变。  
+2. 低频参数下沉：`VECTOR_TOP_K`、`BOARD_DEFAULT_DAYS` 移到管理台，Home/Board 保持任务导向。  
+3. 移动端优先防溢出：优先保证“不炸版”，通过 `min-width: 0`、断词、局部滚动容器组合解决。  
+4. 渐进增强：直传 OSS、AI 能力均做失败回退，优先保证发布和阅读主流程可用。  
+5. 对输入法友好：标签自动识别避开 composition 阶段，减少中文输入过程误识别。  
+
 ## 11. 本地运行（开发）
 
 ### 11.1 最小步骤
@@ -536,6 +609,12 @@ benoss-sync pull --username alice --content-source full --output ./pulled_record
 - `ALIYUN_OSS_PREFIX`
 - `ALIYUN_OSS_PUBLIC_BASE_URL`
 - `ALIYUN_OSS_ASSUME_PUBLIC`
+- `OSS_DIRECT_UPLOAD_ENABLED`（前端直传 OSS 开关，默认开启）
+- `OSS_DIRECT_UPLOAD_EXPIRES_SECONDS`（直传签名 URL 过期秒数）
+- `OSS_DIRECT_UPLOAD_TOKEN_MAX_AGE_SECONDS`（直传落库 token 过期秒数）
+- `OSS_REMOTE_FAILOVER_LOCAL`（远端 OSS 写入失败时自动落地本地目录）
+
+提示：若启用前端直传 OSS，需在 OSS Bucket CORS 中允许站点来源发起 `PUT/OPTIONS`。
 
 ### 13.3 AI 配置
 

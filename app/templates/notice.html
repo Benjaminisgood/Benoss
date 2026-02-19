@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="card" data-reveal>
-  <h2>Notice 筛选与整页渲染</h2>
+  <h2>Notice 阅读视图</h2>
+  <p class="muted">按日期、用户、标签组合生成阅读页，便于集中回顾与整理。</p>
   <form id="notice-filter-form" class="notice-filter-grid">
     <label>
       日期
@@ -15,19 +16,19 @@
     </label>
     <label>
       标签
-      <input type="text" name="tag" placeholder="tag">
+      <input type="text" name="tag" placeholder="输入标签">
     </label>
     <label>
-      顺序
+      时间顺序
       <select name="order">
-        <option value="asc">从早到晚</option>
-        <option value="desc">从晚到早</option>
+        <option value="asc">由早到晚</option>
+        <option value="desc">由晚到早</option>
       </select>
     </label>
-    <button type="submit">直接渲染完整内容页</button>
+    <button type="submit">生成阅读页</button>
   </form>
 
-  <p class="muted">支持点击任意标签直接跳到本页并自动按标签筛选。</p>
+  <p class="muted">支持从任意标签一键跳转到本页，并自动带入筛选条件。</p>
   <p class="muted" id="notice-render-meta" hidden></p>
 </section>
 
@@ -52,8 +53,8 @@
       <button type="button" class="secondary" data-notice-family="mono" aria-pressed="false">等宽</button>
     </div>
     <div class="notice-reader-group" id="notice-context-toggle-group" role="group" aria-label="元信息显示">
-      <button type="button" class="secondary" data-notice-context="hide" aria-pressed="false">纯净正文</button>
-      <button type="button" class="secondary" data-notice-context="show" aria-pressed="true">显示侧边</button>
+      <button type="button" class="secondary" data-notice-context="hide" aria-pressed="false">仅正文</button>
+      <button type="button" class="secondary" data-notice-context="show" aria-pressed="true">显示侧栏</button>
     </div>
     <div class="notice-reader-group notice-reader-group-translate" role="group" aria-label="翻译">
       <select id="notice-translate-lang" aria-label="翻译语言">
@@ -65,7 +66,7 @@
         <option value="de">德语</option>
         <option value="es">西班牙语</option>
       </select>
-      <button type="button" class="secondary" id="notice-reader-translate">翻译文本</button>
+      <button type="button" class="secondary" id="notice-reader-translate">翻译正文</button>
     </div>
     <button type="button" class="secondary notice-reader-top" id="notice-reader-top">回到顶部</button>
   </div>

@@ -11,6 +11,8 @@
   const saveBtn = document.getElementById("admin-save-btn");
   const filterInput = document.getElementById("admin-filter-input");
   const onlyOverridesInput = document.getElementById("admin-only-overrides");
+  const vectorRebuildBtn = document.getElementById("admin-vector-rebuild-btn");
+  const vectorStatusEl = document.getElementById("admin-vector-status");
 
   let pendingReset = new Set();
   let latestGroups = [];
@@ -140,6 +142,37 @@
     summaryEl.textContent = text || "";
   }
 
+  function setVectorStatus(text, isError = false) {
+    if (!vectorStatusEl) {
+      return;
+    }
+    vectorStatusEl.textContent = text || "";
+    vectorStatusEl.style.color = isError ? "#8d2200" : "";
+  }
+
+  function setButtonBusy(button, busy, busyText = "处理中...") {
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+    const isBusy = Boolean(busy);
+    if (isBusy) {
+      if (!button.dataset.busyLabel) {
+        button.dataset.busyLabel = button.textContent || "";
+      }
+      button.disabled = true;
+      button.classList.add("is-busy");
+      button.setAttribute("aria-busy", "true");
+      button.textContent = busyText;
+      return;
+    }
+    button.disabled = false;
+    button.classList.remove("is-busy");
+    button.removeAttribute("aria-busy");
+    if (button.dataset.busyLabel) {
+      button.textContent = button.dataset.busyLabel;
+    }
+  }
+
   function inputHtml(item) {
     const type = item.type || "string";
     const key = item.key;
@@ -148,9 +181,12 @@
 
     if (type === "bool") {
       return `
-        <label class="inline-check">
+        <label class="inline-switch inline-switch-sm">
           <input type="checkbox" data-setting-key="${escapeHtml(key)}" data-setting-type="bool" ${value ? "checked" : ""}>
-          <span>启用</span>
+          <span class="inline-switch-ui" aria-hidden="true"><span class="inline-switch-knob"></span></span>
+          <span class="inline-switch-copy">
+            <span class="inline-switch-title">启用</span>
+          </span>
         </label>
       `;
     }
@@ -392,6 +428,24 @@
   }
   if (saveBtn) {
     saveBtn.addEventListener("click", saveSettings);
+  }
+  if (vectorRebuildBtn) {
+    vectorRebuildBtn.addEventListener("click", async () => {
+      setButtonBusy(vectorRebuildBtn, true, "重建中...");
+      setVectorStatus("正在重建向量索引...");
+      try {
+        const data = await api("/api/vector/rebuild", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ force: true }),
+        });
+        setVectorStatus(`重建完成：文档 ${data.doc_count || 0} 条，语料文件 ${data.archive_count || 0} 个。`);
+      } catch (error) {
+        setVectorStatus(`重建失败: ${error.message || "未知错误"}`, true);
+      } finally {
+        setButtonBusy(vectorRebuildBtn, false);
+      }
+    });
   }
 
   loadSettings();

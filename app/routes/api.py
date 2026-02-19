@@ -16,13 +16,24 @@ from zoneinfo import ZoneInfo
 
 import requests
 from flask import Blueprint, Response, current_app, g, jsonify, request, url_for
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from sqlalchemy import and_, func, not_, or_
 from sqlalchemy.orm import joinedload
 from werkzeug.utils import secure_filename
 
 from ..extensions import db
 from ..models import Comment, Content, DailyDigestJob, GeneratedAsset, Record, User
-from ..oss import copy_object, delete_object, get_object_bytes, put_object_bytes, put_object_from_file, sign_get_url
+from ..oss import (
+    copy_object,
+    delete_object,
+    get_object_bytes,
+    has_remote_backend,
+    object_exists,
+    put_object_bytes,
+    put_object_from_file,
+    sign_get_url,
+    sign_put_url,
+)
 from ..utils.ids import new_uuid
 from ..utils.local_archive import apply_archive_retention_policy, archive_file_path, load_archive, save_daily_archive
 from ..utils.local_vector_db import (
@@ -64,6 +75,12 @@ _URL_PATTERN = re.compile(r"(?:https?://|www\.)[^\s<>'\"`]+", re.IGNORECASE)
 _URL_TRAILING_CHARS = ".,;:!?)]}，。；：！？）】》、"
 _MARKDOWN_CODE_FENCE_RE = re.compile(r"^\s*```(?:[a-zA-Z0-9_-]+)?\s*([\s\S]*?)\s*```\s*$", re.IGNORECASE)
 _MARKDOWN_CODE_BLOCK_RE = re.compile(r"```(?:[a-zA-Z0-9_-]+)?\s*([\s\S]*?)```", re.IGNORECASE)
+_DIGEST_MEDIA_APPENDIX_RE = re.compile(
+    r"<section\s+class=[\"']benoss-media-appendix[\"'][\s\S]*?</section>",
+    re.IGNORECASE,
+)
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_DIRECT_UPLOAD_TOKEN_SALT = "benoss.direct-upload.v1"
 _PODCAST_STYLE_GUIDE = {
     "dialogue": "对话式：双人主持人口吻，包含主持人A/主持人B轮流发言，节奏自然。",
     "speech": "演讲式：单人演讲结构，逻辑清晰，重点突出。",
@@ -572,6 +589,193 @@ def _truthy(raw) -> bool:
     return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _direct_upload_enabled() -> bool:
+    return _truthy(current_app.config.get("OSS_DIRECT_UPLOAD_ENABLED", "1"))
+
+
+def _direct_upload_expires_seconds() -> int:
+    try:
+        value = int(current_app.config.get("OSS_DIRECT_UPLOAD_EXPIRES_SECONDS") or 900)
+    except (TypeError, ValueError):
+        value = 900
+    return min(max(value, 60), 3600)
+
+
+def _direct_upload_token_max_age_seconds() -> int:
+    try:
+        value = int(current_app.config.get("OSS_DIRECT_UPLOAD_TOKEN_MAX_AGE_SECONDS") or 1800)
+    except (TypeError, ValueError):
+        value = 1800
+    return min(max(value, 120), 24 * 3600)
+
+
+def _normalize_upload_filename(raw_filename: str | None, *, allow_empty: bool = False) -> str:
+    filename = secure_filename(str(raw_filename or "").strip())
+    if filename:
+        return filename
+    if allow_empty:
+        return f"upload-{new_uuid()}"
+    raise ValueError("invalid filename")
+
+
+def _normalize_upload_content_type(content_type: str | None, filename: str) -> str:
+    guessed = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    normalized = str(content_type or "").split(";", 1)[0].strip().lower() or guessed
+    normalized = normalized[:255]
+    return normalized or "application/octet-stream"
+
+
+def _normalize_upload_sha256(raw_sha256: str | None) -> str:
+    value = str(raw_sha256 or "").strip().lower()
+    if not value:
+        return ""
+    if not _SHA256_RE.match(value):
+        raise ValueError("invalid sha256")
+    return value
+
+
+def _normalize_upload_size_bytes(raw_size, *, allow_empty: bool = True) -> int:
+    if raw_size in (None, ""):
+        if allow_empty:
+            return 0
+        raise ValueError("size_bytes is required")
+    try:
+        size_bytes = int(raw_size)
+    except (TypeError, ValueError):
+        raise ValueError("invalid size_bytes") from None
+    if size_bytes < 0:
+        raise ValueError("invalid size_bytes")
+    max_content_length = int(current_app.config.get("MAX_CONTENT_LENGTH") or 0)
+    if max_content_length > 0 and size_bytes > max_content_length:
+        raise ValueError("file too large")
+    return size_bytes
+
+
+def _direct_upload_serializer() -> URLSafeTimedSerializer:
+    secret = str(current_app.config.get("SECRET_KEY") or "")
+    return URLSafeTimedSerializer(secret, salt=_DIRECT_UPLOAD_TOKEN_SALT)
+
+
+def _issue_direct_upload_token(
+    *,
+    user_id: int,
+    oss_key: str,
+    filename: str,
+    content_type: str,
+    size_bytes: int,
+    sha256: str = "",
+) -> str:
+    payload = {
+        "v": 1,
+        "user_id": int(user_id),
+        "oss_key": str(oss_key or "").strip(),
+        "filename": str(filename or "").strip(),
+        "content_type": str(content_type or "").strip(),
+        "size_bytes": int(size_bytes or 0),
+    }
+    if sha256:
+        payload["sha256"] = sha256
+    return _direct_upload_serializer().dumps(payload)
+
+
+def _parse_direct_upload_token(token: str, *, user_id: int) -> dict:
+    max_age = _direct_upload_token_max_age_seconds()
+    try:
+        payload = _direct_upload_serializer().loads(str(token or "").strip(), max_age=max_age)
+    except SignatureExpired:
+        raise ValueError("uploaded_file_token expired") from None
+    except BadSignature:
+        raise ValueError("invalid uploaded_file_token") from None
+
+    if not isinstance(payload, dict):
+        raise ValueError("invalid uploaded_file_token")
+    if int(payload.get("v") or 0) != 1:
+        raise ValueError("invalid uploaded_file_token")
+    if int(payload.get("user_id") or 0) != int(user_id):
+        raise ValueError("uploaded_file_token does not belong to current user")
+
+    oss_key = str(payload.get("oss_key") or "").strip()
+    try:
+        filename = _normalize_upload_filename(str(payload.get("filename") or ""))
+    except ValueError:
+        raise ValueError("invalid uploaded_file_token") from None
+    content_type = _normalize_upload_content_type(str(payload.get("content_type") or ""), filename)
+    size_bytes = _normalize_upload_size_bytes(payload.get("size_bytes"), allow_empty=True)
+    sha256 = _normalize_upload_sha256(payload.get("sha256") or "")
+    if not oss_key:
+        raise ValueError("invalid uploaded_file_token")
+    return {
+        "oss_key": oss_key,
+        "filename": filename,
+        "content_type": content_type,
+        "size_bytes": size_bytes,
+        "sha256": sha256,
+    }
+
+
+def _content_from_uploaded_file_token(token: str, *, user_id: int) -> tuple[Content, str]:
+    parsed = _parse_direct_upload_token(token, user_id=user_id)
+    oss_key = str(parsed["oss_key"])
+    if not object_exists(oss_key):
+        raise ValueError("uploaded file not found, please retry upload")
+
+    filename = str(parsed["filename"])
+    content_type = str(parsed["content_type"])
+    content = Content(
+        kind="file",
+        file_type=_detect_file_type(content_type, filename),
+        filename=filename,
+        content_type=content_type,
+        size_bytes=int(parsed["size_bytes"] or 0),
+        sha256=str(parsed["sha256"] or ""),
+        oss_key=oss_key,
+    )
+    return content, filename
+
+
+def _request_uploaded_file_tokens(payload: dict) -> list[str]:
+    raw_values: list[object] = []
+    if request.form:
+        raw_values.extend(request.form.getlist("uploaded_file_token"))
+        raw_values.extend(request.form.getlist("uploaded_file_token[]"))
+
+    raw_values.append(payload.get("uploaded_file_token"))
+    list_value = payload.get("uploaded_file_tokens")
+    if isinstance(list_value, list):
+        raw_values.extend(list_value)
+    elif isinstance(list_value, str):
+        text = list_value.strip()
+        if text:
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                raw_values.extend([part.strip() for part in text.split(",") if part.strip()])
+            else:
+                if isinstance(parsed, list):
+                    raw_values.extend(parsed)
+                elif parsed:
+                    raw_values.append(parsed)
+
+    tokens: list[str] = []
+    seen = set()
+    for value in raw_values:
+        token = str(value or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        tokens.append(token)
+    return tokens
+
+
+def _request_single_uploaded_file_token(payload: dict) -> str:
+    tokens = _request_uploaded_file_tokens(payload)
+    if not tokens:
+        return ""
+    if len(tokens) > 1:
+        raise ValueError("only one uploaded_file_token is allowed")
+    return tokens[0]
+
+
 def _signed_url_if_enabled(oss_key: str | None, *, enabled: bool, expires: int) -> str:
     key = str(oss_key or "").strip()
     if not enabled or not key:
@@ -981,8 +1185,16 @@ def _create_record_for_user(user: User):
     auto_tags = _auto_tags_from_text(text_value) if text_value else []
     tags = _parse_tags(manual_tags + auto_tags)
     file_items = _request_upload_files()
-    if not text_value and not file_items:
+    uploaded_file_tokens = _request_uploaded_file_tokens(payload)
+    if not text_value and not file_items and not uploaded_file_tokens:
         return jsonify({"error": "missing text or file"}), 400
+
+    direct_file_items: list[tuple[Content, str]] = []
+    for upload_token in uploaded_file_tokens:
+        try:
+            direct_file_items.append(_content_from_uploaded_file_token(upload_token, user_id=user.id))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
 
     created_records: list[Record] = []
     uploaded_oss_keys: list[str] = []
@@ -1004,6 +1216,20 @@ def _create_record_for_user(user: User):
 
     for file_obj in file_items:
         file_content, preview = _file_to_content(file_obj)
+        file_record = Record(
+            user_id=user.id,
+            content=file_content,
+            visibility=visibility,
+            preview=preview,
+        )
+        file_record.set_tags(tags)
+        created_records.append(file_record)
+        db.session.add(file_content)
+        db.session.add(file_record)
+        if file_content.oss_key:
+            uploaded_oss_keys.append(file_content.oss_key)
+
+    for file_content, preview in direct_file_items:
         file_record = Record(
             user_id=user.id,
             content=file_content,
@@ -2677,6 +2903,21 @@ def _inject_html_before_closing_tag(doc_html: str, snippet_html: str, tag_name: 
     return f"{raw[:index]}\n{snippet}\n{raw[index:]}"
 
 
+def _inject_html_after_opening_tag(doc_html: str, snippet_html: str, tag_name: str) -> str:
+    raw = str(doc_html or "")
+    snippet = str(snippet_html or "").strip()
+    opening = str(tag_name or "").strip().lower()
+    if not raw or not snippet or not opening:
+        return raw
+
+    pattern = re.compile(rf"<{re.escape(opening)}\b[^>]*>", re.IGNORECASE)
+    match = pattern.search(raw)
+    if not match:
+        return raw
+    index = match.end()
+    return f"{raw[:index]}\n{snippet}\n{raw[index:]}"
+
+
 def _digest_media_section_html(*, poster_asset_id: int | None, podcast_asset_id: int | None) -> str:
     poster_src = f"/api/generated-assets/{int(poster_asset_id)}/blob" if poster_asset_id else ""
     podcast_src = f"/api/generated-assets/{int(podcast_asset_id)}/blob" if podcast_asset_id else ""
@@ -2706,6 +2947,50 @@ def _digest_media_section_html(*, poster_asset_id: int | None, podcast_asset_id:
     return "\n".join(items)
 
 
+def _strip_digest_media_section(doc_html: str) -> str:
+    raw = str(doc_html or "")
+    if not raw:
+        return raw
+    return _DIGEST_MEDIA_APPENDIX_RE.sub("", raw).strip()
+
+
+def _refresh_existing_blog_asset_media(
+    asset: GeneratedAsset,
+    *,
+    poster_asset_id: int | None,
+    podcast_asset_id: int | None,
+) -> bool:
+    if str(asset.kind or "").strip().lower() != "blog_html":
+        return False
+    key = str(asset.oss_key or "").strip()
+    if not key:
+        return False
+
+    original_bytes = get_object_bytes(key)
+    original_html = original_bytes.decode("utf-8", errors="replace")
+
+    cleaned_html = _strip_digest_media_section(original_html)
+    refreshed_html = _wrap_blog_html_document(
+        cleaned_html,
+        title=asset.title or "Daily Digest",
+        poster_asset_id=poster_asset_id,
+        podcast_asset_id=podcast_asset_id,
+    )
+    refreshed_bytes = refreshed_html.encode("utf-8")
+    if refreshed_bytes == original_bytes:
+        return True
+
+    put_object_bytes(key, refreshed_bytes, content_type="text/html; charset=utf-8")
+    asset.content_type = "text/html; charset=utf-8"
+    asset.ext = ".html"
+    asset.file_type = _detect_asset_file_type_from_values("blog_html", asset.content_type, asset.ext)
+    asset.size_bytes = len(refreshed_bytes)
+    asset.sha256 = _sha256_bytes(refreshed_bytes)
+    db.session.add(asset)
+    db.session.commit()
+    return True
+
+
 def _wrap_blog_html_document(
     body_html: str,
     *,
@@ -2721,14 +3006,20 @@ def _wrap_blog_html_document(
     if "<html" in raw.lower():
         doc = raw
         if media_html:
-            for tag in ("main", "article", "body", "html"):
-                updated = _inject_html_before_closing_tag(doc, media_html, tag)
+            for tag in ("main", "article", "body"):
+                updated = _inject_html_after_opening_tag(doc, media_html, tag)
                 if updated != doc:
                     doc = updated
                     break
+            else:
+                for tag in ("body", "html"):
+                    updated = _inject_html_before_closing_tag(doc, media_html, tag)
+                    if updated != doc:
+                        doc = updated
+                        break
         return doc
     safe_title = html.escape(title or "Daily Digest")
-    media_part = f"\n{media_html}\n" if media_html else ""
+    media_part = f"{media_html}\n" if media_html else ""
     return (
         "<!doctype html>\n"
         "<html lang=\"zh-CN\">\n"
@@ -2742,7 +3033,7 @@ def _wrap_blog_html_document(
         "    h1, h2, h3 { line-height: 1.35; }\n"
         "    pre { white-space: pre-wrap; }\n"
         "    img, video, audio { max-width: 100%; border-radius: 10px; }\n"
-        "    .benoss-media-appendix { margin-top: 24px; padding-top: 14px; border-top: 1px solid #dbe5ef; }\n"
+        "    .benoss-media-appendix { margin-bottom: 24px; padding-bottom: 14px; border-bottom: 1px solid #dbe5ef; }\n"
         "    .benoss-media-appendix h3 { margin: 12px 0 8px; font-size: 1rem; }\n"
         "    .benoss-media-appendix figure { margin: 0 auto; width: min(560px, 100%); }\n"
         "    .benoss-media-appendix img { display: block; width: 100%; height: auto; border-radius: 10px; }\n"
@@ -2752,8 +3043,8 @@ def _wrap_blog_html_document(
         "</head>\n"
         "<body>\n"
         "  <main>\n"
-        f"{raw}\n"
         f"{media_part}"
+        f"{raw}\n"
         "  </main>\n"
         "</body>\n"
         "</html>\n"
@@ -2999,51 +3290,116 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
             "title": f"Daily Digest Blog {day_value.isoformat()}",
             "job_field": "blog_asset_id",
         },
+        "podcast_audio": {
+            "title": f"Daily Digest Podcast {day_value.isoformat()}",
+            "job_field": "podcast_asset_id",
+        },
+        "poster_image": {
+            "title": f"Daily Digest Poster {day_value.isoformat()}",
+            "job_field": "poster_asset_id",
+        },
     }
     assets: dict[str, GeneratedAsset] = {}
     errors: list[str] = []
 
-    for kind, meta in kind_map.items():
-        existing = None
-        if not force:
-            existing = (
-                GeneratedAsset.query.options(joinedload(GeneratedAsset.user))
-                .filter(
-                    GeneratedAsset.kind == kind,
-                    GeneratedAsset.visibility == "public",
-                    GeneratedAsset.status == "ready",
-                    GeneratedAsset.is_daily_digest.is_(True),
-                    GeneratedAsset.source_day == day_value,
-                )
-                .order_by(GeneratedAsset.created_at.desc(), GeneratedAsset.id.desc())
-                .first()
+    def _lookup_existing_asset(kind: str) -> GeneratedAsset | None:
+        if force:
+            return None
+        return (
+            GeneratedAsset.query.options(joinedload(GeneratedAsset.user))
+            .filter(
+                GeneratedAsset.kind == kind,
+                GeneratedAsset.visibility == "public",
+                GeneratedAsset.status == "ready",
+                GeneratedAsset.is_daily_digest.is_(True),
+                GeneratedAsset.source_day == day_value,
             )
-        if existing:
-            assets[kind] = existing
-            setattr(job, meta["job_field"], existing.id)
+            .order_by(GeneratedAsset.created_at.desc(), GeneratedAsset.id.desc())
+            .first()
+        )
+
+    def _bind_asset(kind: str, asset: GeneratedAsset) -> None:
+        assets[kind] = asset
+        setattr(job, kind_map[kind]["job_field"], asset.id)
+
+    existing_assets = {kind: _lookup_existing_asset(kind) for kind in kind_map}
+
+    for kind in ("poster_image", "podcast_audio"):
+        existing = existing_assets.get(kind)
+        if existing is not None:
+            _bind_asset(kind, existing)
             continue
 
         try:
-            asset, _ = _generate_blog_asset(
-                user=owner,
-                records_text=records_text,
-                image_urls=image_urls,
-                filters=base_filters,
-                title=meta["title"],
-                visibility="public",
-                source_day=day_value,
-                is_daily_digest=True,
-            )
-            assets[kind] = asset
-            setattr(job, meta["job_field"], asset.id)
+            if kind == "poster_image":
+                generated, _ = _generate_poster_asset(
+                    user=owner,
+                    records_text=records_text,
+                    image_urls=image_urls,
+                    filters=base_filters,
+                    title=kind_map[kind]["title"],
+                    visibility="public",
+                    source_day=day_value,
+                    is_daily_digest=True,
+                )
+            else:
+                generated, _ = _generate_podcast_asset(
+                    user=owner,
+                    records_text=records_text,
+                    image_urls=image_urls,
+                    filters=base_filters,
+                    title=kind_map[kind]["title"],
+                    visibility="public",
+                    source_day=day_value,
+                    is_daily_digest=True,
+                )
+            _bind_asset(kind, generated)
         except RuntimeError as exc:
             errors.append(f"{kind}: {exc}")
         except Exception as exc:
             errors.append(f"{kind}: {exc}")
 
+    poster_asset = assets.get("poster_image")
+    podcast_asset = assets.get("podcast_audio")
+    poster_asset_id = poster_asset.id if poster_asset else None
+    podcast_asset_id = podcast_asset.id if podcast_asset else None
+
+    existing_blog = existing_assets.get("blog_html")
+    if existing_blog is not None:
+        try:
+            _refresh_existing_blog_asset_media(
+                existing_blog,
+                poster_asset_id=poster_asset_id,
+                podcast_asset_id=podcast_asset_id,
+            )
+            _bind_asset("blog_html", existing_blog)
+        except Exception as exc:
+            current_app.logger.warning("daily digest blog media refresh failed, regenerate blog: %s", exc)
+            existing_blog = None
+
+    if existing_blog is None:
+        try:
+            generated_blog, _ = _generate_blog_asset(
+                user=owner,
+                records_text=records_text,
+                image_urls=image_urls,
+                filters=base_filters,
+                title=kind_map["blog_html"]["title"],
+                visibility="public",
+                poster_asset_id=poster_asset_id,
+                podcast_asset_id=podcast_asset_id,
+                source_day=day_value,
+                is_daily_digest=True,
+            )
+            _bind_asset("blog_html", generated_blog)
+        except RuntimeError as exc:
+            errors.append(f"blog_html: {exc}")
+        except Exception as exc:
+            errors.append(f"blog_html: {exc}")
+
     if len(assets) == len(kind_map):
         job.status = "ready"
-    elif assets:
+    elif "blog_html" in assets:
         job.status = "partial"
     else:
         job.status = "failed"
@@ -3052,7 +3408,7 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
     db.session.add(job)
     db.session.commit()
 
-    ordered_assets = sorted(assets.values(), key=lambda item: item.created_at or datetime.utcnow(), reverse=True)
+    ordered_assets = [assets[kind] for kind in ("blog_html", "podcast_audio", "poster_image") if kind in assets]
     return {
         "day": day_value.isoformat(),
         "timezone": tz_name,
@@ -3132,10 +3488,10 @@ def _archive_and_index_records(
 
 
 def _daily_digest_assets_for_day(day_value: date) -> list[GeneratedAsset]:
-    return (
+    assets = (
         GeneratedAsset.query.options(joinedload(GeneratedAsset.user))
         .filter(
-            GeneratedAsset.kind == "blog_html",
+            GeneratedAsset.kind.in_(("blog_html", "podcast_audio", "poster_image")),
             GeneratedAsset.visibility == "public",
             GeneratedAsset.status == "ready",
             GeneratedAsset.is_daily_digest.is_(True),
@@ -3144,6 +3500,9 @@ def _daily_digest_assets_for_day(day_value: date) -> list[GeneratedAsset]:
         .order_by(GeneratedAsset.created_at.desc(), GeneratedAsset.id.desc())
         .all()
     )
+    order = {"blog_html": 0, "podcast_audio": 1, "poster_image": 2}
+    assets.sort(key=lambda item: order.get(str(item.kind or "").strip().lower(), 99))
+    return assets
 
 
 def _public_record_count_for_day(*, day_value: date, timezone_name: str) -> int:
@@ -3186,8 +3545,13 @@ def _maybe_auto_build_digest_for_day(*, day_value: date, timezone_name: str, rec
     ready_kinds = {item.kind for item in ready_assets}
     required_kinds = {"blog_html"}
     if required_kinds.issubset(ready_kinds):
-        state["status"] = "ready"
-        state["message"] = "assets already ready"
+        missing_optional = {"podcast_audio", "poster_image"} - ready_kinds
+        if missing_optional:
+            state["status"] = "partial"
+            state["message"] = "blog ready; missing " + ", ".join(sorted(missing_optional))
+        else:
+            state["status"] = "ready"
+            state["message"] = "assets already ready"
         return state
 
     retry_minutes = max(1, min(get_setting_int("HOME_DIGEST_RETRY_MINUTES", default=30), 720))
@@ -3217,6 +3581,66 @@ def _maybe_auto_build_digest_for_day(*, day_value: date, timezone_name: str, rec
         state["status"] = "error"
         state["message"] = str(exc)
     return state
+
+
+@api_bp.route("/api/uploads/prepare", methods=["POST"])
+@login_required()
+def prepare_upload():
+    user = g.get("user")
+    payload = _form_or_json_payload()
+
+    filename_raw = str(payload.get("filename") or "").strip()
+    if not filename_raw:
+        return jsonify({"error": "filename is required"}), 400
+
+    try:
+        filename = _normalize_upload_filename(filename_raw, allow_empty=True)
+        size_bytes = _normalize_upload_size_bytes(payload.get("size_bytes"), allow_empty=True)
+        sha256 = _normalize_upload_sha256(payload.get("sha256"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    content_type = _normalize_upload_content_type(payload.get("content_type"), filename)
+    oss_key = record_content_key(new_uuid(), filename)
+    upload_token = _issue_direct_upload_token(
+        user_id=user.id,
+        oss_key=oss_key,
+        filename=filename,
+        content_type=content_type,
+        size_bytes=size_bytes,
+        sha256=sha256,
+    )
+
+    direct_enabled = bool(_direct_upload_enabled() and has_remote_backend())
+    direct_url = ""
+    if direct_enabled:
+        try:
+            direct_url = sign_put_url(oss_key, expires=_direct_upload_expires_seconds(), content_type=content_type)
+        except Exception:
+            direct_url = ""
+            current_app.logger.warning("failed to sign direct OSS upload url", exc_info=True)
+
+    response = {
+        "strategy": "direct_oss" if direct_url else "server_sdk",
+        "fallback": "server_sdk",
+        "upload_token": upload_token,
+        "file": {
+            "oss_key": oss_key,
+            "filename": filename,
+            "content_type": content_type,
+            "size_bytes": size_bytes,
+            "sha256": sha256,
+        },
+        "direct": {
+            "enabled": bool(direct_url),
+            "method": "PUT",
+            "url": direct_url,
+            "headers": {"Content-Type": content_type} if direct_url else {},
+            "expires_in": _direct_upload_expires_seconds(),
+            "reason": "" if direct_url else ("not_available" if not direct_enabled else "sign_failed"),
+        },
+    }
+    return jsonify(response)
 
 
 @api_bp.route("/api/push", methods=["POST"])
@@ -3362,6 +3786,11 @@ def update_record(record_id: int):
         return jsonify({"error": "forbidden"}), 403
 
     payload = _form_or_json_payload()
+    try:
+        uploaded_file_token = _request_single_uploaded_file_token(payload)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
     uploaded_oss_keys: list[str] = []
     stale_oss_keys: list[str] = []
     next_tags = record.get_tags()
@@ -3401,6 +3830,9 @@ def update_record(record_id: int):
         record.set_tags(next_tags)
 
     new_file = request.files.get("file")
+    if new_file and uploaded_file_token:
+        return jsonify({"error": "file and uploaded_file_token cannot be used together"}), 400
+
     if new_file:
         old_key = str(record.content.oss_key or "").strip()
         content, preview = _file_to_content(new_file)
@@ -3417,6 +3849,28 @@ def update_record(record_id: int):
         record.content.sha256 = content.sha256 or ""
         record.content.oss_key = content.oss_key or ""
 
+        record.preview = preview
+
+        if old_key and old_key != record.content.oss_key:
+            stale_oss_keys.append(old_key)
+    elif uploaded_file_token:
+        old_key = str(record.content.oss_key or "").strip()
+        try:
+            content, preview = _content_from_uploaded_file_token(uploaded_file_token, user_id=user.id)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        if content.oss_key:
+            uploaded_oss_keys.append(content.oss_key)
+
+        record.content.kind = content.kind
+        record.content.file_type = content.file_type or _detect_file_type(content.content_type, content.filename)
+        # Content.text_content is non-null in schema; keep empty string for file records.
+        record.content.text_content = content.text_content or ""
+        record.content.filename = content.filename or ""
+        record.content.content_type = content.content_type or ""
+        record.content.size_bytes = int(content.size_bytes or 0)
+        record.content.sha256 = content.sha256 or ""
+        record.content.oss_key = content.oss_key or ""
         record.preview = preview
 
         if old_key and old_key != record.content.oss_key:

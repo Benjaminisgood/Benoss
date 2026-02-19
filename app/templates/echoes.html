@@ -3,16 +3,16 @@
 <section class="hero-card echoes-hero" data-reveal>
   <div>
     <p class="muted">Timeline</p>
-    <h1>Echoes 内容流</h1>
-    <p class="muted">聚合记录与 AI 资产，支持公开范围切换、类型筛选与持续滚动浏览。</p>
+    <h1>Echoes 记录流</h1>
+    <p class="muted">统一浏览学习记录与生成资产，支持范围/类型筛选和连续加载。</p>
   </div>
 </section>
 
 <section class="card echoes-shell" data-reveal="80">
   <div class="section-head echoes-head">
     <div>
-      <h2>筛选与内容区</h2>
-      <p class="muted echoes-subtitle">选择类型后，内容区会自动刷新并继续向下加载。</p>
+      <h2>筛选与连续浏览</h2>
+      <p class="muted echoes-subtitle">筛选条件变更后自动刷新，向下滚动可继续加载更多内容。</p>
     </div>
     <div class="echoes-meta">
       <strong id="echoes-count">已显示 0 条</strong>
@@ -48,9 +48,9 @@
   </div>
 
   <div id="echoes-grid" class="echoes-grid"></div>
-  <p id="echoes-loading" class="echoes-loading muted" hidden>正在加载更多内容...</p>
-  <p id="echoes-empty" class="echoes-empty muted" hidden>暂无内容</p>
-  <p id="echoes-end" class="echoes-end muted" hidden>已加载全部内容</p>
+  <p id="echoes-loading" class="echoes-loading muted" hidden>正在加载更多条目...</p>
+  <p id="echoes-empty" class="echoes-empty muted" hidden>暂无匹配内容，试试调整筛选条件。</p>
+  <p id="echoes-end" class="echoes-end muted" hidden>已加载全部条目</p>
   <div id="echoes-sentinel" class="echoes-sentinel" aria-hidden="true"></div>
 </section>
 {% endblock %}

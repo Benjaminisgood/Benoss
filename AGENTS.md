@@ -289,6 +289,10 @@ AI provider 别名归一化：
 
 - `ARCHIVE_RETENTION_DAYS`：默认 `7`，`0` 表示永久保留（不自动删除归档 JSON 与 `_objects` 文件副本）。
 - `ARCHIVE_STORE_FILE_BLOB`：是否把文件记录本体归档到本地 `_objects`。
+- `OSS_DIRECT_UPLOAD_ENABLED`：是否启用前端直传 OSS（默认开启）。
+- `OSS_DIRECT_UPLOAD_EXPIRES_SECONDS`：直传签名 URL 有效期（秒）。
+- `OSS_DIRECT_UPLOAD_TOKEN_MAX_AGE_SECONDS`：直传后落库 token 的最大有效期（秒）。
+- `OSS_REMOTE_FAILOVER_LOCAL`：远端 OSS 写入失败时是否自动回退落地到 `OSS_LOCAL_DIR`。
 - `AI_ARCHIVE_MULTIMODAL_PARSE`：是否对非文本文件调用模型做解析。
 - `AI_ARCHIVE_PARSE_MAX_CHARS`：归档解析结果最大保留字符数。
 - `AI_ARCHIVE_PARSE_TIMEOUT_SECONDS`：归档解析接口超时。
@@ -343,7 +347,13 @@ AI provider 别名归一化：
 
 - `OSS_ENDPOINT`, `OSS_ACCESS_KEY_ID`, `OSS_ACCESS_KEY_SECRET`, `OSS_BUCKET` 全部存在
 
-否则走本地目录：
+远端可用时上传策略（记录文件）：
+
+- 首选前端直传：`POST /api/uploads/prepare` 申请 `PUT` 签名 URL，浏览器直传对象后再提交 `uploaded_file_token` 落库。
+- 直传失败/不可用：回退后端 `multipart/form-data` 上传，由 Flask 调 `put_object_from_file`。
+- 若 `OSS_REMOTE_FAILOVER_LOCAL=1` 且远端 SDK 写入失败：自动回退落地本地 `OSS_LOCAL_DIR`。
+
+远端不可用时走本地目录：
 
 - `OSS_LOCAL_DIR`（默认 `data/oss-local`）
 
@@ -356,7 +366,9 @@ AI provider 别名归一化：
 - `delete_object`
 - `copy_object`
 - `sign_get_url`
+- `sign_put_url`（前端直传签名）
 - `public_url`
+- `object_exists`（直传 token 落库前校验对象是否存在）
 
 OSS key 规则（`app/utils/oss_paths.py`）：
 
@@ -411,6 +423,7 @@ Flask CLI 命令：
 
 ## 9.3 核心业务路由（`api.py`）
 
+- `POST /api/uploads/prepare`
 - `POST /api/push`（别名）
 - `GET /api/pull`（别名，默认返回 content）
 - `POST /api/records`
@@ -440,18 +453,17 @@ Flask CLI 命令：
 
 ## 10.1 发布记录（文本/文件）
 
-入口：`POST /api/push` 或 `POST /api/records`
+入口：`POST /api/uploads/prepare`（可选直传预签名） + `POST /api/push` 或 `POST /api/records`
 
 流程：
 
 1. 解析 JSON/Form 参数
 2. `tags` 清洗（最多 20，单 tag 最多 40 字符）
 3. visibility 归一化（默认 `private`）
-4. 如果有 `file`：
-   - 存临时目录 `data/uploads`
-   - 算 `sha256`
-   - 上传 OSS/本地对象目录
-   - 生成 `Content(kind=file)`
+4. 文件上传三层策略（按优先级）：
+   - 直传优先：前端先调 `/api/uploads/prepare` 申请签名 URL，浏览器 `PUT` 成功后提交 `uploaded_file_token`。
+   - 服务端回退：若直传失败，前端回退 `file` 上传；后端存临时目录 `data/uploads`，算 `sha256`，再上传 OSS。
+   - 本地兜底：若远端 SDK 写入失败且 `OSS_REMOTE_FAILOVER_LOCAL=1`，自动落地到 `data/oss-local`。
 5. 否则要求 `text` 非空，生成 `Content(kind=text)`
 6. 创建 `Record`，计算 `preview`，推断/应用 `format`
 7. DB commit
@@ -480,7 +492,8 @@ Flask CLI 命令：
 - 仅作者可改
 - 可改 `visibility/tags/format`
 - 文本记录可改 `text`（不可空）
-- 上传新文件时会替换 `Content` 文件字段并尝试删除旧 OSS 文件
+- 文件替换支持两种入参：`file`（后端上传）或 `uploaded_file_token`（直传后落库），二者互斥
+- 上传新文件时会替换 `Content` 文件字段并尝试删除旧 OSS 文件（含本地兜底对象）
 
 删除：`DELETE /api/records/<id>`
 
@@ -685,6 +698,12 @@ benoss-sync pull --username <user> --output ./pulled_records
   - 手动脚本默认常用 `visibility=private`，不会出现在 Home 卡片
 - `content unavailable` / `asset unavailable`：
   - 检查 `oss_key`、OSS 凭据或本地 `data/oss-local` 文件
+- 直传总是失败并回退服务端上传：
+  - 检查 Bucket CORS（需允许站点来源的 `PUT/OPTIONS`，以及 `Content-Type` 头）
+  - 检查 `OSS_DIRECT_UPLOAD_ENABLED` 是否为 `1`
+- `uploaded_file_token expired` / `invalid uploaded_file_token`：
+  - 说明直传后落库 token 过期或不合法，需重新发起 `/api/uploads/prepare` + 直传
+  - 检查 `OSS_DIRECT_UPLOAD_TOKEN_MAX_AGE_SECONDS` 是否过短
 - 磁盘占用持续增长：
   - 检查 `ARCHIVE_RETENTION_DAYS` 是否被设为 `0`（永久保留）
   - 检查 `ARCHIVE_STORE_FILE_BLOB` 是否开启（开启后会把文件本体落地到 `data/daily-archive/_objects`）
@@ -712,6 +731,9 @@ benoss-sync pull --username <user> --output ./pulled_records
 
 - 默认 DB：`data/benoss.sqlite`
 - 默认最大上传：1GB（`MAX_CONTENT_LENGTH`）
+- 上传链路默认“直传优先、服务端回退、本地兜底”：
+  - 前端直传开关：`OSS_DIRECT_UPLOAD_ENABLED`
+  - 远端写入失败本地兜底开关：`OSS_REMOTE_FAILOVER_LOCAL`
 - 所有时间归档按 `DIGEST_TIMEZONE` 切日
 - 默认归档保留：7 天（`ARCHIVE_RETENTION_DAYS=7`）
 - `ARCHIVE_RETENTION_DAYS=0` 表示永久保留，归档 JSON 与 `_objects` 文件副本不会被自动清理

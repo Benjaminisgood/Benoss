@@ -40,14 +40,28 @@
         autocomplete="off"
       >
     </label>
-    <label class="inline-check admin-only-overrides">
+    <label class="inline-switch inline-switch-sm admin-only-overrides">
       <input id="admin-only-overrides" type="checkbox">
-      <span>仅看前端覆盖</span>
+      <span class="inline-switch-ui" aria-hidden="true"><span class="inline-switch-knob"></span></span>
+      <span class="inline-switch-copy">
+        <span class="inline-switch-title">仅看前端覆盖</span>
+        <span class="inline-switch-desc">隐藏环境变量与默认值</span>
+      </span>
     </label>
   </div>
 
   <p id="admin-settings-summary" class="muted admin-settings-summary"></p>
   <p id="admin-settings-status" class="muted"></p>
   <form id="admin-settings-form" class="admin-settings-grid"></form>
+</section>
+
+<section class="card" data-reveal="100">
+  <div class="section-head">
+    <h3>向量维护</h3>
+    <button type="button" class="secondary" id="admin-vector-rebuild-btn">手动重建向量索引</button>
+  </div>
+  <p class="muted">这是低频兜底入口；仅在迁移历史归档、修改 embedding 模型、或索引异常时使用。</p>
+  <p class="muted"><code>VECTOR_TOP_K</code> 与 <code>BOARD_DEFAULT_DAYS</code> 已统一在本页运行时配置中管理。</p>
+  <p id="admin-vector-status" class="muted"></p>
 </section>
 {% endblock %}
