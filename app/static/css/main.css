@@ -2794,6 +2794,12 @@ button.echoes-chip.active {
   flex-wrap: wrap;
 }
 
+.board-digest-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
 .board-digest-control-btn {
   border-radius: var(--radius-pill);
   border: 1px solid #bfd9d9;
@@ -2810,15 +2816,14 @@ button.echoes-chip.active {
   color: #fff;
 }
 
-.board-digest-control-btn.is-source {
-  background: #e6f2f7;
-  border-color: #95bfd2;
-}
-
-.board-digest-control-btn.is-source.is-active {
+.board-digest-save-btn {
+  border-radius: var(--radius-pill);
+  border: 1px solid #0a6072;
   background: #0a6072;
-  border-color: #0a6072;
   color: #fff;
+  padding: 0.28rem 0.72rem;
+  font-size: 0.84rem;
+  line-height: 1.2;
 }
 
 .board-digest-panel {
@@ -2831,13 +2836,6 @@ button.echoes-chip.active {
 
 .board-digest-panels {
   display: block;
-}
-
-.board-digest-panels.is-live {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.6rem;
-  align-items: stretch;
 }
 
 .board-digest-source {
@@ -3262,10 +3260,6 @@ button.echoes-chip.active {
     min-height: 520px;
   }
 
-  .board-digest-panels.is-live {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .board-legend-tag {
     margin-left: 0;
   }
@@ -3280,10 +3274,11 @@ button.echoes-chip.active {
   }
 
   .notice-context-rail {
-    position: static;
-    top: auto;
-    max-height: none;
-    order: 2;
+    display: none;
+  }
+
+  #notice-context-toggle-group {
+    display: none;
   }
 
   .notice-reader-group-translate {
