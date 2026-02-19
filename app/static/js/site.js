@@ -2637,125 +2637,181 @@
     window.location.assign(path);
   }
 
-  function boardDigestToolbarButtonHtml(mode, active, label) {
-    const toneClass = active ? "is-active" : "";
-    return `<button type="button" class="board-digest-mode-btn ${toneClass}" data-board-digest-mode="${escapeHtml(mode)}">${escapeHtml(label)}</button>`;
+  const boardDigestState = {
+    asset: null,
+    sourceHtml: "",
+    mode: "preview",
+    editEnabled: false,
+    canEdit: false,
+    dirty: false,
+    previewTimer: null,
+    saving: false,
+  };
+
+  function clearBoardDigestPreviewTimer() {
+    if (boardDigestState.previewTimer) {
+      window.clearTimeout(boardDigestState.previewTimer);
+      boardDigestState.previewTimer = null;
+    }
   }
 
-  function renderBoardDigestView(asset, sourceHtml = "", mode = "preview") {
+  function boardDigestPreviewHtml() {
+    const text = String(boardDigestState.sourceHtml || "");
+    if (text.trim()) {
+      return text;
+    }
+    return "<p class=\"muted\">博客源码为空</p>";
+  }
+
+  function updateBoardDigestPreviewNow() {
+    const viewEl = qs("#board-digest-view");
+    if (!viewEl) {
+      return;
+    }
+    const frame = qs("[data-board-digest-preview]", viewEl);
+    if (frame instanceof HTMLIFrameElement) {
+      frame.srcdoc = boardDigestPreviewHtml();
+    }
+  }
+
+  function scheduleBoardDigestPreviewUpdate(delayMs = 400) {
+    clearBoardDigestPreviewTimer();
+    boardDigestState.previewTimer = window.setTimeout(() => {
+      boardDigestState.previewTimer = null;
+      updateBoardDigestPreviewNow();
+    }, delayMs);
+  }
+
+  function boardDigestModeToggleLabel() {
+    return boardDigestState.mode === "preview" ? "源码" : "预览";
+  }
+
+  function renderBoardDigestView() {
     const viewEl = qs("#board-digest-view");
     if (!viewEl) {
       return;
     }
 
-    const normalizedMode = mode === "source" ? "source" : "preview";
-    const canEdit = Boolean(asset?.can_edit);
-    const sourceText = String(sourceHtml || "");
-    const sourcePreview = sourceText.length > 0 ? sourceText : "<p class=\"muted\">博客源码为空</p>";
-    const sourceReadOnlyAttr = canEdit ? "" : " readonly";
-    const saveButton = canEdit
-      ? '<button type="button" class="board-digest-save-btn" data-board-digest-action="save">保存源码</button>'
-      : '<span class="muted">当前账号仅可查看源码</span>';
+    const canEdit = Boolean(boardDigestState.canEdit);
+    const editEnabled = Boolean(boardDigestState.editEnabled && canEdit);
+    const editLabel = canEdit ? (editEnabled ? "编辑中" : "编辑") : "只读";
+    const editClass = editEnabled ? "is-active" : "";
+    const editDisabled = canEdit ? "" : " disabled";
+    const modeClass = boardDigestState.mode === "source" ? "is-source" : "is-preview";
+    const modeLabel = editEnabled ? "实时预览" : boardDigestModeToggleLabel();
+    const modeDisabled = editEnabled ? " disabled" : "";
+    const sourceReadOnlyAttr = editEnabled ? "" : " readonly";
+    const sourceText = String(boardDigestState.sourceHtml || "");
+    const title = String(boardDigestState.asset?.title || "日报博客");
+    const showLivePreview = editEnabled;
+    const previewVisible = showLivePreview || boardDigestState.mode === "preview";
+    const sourceVisible = showLivePreview || boardDigestState.mode === "source";
 
     viewEl.innerHTML = `
       <div class="board-digest-toolbar">
-        <div class="board-digest-mode-switch" role="tablist" aria-label="博客查看模式">
-          ${boardDigestToolbarButtonHtml("preview", normalizedMode === "preview", "渲染阅读")}
-          ${boardDigestToolbarButtonHtml("source", normalizedMode === "source", "HTML源码")}
+        <div class="board-digest-mode-switch">
+          <button type="button" class="board-digest-control-btn ${editClass}" data-board-digest-action="toggle-edit"${editDisabled}>${escapeHtml(editLabel)}</button>
+          <button type="button" class="board-digest-control-btn ${modeClass}" data-board-digest-action="toggle-mode"${modeDisabled}>${escapeHtml(modeLabel)}</button>
         </div>
         <div class="board-digest-toolbar-actions">
-          ${saveButton}
+          <span class="muted">${editEnabled ? "输入后自动预览，关闭编辑自动保存" : "默认预览，可切换源码"}</span>
         </div>
       </div>
 
-      <section class="board-digest-panel ${normalizedMode === "preview" ? "is-active" : ""}" data-board-digest-panel="preview" ${
-        normalizedMode === "preview" ? "" : "hidden"
-      }>
-        <iframe
-          class="board-digest-frame"
-          title="${escapeHtml(String(asset?.title || "日报博客"))}"
-          data-board-digest-preview
-        ></iframe>
-      </section>
+      <div class="board-digest-panels ${showLivePreview ? "is-live" : ""}">
+        <section class="board-digest-panel ${previewVisible ? "is-active" : ""}" data-board-digest-panel="preview" ${previewVisible ? "" : "hidden"}>
+          <iframe
+            class="board-digest-frame"
+            title="${escapeHtml(title)}"
+            sandbox="allow-same-origin"
+            loading="lazy"
+            data-board-digest-preview
+          ></iframe>
+        </section>
 
-      <section class="board-digest-panel ${normalizedMode === "source" ? "is-active" : ""}" data-board-digest-panel="source" ${
-        normalizedMode === "source" ? "" : "hidden"
-      }>
-        <textarea class="board-digest-source" data-board-digest-source${sourceReadOnlyAttr}>${escapeHtml(sourceText)}</textarea>
-      </section>
+        <section class="board-digest-panel ${sourceVisible ? "is-active" : ""}" data-board-digest-panel="source" ${sourceVisible ? "" : "hidden"}>
+          <textarea class="board-digest-source" data-board-digest-source${sourceReadOnlyAttr}>${escapeHtml(sourceText)}</textarea>
+        </section>
+      </div>
     `;
 
-    const frame = qs("[data-board-digest-preview]", viewEl);
-    if (frame instanceof HTMLIFrameElement) {
-      frame.srcdoc = sourcePreview;
-    }
+    updateBoardDigestPreviewNow();
   }
 
-  function setBoardDigestMode(mode) {
-    const viewEl = qs("#board-digest-view");
-    if (!viewEl) {
+  function toggleBoardDigestMode() {
+    if (boardDigestState.editEnabled) {
       return;
     }
-    const normalizedMode = mode === "source" ? "source" : "preview";
-    const buttons = Array.from(viewEl.querySelectorAll("[data-board-digest-mode]"));
-    buttons.forEach((button) => {
-      if (!(button instanceof HTMLButtonElement)) {
-        return;
-      }
-      const active = String(button.dataset.boardDigestMode || "") === normalizedMode;
-      button.classList.toggle("is-active", active);
-      button.setAttribute("aria-pressed", active ? "true" : "false");
-    });
-
-    const previewPanel = qs('[data-board-digest-panel="preview"]', viewEl);
-    const sourcePanel = qs('[data-board-digest-panel="source"]', viewEl);
-    if (previewPanel) {
-      previewPanel.hidden = normalizedMode !== "preview";
-    }
-    if (sourcePanel) {
-      sourcePanel.hidden = normalizedMode !== "source";
-    }
-
-    if (normalizedMode === "preview") {
-      const sourceEl = qs("[data-board-digest-source]", viewEl);
-      const frame = qs("[data-board-digest-preview]", viewEl);
-      if (sourceEl instanceof HTMLTextAreaElement && frame instanceof HTMLIFrameElement) {
-        frame.srcdoc = String(sourceEl.value || "");
-      }
-    }
+    boardDigestState.mode = boardDigestState.mode === "preview" ? "source" : "preview";
+    renderBoardDigestView();
   }
 
-  async function saveBoardDigestSourceHtml(asset, metaEl) {
+  async function persistBoardDigestSourceHtml(metaEl) {
     const viewEl = qs("#board-digest-view");
-    if (!viewEl || !asset || !asset.id || !asset.can_edit) {
+    const asset = boardDigestState.asset;
+    if (!viewEl || !asset || !asset.id || !boardDigestState.canEdit) {
       return;
     }
     const sourceEl = qs("[data-board-digest-source]", viewEl);
-    const saveBtn = qs('[data-board-digest-action="save"]', viewEl);
+    const editBtn = qs('[data-board-digest-action="toggle-edit"]', viewEl);
     if (!(sourceEl instanceof HTMLTextAreaElement)) {
       return;
     }
+    boardDigestState.sourceHtml = String(sourceEl.value || "");
+    if (!boardDigestState.dirty || boardDigestState.saving) {
+      return;
+    }
+
     const payload = new FormData();
-    payload.set("html", String(sourceEl.value || ""));
+    payload.set("html", boardDigestState.sourceHtml);
     try {
-      setButtonBusy(saveBtn, true, { busyText: "保存中..." });
+      boardDigestState.saving = true;
+      setButtonBusy(editBtn, true, { busyText: "保存中..." });
       await api(`/api/generated-assets/${asset.id}`, {
         method: "PATCH",
         body: payload,
       });
+      boardDigestState.dirty = false;
       if (metaEl) {
         setFeedback(metaEl, "源码已保存", "success");
       }
-      const frame = qs("[data-board-digest-preview]", viewEl);
-      if (frame instanceof HTMLIFrameElement) {
-        frame.srcdoc = String(sourceEl.value || "");
-      }
+      updateBoardDigestPreviewNow();
     } catch (error) {
       if (metaEl) {
         setFeedback(metaEl, `保存失败: ${String(error?.message || "未知错误")}`, "error");
       }
     } finally {
-      setButtonBusy(saveBtn, false);
+      boardDigestState.saving = false;
+      setButtonBusy(editBtn, false);
+    }
+  }
+
+  async function toggleBoardDigestEdit(metaEl) {
+    if (!boardDigestState.canEdit) {
+      return;
+    }
+    const viewEl = qs("#board-digest-view");
+    const sourceEl = qs("[data-board-digest-source]", viewEl || document);
+    if (sourceEl instanceof HTMLTextAreaElement) {
+      boardDigestState.sourceHtml = String(sourceEl.value || "");
+    }
+
+    if (boardDigestState.editEnabled) {
+      boardDigestState.editEnabled = false;
+      renderBoardDigestView();
+      await persistBoardDigestSourceHtml(metaEl);
+      return;
+    }
+
+    boardDigestState.editEnabled = true;
+    if (boardDigestState.mode !== "source") {
+      boardDigestState.mode = "source";
+    }
+    renderBoardDigestView();
+    const nextSourceEl = qs("[data-board-digest-source]", viewEl || document);
+    if (nextSourceEl instanceof HTMLTextAreaElement && boardDigestState.mode === "source") {
+      nextSourceEl.focus();
+      nextSourceEl.setSelectionRange(nextSourceEl.value.length, nextSourceEl.value.length);
     }
   }
 
@@ -2847,16 +2903,18 @@
       return;
     }
 
-    renderBoardDigestView(asset, sourceHtml, "preview");
+    clearBoardDigestPreviewTimer();
+    boardDigestState.asset = asset;
+    boardDigestState.sourceHtml = String(sourceHtml || "");
+    boardDigestState.mode = "preview";
+    boardDigestState.editEnabled = false;
+    boardDigestState.canEdit = Boolean(asset?.can_edit);
+    boardDigestState.dirty = false;
+    boardDigestState.saving = false;
+    renderBoardDigestView();
 
     viewEl.onclick = (event) => {
       if (!(event.target instanceof Element)) {
-        return;
-      }
-      const modeBtn = event.target.closest("[data-board-digest-mode]");
-      if (modeBtn) {
-        const mode = String(modeBtn.getAttribute("data-board-digest-mode") || "");
-        setBoardDigestMode(mode);
         return;
       }
       const actionBtn = event.target.closest("[data-board-digest-action]");
@@ -2864,9 +2922,25 @@
         return;
       }
       const action = String(actionBtn.getAttribute("data-board-digest-action") || "").trim();
-      if (action === "save") {
-        saveBoardDigestSourceHtml(asset, metaEl).catch((error) => window.console.error(error));
+      if (action === "toggle-mode") {
+        toggleBoardDigestMode();
+        return;
       }
+      if (action === "toggle-edit") {
+        toggleBoardDigestEdit(metaEl).catch((error) => window.console.error(error));
+      }
+    };
+
+    viewEl.oninput = (event) => {
+      if (!(event.target instanceof HTMLTextAreaElement)) {
+        return;
+      }
+      if (!event.target.hasAttribute("data-board-digest-source")) {
+        return;
+      }
+      boardDigestState.sourceHtml = String(event.target.value || "");
+      boardDigestState.dirty = true;
+      scheduleBoardDigestPreviewUpdate(400);
     };
   }
 
@@ -3642,6 +3716,51 @@
     return String(htmlEl.innerText || "").trim();
   }
 
+  function noticeScrollOffsetPx() {
+    const rootStyle = window.getComputedStyle(document.documentElement);
+    const headerOffset = Number.parseFloat(String(rootStyle.getPropertyValue("--site-header-offset") || "0"));
+    let offset = Number.isFinite(headerOffset) && headerOffset > 0 ? headerOffset : 88;
+
+    const toolbar = qs("#notice-reader-toolbar");
+    if (toolbar instanceof HTMLElement) {
+      const toolbarStyle = window.getComputedStyle(toolbar);
+      const stickyToolbar = toolbarStyle.position === "sticky" || toolbarStyle.position === "fixed";
+      if (stickyToolbar) {
+        offset += toolbar.getBoundingClientRect().height + 12;
+      }
+    }
+    return Math.max(72, Math.round(offset));
+  }
+
+  function focusNoticeRecordByAnchor(anchor, opts = {}) {
+    const raw = String(anchor || "").trim();
+    if (!raw) {
+      return false;
+    }
+    const anchorId = raw.startsWith("#") ? raw.slice(1) : raw;
+    if (!anchorId) {
+      return false;
+    }
+    const target = document.getElementById(anchorId);
+    if (!(target instanceof HTMLElement)) {
+      return false;
+    }
+    const top = Math.max(0, Math.round(window.scrollY + target.getBoundingClientRect().top - noticeScrollOffsetPx()));
+    const behavior = opts.behavior === "auto" ? "auto" : "smooth";
+    window.scrollTo({ top, behavior });
+
+    target.classList.add("notice-block-targeted");
+    window.setTimeout(() => {
+      target.classList.remove("notice-block-targeted");
+    }, 900);
+
+    if (opts.setHash !== false && window.history && typeof window.history.replaceState === "function") {
+      const base = `${window.location.pathname}${window.location.search}`;
+      window.history.replaceState(null, "", `${base}#${anchorId}`);
+    }
+    return true;
+  }
+
   function initNoticeReaderToolbar() {
     const toolbar = qs("#notice-reader-toolbar");
     if (!toolbar) {
@@ -3755,7 +3874,8 @@
       if (event.target.closest("#notice-reader-top")) {
         const panel = qs("#notice-render-panel");
         if (panel) {
-          panel.scrollIntoView({ behavior: "smooth", block: "start" });
+          const top = Math.max(0, Math.round(window.scrollY + panel.getBoundingClientRect().top - noticeScrollOffsetPx()));
+          window.scrollTo({ top, behavior: "smooth" });
         }
       }
     });
@@ -3818,6 +3938,14 @@
       setNoticeMeta(`匹配记录: ${data.count || 0}`, "success");
       applyNoticeReaderPrefs(noticeReaderPrefs, { persist: false });
       setNoticeResultsVisible(true);
+      if (page === "notice") {
+        const hash = String(window.location.hash || "");
+        if (hash.startsWith("#notice-record-")) {
+          window.requestAnimationFrame(() => {
+            focusNoticeRecordByAnchor(hash, { behavior: "auto", setHash: false });
+          });
+        }
+      }
     } catch (error) {
       const message = String(error?.message || "渲染失败");
       if (htmlEl) {
@@ -3855,6 +3983,21 @@
     document.addEventListener("click", (event) => {
       if (!(event.target instanceof Element) || page !== "notice") {
         return;
+      }
+      const contextLink = event.target.closest("a.notice-context-link");
+      if (contextLink instanceof HTMLAnchorElement) {
+        if (
+          event instanceof MouseEvent &&
+          (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+        ) {
+          return;
+        }
+        const anchor = String(contextLink.dataset.noticeAnchor || contextLink.getAttribute("href") || "").trim();
+        if (anchor && anchor.startsWith("#notice-record-")) {
+          event.preventDefault();
+          focusNoticeRecordByAnchor(anchor, { behavior: "smooth", setHash: true });
+          return;
+        }
       }
       const link = event.target.closest("a[data-notice-tag]");
       if (!(link instanceof HTMLAnchorElement)) {

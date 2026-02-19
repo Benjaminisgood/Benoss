@@ -1001,6 +1001,26 @@ a.tag-pill:hover {
   font-size: 0.72rem;
 }
 
+.notice-context-actions {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.notice-context-actions .bubble {
+  border-color: #c6d9e8;
+  background: #f0f8fd;
+  color: #1f5678;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  padding: 0.16rem 0.56rem;
+}
+
+.notice-context-actions .bubble:hover {
+  background: #e6f3fb;
+}
+
 .admin-settings-grid {
   display: grid;
   gap: 1rem;
@@ -1224,6 +1244,13 @@ a.tag-pill:hover {
   background: #fcfeff;
   display: grid;
   gap: 0.46rem;
+  scroll-margin-top: calc(var(--site-header-offset, 88px) + 5.5rem);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.notice-block.notice-block-targeted {
+  border-color: #7ca8c4;
+  box-shadow: 0 0 0 2px rgba(41, 111, 150, 0.18);
 }
 
 .notice-day .notice-block:last-child {
@@ -2767,8 +2794,7 @@ button.echoes-chip.active {
   flex-wrap: wrap;
 }
 
-.board-digest-mode-btn,
-.board-digest-save-btn {
+.board-digest-control-btn {
   border-radius: var(--radius-pill);
   border: 1px solid #bfd9d9;
   background: #eff9f9;
@@ -2778,7 +2804,18 @@ button.echoes-chip.active {
   line-height: 1.2;
 }
 
-.board-digest-mode-btn.is-active {
+.board-digest-control-btn.is-active {
+  background: #0a6072;
+  border-color: #0a6072;
+  color: #fff;
+}
+
+.board-digest-control-btn.is-source {
+  background: #e6f2f7;
+  border-color: #95bfd2;
+}
+
+.board-digest-control-btn.is-source.is-active {
   background: #0a6072;
   border-color: #0a6072;
   color: #fff;
@@ -2790,6 +2827,17 @@ button.echoes-chip.active {
 
 .board-digest-panel[hidden] {
   display: none !important;
+}
+
+.board-digest-panels {
+  display: block;
+}
+
+.board-digest-panels.is-live {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+  align-items: stretch;
 }
 
 .board-digest-source {
@@ -3212,6 +3260,10 @@ button.echoes-chip.active {
 
   .board-digest-source {
     min-height: 520px;
+  }
+
+  .board-digest-panels.is-live {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .board-legend-tag {

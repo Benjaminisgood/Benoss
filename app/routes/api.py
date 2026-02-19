@@ -1113,7 +1113,9 @@ def _record_html_content(content: Content | None) -> str:
     )
 
 
-def _render_notice_html(records: list[Record], *, day: str, user_id: str, tag: str) -> str:
+def _render_notice_html(
+    records: list[Record], *, day: str, user_id: str, tag: str, viewer: User | None = None
+) -> str:
     if not records:
         return "<article class=\"notice-render\"><p>没有匹配到记录。</p></article>"
 
@@ -1191,7 +1193,7 @@ def _render_notice_html(records: list[Record], *, day: str, user_id: str, tag: s
         side_lines.extend(
             [
                 "<article class=\"notice-context-item\">",
-                f"<a class=\"notice-context-link\" href=\"#{record_anchor}\">",
+                f"<a class=\"notice-context-link\" href=\"#{record_anchor}\" data-notice-anchor=\"{record_anchor}\">",
                 f"<span class=\"notice-context-time\">{stamp}</span>",
                 f"<span class=\"notice-context-user\">{user_name or '匿名用户'}</span>",
                 f"<span class=\"notice-context-record\">#{int(record.id)} · {visibility_text or 'record'}</span>",
@@ -1199,9 +1201,16 @@ def _render_notice_html(records: list[Record], *, day: str, user_id: str, tag: s
                 "<p class=\"notice-context-tags\">"
                 + (" ".join(record_tag_links) if record_tag_links else "<span class=\"muted\">无标签</span>")
                 + "</p>",
-                "</article>",
             ]
         )
+        can_edit = bool(viewer and record.user_id == viewer.id)
+        if can_edit:
+            side_lines.append(
+                "<p class=\"notice-context-actions\">"
+                f"<button type=\"button\" class=\"bubble notice-context-action-edit\" data-action=\"edit-record\" data-record-id=\"{int(record.id)}\">编辑</button>"
+                "</p>"
+            )
+        side_lines.append("</article>")
 
     lines.append("</section>")
     lines.append("</section>")
@@ -3954,7 +3963,7 @@ def notice_render():
     user_id = str(request.args.get("user_id") or "").strip()
     tag = str(request.args.get("tag") or "").strip()
 
-    html_output = _render_notice_html(records, day=day, user_id=user_id, tag=tag)
+    html_output = _render_notice_html(records, day=day, user_id=user_id, tag=tag, viewer=user)
 
     return jsonify(
         {
