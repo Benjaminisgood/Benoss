@@ -42,6 +42,7 @@ class Content(db.Model, TimestampMixin):
     id = db.Column(db.Integer, primary_key=True)
 
     kind = db.Column(db.String(16), nullable=False)  # text | file
+    file_type = db.Column(db.String(16), nullable=False, default="file")  # text/web/image/video/audio/log/database/archive/document/file
     text_content = db.Column(db.Text, nullable=False, default="")
 
     oss_key = db.Column(db.String(512), nullable=False, default="")
@@ -60,7 +61,6 @@ class Record(db.Model, TimestampMixin):
     content_id = db.Column(db.Integer, db.ForeignKey("content.id"), nullable=False, unique=True, index=True)
     content = db.relationship("Content", backref=db.backref("record", uselist=False))
 
-    format = db.Column(db.String(32), nullable=False, default="text")
     visibility = db.Column(db.String(16), nullable=False, default="private")  # public | private
     tags_json = db.Column(db.Text, nullable=False, default="[]")
     preview = db.Column(db.Text, nullable=False, default="")
@@ -123,6 +123,7 @@ class GeneratedAsset(db.Model, TimestampMixin):
 
     content_type = db.Column(db.String(255), nullable=False, default="")
     ext = db.Column(db.String(16), nullable=False, default="")
+    file_type = db.Column(db.String(16), nullable=False, default="file")  # text/web/image/video/audio/log/database/archive/document/file
     size_bytes = db.Column(db.Integer, nullable=False, default=0)
     oss_key = db.Column(db.String(512), nullable=False, default="")
     sha256 = db.Column(db.String(64), nullable=False, default="")

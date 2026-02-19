@@ -1095,7 +1095,6 @@
 
     const tagsValue = Array.isArray(record.tags) ? record.tags.join(", ") : "";
     const visibilityValue = normalizeVisibility(record.visibility, "private");
-    const formatValue = String(record.format || "").trim();
     const isTextRecord = record.content?.kind === "text";
     const textValue = isTextRecord ? String(record.content?.text || "") : "";
     const fileEditorSection = isTextRecord
@@ -1128,10 +1127,6 @@
                 <option value="public" ${visibilityValue === "public" ? "selected" : ""}>公开</option>
               </select>
             </label>
-            <label>
-              格式
-              <input type="text" name="format" value="${escapeHtml(formatValue)}" placeholder="留空将自动推断">
-            </label>
           </div>
           <label>
             标签（逗号分隔）
@@ -1146,7 +1141,7 @@
               </label>
               <p class="muted">文本记录可直接改写内容。</p>
             `
-              : "<p class=\"muted\">文件记录可修改标签/可见性/格式，或上传新文件进行替换。</p>"
+              : "<p class=\"muted\">文件记录可修改标签/可见性，或上传新文件进行替换。</p>"
           }
           ${fileEditorSection}
           <p class="record-edit-feedback muted" data-record-edit-feedback></p>
@@ -1187,7 +1182,7 @@
     return `
       <article class="record-item" data-record-id="${record.id}">
         <div class="record-head">
-          <strong>#${record.record_no} ${escapeHtml(record.format || "record")}</strong>
+          <strong>#${record.record_no} record</strong>
           <span class="muted">${meta.join(" | ")}</span>
         </div>
         <p>${linkifyText(record.preview || "(无预览内容)")}</p>
@@ -1226,7 +1221,7 @@
     return `
       <article class="record-item" data-record-id="${record.id}">
         <div class="record-head">
-          <strong>#${record.record_no} ${escapeHtml(record.format || "record")}</strong>
+          <strong>#${record.record_no} record</strong>
           <span class="muted">${meta.join(" | ")}</span>
         </div>
         <div class="tag-line">${tagHtml(record.tags)}</div>
@@ -4118,11 +4113,9 @@
 
             const visibility = normalizeVisibility(formData.get("visibility"), currentRecord?.visibility || "private");
             const tags = String(formData.get("tags") || "");
-            const format = String(formData.get("format") || "").trim();
 
             payload.set("visibility", visibility);
             payload.set("tags", tags);
-            payload.set("format", format);
 
             if (currentRecord?.content?.kind === "text") {
               const text = String(formData.get("text") || "").trim();

@@ -363,6 +363,7 @@ def _text_to_content(text_value: str) -> Content:
     put_object_bytes(oss_key, data, content_type="text/plain; charset=utf-8")
     return Content(
         kind="text",
+        file_type="text",
         text_content=_preview_text(text, limit=2000),
         oss_key=oss_key,
         filename="text.txt",
@@ -455,7 +456,7 @@ def _normalized_file_meta(content_type: str | None, filename_or_ext: str | None)
     return ctype, name, suffix
 
 
-def _detect_file_format(content_type: str | None, filename_or_ext: str | None) -> str:
+def _detect_file_type(content_type: str | None, filename_or_ext: str | None) -> str:
     ctype, name, suffix = _normalized_file_meta(content_type, filename_or_ext)
 
     if ctype.startswith("image/") or suffix in _IMAGE_FILE_EXTENSIONS:
@@ -471,7 +472,7 @@ def _detect_file_format(content_type: str | None, filename_or_ext: str | None) -
         or suffix in _WEB_FILE_EXTENSIONS
         or name.endswith(_WEB_FILE_EXTENSIONS)
     ):
-        return "html"
+        return "web"
     if suffix in _LOG_FILE_EXTENSIONS:
         return "log"
     if ctype in _DATABASE_FILE_MIME_TYPES or suffix in _DATABASE_FILE_EXTENSIONS:
@@ -485,12 +486,56 @@ def _detect_file_format(content_type: str | None, filename_or_ext: str | None) -
     return "file"
 
 
+def _normalize_stored_file_type(raw: str | None, *, fallback: str = "file") -> str:
+    value = str(raw or "").strip().lower()
+    if value in _ECHO_FILE_TYPES:
+        return value
+    return fallback
+
+
+def _detect_content_file_type(content: Content | None) -> str:
+    if not content:
+        return "file"
+    if str(content.kind or "").strip().lower() == "text":
+        return "text"
+    return _detect_file_type(content.content_type, content.filename)
+
+
+def _detect_asset_file_type_from_values(kind: str | None, content_type: str | None, ext: str | None) -> str:
+    normalized_kind = str(kind or "").strip().lower()
+    if normalized_kind == "blog_html":
+        return "web"
+    return _detect_file_type(content_type, ext)
+
+
+def _detect_asset_file_type(asset: GeneratedAsset | None) -> str:
+    if not asset:
+        return "file"
+    return _detect_asset_file_type_from_values(asset.kind, asset.content_type, asset.ext)
+
+
+def _rechecked_content_file_type(content: Content | None) -> str:
+    if not content:
+        return "file"
+    detected = _detect_content_file_type(content)
+    stored = _normalize_stored_file_type(getattr(content, "file_type", ""), fallback="")
+    return detected if stored != detected else stored
+
+
+def _rechecked_asset_file_type(asset: GeneratedAsset | None) -> str:
+    if not asset:
+        return "file"
+    detected = _detect_asset_file_type(asset)
+    stored = _normalize_stored_file_type(getattr(asset, "file_type", ""), fallback="")
+    return detected if stored != detected else stored
+
+
 def _content_media_type(content: Content) -> str:
-    inferred = _detect_file_format(content.content_type, content.filename)
+    inferred = _rechecked_content_file_type(content)
     if inferred in {"image", "video", "audio", "text"}:
         return inferred
-    if inferred in {"html", "log"}:
-        # HTML/log keep file rendering but are still text-like for format inference and extraction.
+    if inferred in {"web", "log"}:
+        # HTML/log keep file rendering but are still text-like for extraction.
         return "text"
     return "file"
 
@@ -562,9 +607,18 @@ def _mime_match_filter(column, mime_values: tuple[str, ...]):
     return or_(*clauses)
 
 
-def _record_file_type_filter(file_type: str):
-    ctype = func.lower(func.coalesce(Content.content_type, ""))
-    filename = func.lower(func.coalesce(Content.filename, ""))
+def _value_in_filter(column, values: tuple[str, ...]):
+    if not values:
+        return column == "__never_match__"
+    return column.in_(values)
+
+
+def _sql_file_type_matchers(*, ctype, filename_or_ext, filename_mode: str, include_blog_html_kind=None):
+    def filename_match(values: tuple[str, ...]):
+        if filename_mode == "suffix":
+            return _suffix_like_filter(filename_or_ext, values)
+        return _value_in_filter(filename_or_ext, values)
+
     text_mime_values = tuple(sorted(_TEXT_FILE_MIME_TYPES))
     text_suffix_values = tuple(sorted(_TEXT_FILE_EXTENSIONS))
     web_mime_values = tuple(sorted(_WEB_FILE_MIME_TYPES))
@@ -572,158 +626,127 @@ def _record_file_type_filter(file_type: str):
     archive_mime_values = tuple(sorted(_ARCHIVE_FILE_MIME_TYPES))
     document_mime_values = tuple(sorted(_DOCUMENT_FILE_MIME_TYPES))
 
-    image_match = or_(ctype.like("image/%"), _suffix_like_filter(filename, _IMAGE_FILE_EXTENSIONS))
-    video_match = or_(ctype.like("video/%"), _suffix_like_filter(filename, _VIDEO_FILE_EXTENSIONS))
-    audio_match = or_(ctype.like("audio/%"), _suffix_like_filter(filename, _AUDIO_FILE_EXTENSIONS))
+    image_match = or_(ctype.like("image/%"), filename_match(_IMAGE_FILE_EXTENSIONS))
+    video_match = or_(ctype.like("video/%"), filename_match(_VIDEO_FILE_EXTENSIONS))
+    audio_match = or_(ctype.like("audio/%"), filename_match(_AUDIO_FILE_EXTENSIONS))
     web_match = or_(
         _mime_match_filter(ctype, web_mime_values),
         ctype.like("text/html%"),
         ctype.like("application/xhtml+xml%"),
-        _suffix_like_filter(filename, _WEB_FILE_EXTENSIONS),
+        filename_match(_WEB_FILE_EXTENSIONS),
     )
-    log_match = _suffix_like_filter(filename, _LOG_FILE_EXTENSIONS)
+    if include_blog_html_kind is not None:
+        web_match = or_(include_blog_html_kind == "blog_html", web_match)
+    log_match = filename_match(_LOG_FILE_EXTENSIONS)
     database_match = or_(
         _mime_match_filter(ctype, database_mime_values),
-        _suffix_like_filter(filename, _DATABASE_FILE_EXTENSIONS),
+        filename_match(_DATABASE_FILE_EXTENSIONS),
     )
     archive_match = or_(
         _mime_match_filter(ctype, archive_mime_values),
-        _suffix_like_filter(filename, _ARCHIVE_FILE_EXTENSIONS),
+        filename_match(_ARCHIVE_FILE_EXTENSIONS),
     )
     document_match = or_(
         _mime_match_filter(ctype, document_mime_values),
-        _suffix_like_filter(filename, _DOCUMENT_FILE_EXTENSIONS),
+        filename_match(_DOCUMENT_FILE_EXTENSIONS),
     )
     text_match = and_(
         or_(
             ctype.like("text/%"),
             _mime_match_filter(ctype, text_mime_values),
-            _suffix_like_filter(filename, text_suffix_values),
+            filename_match(text_suffix_values),
         ),
         not_(web_match),
     )
 
+    known_match = or_(
+        image_match,
+        video_match,
+        audio_match,
+        web_match,
+        log_match,
+        database_match,
+        archive_match,
+        document_match,
+        text_match,
+    )
+    return {
+        "image": image_match,
+        "video": video_match,
+        "audio": audio_match,
+        "web": web_match,
+        "log": log_match,
+        "database": database_match,
+        "archive": archive_match,
+        "document": document_match,
+        "text": text_match,
+        "known": known_match,
+    }
+
+
+def _legacy_record_file_type_filter(file_type: str):
+    ctype = func.lower(func.coalesce(Content.content_type, ""))
+    filename = func.lower(func.coalesce(Content.filename, ""))
+    matchers = _sql_file_type_matchers(ctype=ctype, filename_or_ext=filename, filename_mode="suffix")
+
     if file_type == "text":
         return or_(
             Content.kind == "text",
-            and_(Content.kind == "file", text_match),
+            and_(Content.kind == "file", matchers["text"]),
         )
-    if file_type == "web":
-        return and_(Content.kind == "file", web_match)
-    if file_type == "image":
-        return and_(Content.kind == "file", image_match)
-    if file_type == "video":
-        return and_(Content.kind == "file", video_match)
-    if file_type == "audio":
-        return and_(Content.kind == "file", audio_match)
-    if file_type == "log":
-        return and_(Content.kind == "file", log_match)
-    if file_type == "database":
-        return and_(Content.kind == "file", database_match)
-    if file_type == "archive":
-        return and_(Content.kind == "file", archive_match)
-    if file_type == "document":
-        return and_(Content.kind == "file", document_match)
+    if file_type in {"web", "image", "video", "audio", "log", "database", "archive", "document"}:
+        return and_(Content.kind == "file", matchers[file_type])
     if file_type == "file":
         return and_(
             Content.kind == "file",
-            not_(or_(image_match, video_match, audio_match, web_match, text_match)),
+            not_(matchers["known"]),
+        )
+    return None
+
+
+def _record_file_type_filter(file_type: str):
+    stored = func.lower(func.coalesce(Content.file_type, ""))
+    legacy = _legacy_record_file_type_filter(file_type)
+    if legacy is None:
+        return None
+    return or_(stored == file_type, legacy)
+
+
+def _legacy_asset_file_type_filter(file_type: str):
+    kind = func.lower(func.coalesce(GeneratedAsset.kind, ""))
+    ctype = func.lower(func.coalesce(GeneratedAsset.content_type, ""))
+    ext = func.lower(func.coalesce(GeneratedAsset.ext, ""))
+    matchers = _sql_file_type_matchers(
+        ctype=ctype,
+        filename_or_ext=ext,
+        filename_mode="exact",
+        include_blog_html_kind=kind,
+    )
+
+    if file_type in {"text", "web", "image", "video", "audio", "log", "database", "archive", "document"}:
+        return matchers[file_type]
+    if file_type == "file":
+        return and_(
+            kind != "blog_html",
+            not_(matchers["known"]),
         )
     return None
 
 
 def _asset_file_type_filter(file_type: str):
-    kind = func.lower(func.coalesce(GeneratedAsset.kind, ""))
-    ctype = func.lower(func.coalesce(GeneratedAsset.content_type, ""))
-    ext = func.lower(func.coalesce(GeneratedAsset.ext, ""))
-    text_mime_values = tuple(sorted(_TEXT_FILE_MIME_TYPES))
-    text_ext_values = tuple(sorted(_TEXT_FILE_EXTENSIONS))
-    web_mime_values = tuple(sorted(_WEB_FILE_MIME_TYPES))
-    database_mime_values = tuple(sorted(_DATABASE_FILE_MIME_TYPES))
-    archive_mime_values = tuple(sorted(_ARCHIVE_FILE_MIME_TYPES))
-    document_mime_values = tuple(sorted(_DOCUMENT_FILE_MIME_TYPES))
-
-    image_match = or_(ctype.like("image/%"), ext.in_(_IMAGE_FILE_EXTENSIONS))
-    video_match = or_(ctype.like("video/%"), ext.in_(_VIDEO_FILE_EXTENSIONS))
-    audio_match = or_(ctype.like("audio/%"), ext.in_(_AUDIO_FILE_EXTENSIONS))
-    web_match = or_(
-        kind == "blog_html",
-        _mime_match_filter(ctype, web_mime_values),
-        ctype.like("text/html%"),
-        ctype.like("application/xhtml+xml%"),
-        ext.in_(_WEB_FILE_EXTENSIONS),
-    )
-    log_match = ext.in_(_LOG_FILE_EXTENSIONS)
-    database_match = or_(
-        _mime_match_filter(ctype, database_mime_values),
-        ext.in_(_DATABASE_FILE_EXTENSIONS),
-    )
-    archive_match = or_(
-        _mime_match_filter(ctype, archive_mime_values),
-        ext.in_(_ARCHIVE_FILE_EXTENSIONS),
-    )
-    document_match = or_(
-        _mime_match_filter(ctype, document_mime_values),
-        ext.in_(_DOCUMENT_FILE_EXTENSIONS),
-    )
-    text_match = and_(
-        or_(
-            ctype.like("text/%"),
-            _mime_match_filter(ctype, text_mime_values),
-            ext.in_(text_ext_values),
-        ),
-        not_(web_match),
-    )
-
-    if file_type == "text":
-        return text_match
-    if file_type == "web":
-        return web_match
-    if file_type == "image":
-        return image_match
-    if file_type == "video":
-        return video_match
-    if file_type == "audio":
-        return audio_match
-    if file_type == "log":
-        return log_match
-    if file_type == "database":
-        return database_match
-    if file_type == "archive":
-        return archive_match
-    if file_type == "document":
-        return document_match
-    if file_type == "file":
-        return and_(
-            kind != "blog_html",
-            not_(or_(image_match, video_match, audio_match, web_match, text_match)),
-        )
-    return None
+    stored = func.lower(func.coalesce(GeneratedAsset.file_type, ""))
+    legacy = _legacy_asset_file_type_filter(file_type)
+    if legacy is None:
+        return None
+    return or_(stored == file_type, legacy)
 
 
 def _record_echo_file_type(record: Record) -> str:
-    if not record.content:
-        return "file"
-    if record.content.kind == "text":
-        return "text"
-    inferred = _detect_file_format(record.content.content_type, record.content.filename)
-    if inferred == "html":
-        return "web"
-    if inferred in _ECHO_FILE_TYPES:
-        return inferred
-    return "file"
+    return _rechecked_content_file_type(record.content if record else None)
 
 
 def _asset_echo_file_type(asset: GeneratedAsset) -> str:
-    kind = str(asset.kind or "").strip().lower()
-    if kind == "blog_html":
-        return "web"
-    inferred = _detect_file_format(asset.content_type, asset.ext)
-    if inferred == "html":
-        return "web"
-    if inferred in _ECHO_FILE_TYPES:
-        return inferred
-    return "file"
+    return _rechecked_asset_file_type(asset)
 
 
 def _content_payload(
@@ -740,9 +763,11 @@ def _content_payload(
         enabled=bool(include_signed_url),
         expires=normalized_expires,
     )
+    file_type = _rechecked_content_file_type(content)
     payload = {
         "id": content.id,
         "kind": content.kind,
+        "file_type": file_type,
         "created_at": _iso(content.created_at),
         "updated_at": _iso(content.updated_at),
     }
@@ -798,7 +823,6 @@ def _record_payload(
     payload = {
         "id": record.id,
         "record_no": record.id,
-        "format": record.format,
         "visibility": record.visibility,
         "tags": record.get_tags(),
         "preview": record.preview or "",
@@ -843,20 +867,6 @@ def _form_or_json_payload() -> dict:
     if request.form:
         payload.update(request.form.to_dict(flat=True))
     return payload
-
-
-def _detect_format(content: Content, requested: str | None) -> str:
-    inferred = "text" if content.kind == "text" else _detect_file_format(content.content_type, content.filename)
-
-    candidate = str(requested or "").strip().lower()
-    if candidate:
-        if candidate in {"web", "html"}:
-            return "html" if inferred == "html" or content.kind == "text" else inferred
-        if candidate == "file" and content.kind == "file":
-            # "file" means generic upload type; keep format adaptive for downstream display/filtering.
-            return inferred
-        return candidate[:32]
-    return inferred
 
 
 def _record_query_for(user: User, *, include_comments: bool = False, public_only: bool = False):
@@ -922,6 +932,7 @@ def _file_to_content(file_obj) -> tuple[Content, str]:
 
         content = Content(
             kind="file",
+            file_type=_detect_file_type(content_type, filename),
             filename=filename,
             content_type=content_type,
             size_bytes=size_bytes,
@@ -965,7 +976,6 @@ def _create_record_for_user(user: User):
     payload = _form_or_json_payload()
     manual_tags = _parse_tags(payload.get("tags"))
     visibility = _normalize_visibility(payload.get("visibility"), default="private")
-    requested_format = payload.get("format")
 
     text_value = str(payload.get("text") or "").strip()
     auto_tags = _auto_tags_from_text(text_value) if text_value else []
@@ -986,7 +996,6 @@ def _create_record_for_user(user: User):
             preview=_preview_text(text_value),
         )
         text_record.set_tags(tags)
-        text_record.format = _detect_format(text_content, requested_format)
         created_records.append(text_record)
         db.session.add(text_content)
         db.session.add(text_record)
@@ -1002,7 +1011,6 @@ def _create_record_for_user(user: User):
             preview=preview,
         )
         file_record.set_tags(tags)
-        file_record.format = _detect_format(file_content, requested_format)
         created_records.append(file_record)
         db.session.add(file_content)
         db.session.add(file_record)
@@ -1486,8 +1494,8 @@ def _trim_text_balanced(value: str, *, limit: int) -> str:
 
 
 def _is_text_like_content(content: Content) -> bool:
-    inferred = _detect_file_format(content.content_type, content.filename)
-    return inferred in {"text", "html", "log"}
+    inferred = _rechecked_content_file_type(content)
+    return inferred in {"text", "web", "log"}
 
 
 def _decoded_text_quality(text: str) -> float:
@@ -2527,6 +2535,7 @@ def _sha256_bytes(data: bytes) -> str:
 
 def _generated_asset_payload(asset: GeneratedAsset, *, viewer: User | None = None) -> dict:
     can_manage = _can_manage_generated_asset(asset, viewer)
+    file_type = _rechecked_asset_file_type(asset)
     return {
         "id": asset.id,
         "kind": asset.kind,
@@ -2537,6 +2546,7 @@ def _generated_asset_payload(asset: GeneratedAsset, *, viewer: User | None = Non
         "source_day": asset.source_day.isoformat() if asset.source_day else None,
         "provider": asset.provider,
         "model": asset.model,
+        "file_type": file_type,
         "content_type": asset.content_type,
         "ext": asset.ext,
         "sha256": asset.sha256,
@@ -2565,14 +2575,14 @@ def _generated_asset_default_file_meta(kind: str) -> tuple[str, str]:
 
 
 def _generated_asset_file_matches_kind(kind: str, *, content_type: str | None, filename_or_ext: str | None) -> bool:
-    inferred = _detect_file_format(content_type, filename_or_ext)
+    inferred = _detect_asset_file_type_from_values(kind, content_type, filename_or_ext)
     normalized = str(kind or "").strip().lower()
-    if normalized == "blog_html":
-        return inferred == "html"
     if normalized == "podcast_audio":
         return inferred == "audio"
     if normalized == "poster_image":
         return inferred == "image"
+    if normalized == "blog_html":
+        return inferred == "web"
     return True
 
 
@@ -2619,6 +2629,7 @@ def _save_generated_asset(
         status=(status or "ready").strip()[:16] or "ready",
         is_daily_digest=bool(is_daily_digest),
         source_day=source_day,
+        file_type=_detect_asset_file_type_from_values(kind, (content_type or "").strip()[:255], safe_ext[:16]),
         content_type=(content_type or "").strip()[:255],
         ext=safe_ext[:16],
         size_bytes=len(data),
@@ -3375,6 +3386,7 @@ def update_record(record_id: int):
             uploaded_oss_keys.append(content.oss_key)
 
         record.content.kind = "text"
+        record.content.file_type = "text"
         record.content.text_content = content.text_content or ""
         record.content.filename = content.filename or ""
         record.content.content_type = content.content_type or ""
@@ -3396,6 +3408,7 @@ def update_record(record_id: int):
             uploaded_oss_keys.append(content.oss_key)
 
         record.content.kind = content.kind
+        record.content.file_type = content.file_type or _detect_file_type(content.content_type, content.filename)
         # Content.text_content is non-null in schema; keep empty string for file records.
         record.content.text_content = content.text_content or ""
         record.content.filename = content.filename or ""
@@ -3405,13 +3418,9 @@ def update_record(record_id: int):
         record.content.oss_key = content.oss_key or ""
 
         record.preview = preview
-        record.format = _detect_format(record.content, payload.get("format"))
 
         if old_key and old_key != record.content.oss_key:
             stale_oss_keys.append(old_key)
-
-    if "format" in payload and not new_file:
-        record.format = _detect_format(record.content, payload.get("format"))
 
     try:
         db.session.commit()
@@ -3495,6 +3504,10 @@ def clone_record(record_id: int):
             return jsonify({"error": f"clone file failed: {exc}"}), 502
         cloned_content = Content(
             kind="file",
+            file_type=_normalize_stored_file_type(
+                getattr(source_content, "file_type", ""),
+                fallback=_detect_file_type(source_content.content_type, source_content.filename),
+            ),
             text_content="",
             filename=source_content.filename or "",
             content_type=source_content.content_type or "",
@@ -3506,7 +3519,6 @@ def clone_record(record_id: int):
     cloned_record = Record(
         user_id=user.id,
         content=cloned_content,
-        format=source_record.format,
         visibility=visibility,
         preview=source_record.preview or "",
     )
@@ -4113,6 +4125,7 @@ def update_generated_asset(asset_id: int):
         asset.oss_key = new_key
         asset.content_type = replacement_content_type[:255]
         asset.ext = safe_ext
+        asset.file_type = _detect_asset_file_type(asset)
         asset.size_bytes = len(replacement_data)
         asset.sha256 = _sha256_bytes(replacement_data)
         asset.status = "ready"

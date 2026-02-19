@@ -122,10 +122,10 @@ def _ensure_schema_shape() -> None:
     required: dict[str, set[str]] = {
         "user": {"id", "username", "password_hash", "role", "is_active"},
         "app_setting": {"id", "key", "value"},
-        "content": {"id", "kind", "text_content", "oss_key"},
+        "content": {"id", "kind", "file_type", "text_content", "oss_key"},
         "record": {"id", "user_id", "content_id", "visibility", "tags_json"},
         "comment": {"id", "record_id", "user_id", "body"},
-        "generated_asset": {"id", "user_id", "kind", "content_type", "oss_key"},
+        "generated_asset": {"id", "user_id", "kind", "file_type", "content_type", "oss_key"},
     }
     forbidden_tables = {"project"}
     forbidden_columns: dict[str, set[str]] = {
@@ -157,6 +157,8 @@ def _ensure_schema_shape() -> None:
             statements.append("ALTER TABLE generated_asset ADD COLUMN is_daily_digest BOOLEAN NOT NULL DEFAULT 0")
         if "source_day" not in existing:
             statements.append("ALTER TABLE generated_asset ADD COLUMN source_day DATE")
+        if "file_type" not in existing:
+            statements.append("ALTER TABLE generated_asset ADD COLUMN file_type VARCHAR(16) NOT NULL DEFAULT 'file'")
 
         if not statements:
             return
@@ -164,6 +166,28 @@ def _ensure_schema_shape() -> None:
         with db.engine.begin() as conn:
             for sql in statements:
                 conn.execute(text(sql))
+            conn.execute(text("UPDATE generated_asset SET file_type = 'web' WHERE kind = 'blog_html'"))
+            conn.execute(text("UPDATE generated_asset SET file_type = 'audio' WHERE kind = 'podcast_audio'"))
+            conn.execute(text("UPDATE generated_asset SET file_type = 'image' WHERE kind = 'poster_image'"))
+
+    def _add_content_columns() -> None:
+        local_inspector = inspect(db.engine)
+        if "content" not in set(local_inspector.get_table_names()):
+            return
+
+        existing = {col["name"] for col in local_inspector.get_columns("content")}
+        statements: list[str] = []
+        if "file_type" not in existing:
+            statements.append("ALTER TABLE content ADD COLUMN file_type VARCHAR(16) NOT NULL DEFAULT 'file'")
+
+        if not statements:
+            return
+
+        with db.engine.begin() as conn:
+            for sql in statements:
+                conn.execute(text(sql))
+            # Best-effort initialization for old rows.
+            conn.execute(text("UPDATE content SET file_type = 'text' WHERE kind = 'text'"))
 
     def _add_daily_digest_columns() -> None:
         local_inspector = inspect(db.engine)
@@ -178,6 +202,20 @@ def _ensure_schema_shape() -> None:
                 except Exception:
                     conn.execute(text("ALTER TABLE daily_digest_job ADD COLUMN blog_asset_id INTEGER"))
                     conn.execute(text("UPDATE daily_digest_job SET blog_asset_id = article_asset_id WHERE blog_asset_id IS NULL"))
+
+    def _drop_legacy_record_format_column() -> None:
+        local_inspector = inspect(db.engine)
+        if "record" not in set(local_inspector.get_table_names()):
+            return
+        existing = {col["name"] for col in local_inspector.get_columns("record")}
+        if "format" not in existing:
+            return
+        with db.engine.begin() as conn:
+            try:
+                conn.execute(text("ALTER TABLE record DROP COLUMN format"))
+            except Exception:
+                # Keep compatibility on older SQLite versions that do not support DROP COLUMN.
+                pass
 
     def _has_shape() -> bool:
         all_tables_local = set(inspector.get_table_names())
@@ -194,7 +232,9 @@ def _ensure_schema_shape() -> None:
         return True
 
     _add_generated_asset_columns()
+    _add_content_columns()
     _add_daily_digest_columns()
+    _drop_legacy_record_format_column()
 
     if _has_shape():
         return

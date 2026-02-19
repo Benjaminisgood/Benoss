@@ -144,7 +144,6 @@ class BenossClient:
         file_path: Path | None = None,
         visibility: str = "private",
         tags: str = "",
-        format_hint: str = "",
     ) -> dict[str, Any]:
         url = urljoin(self.base_url, "api/push")
 
@@ -155,8 +154,6 @@ class BenossClient:
             form_data["text"] = text
         if tags:
             form_data["tags"] = tags
-        if format_hint:
-            form_data["format"] = format_hint
 
         if file_path is None:
             response = self.session.post(url, data=form_data, timeout=None)
@@ -334,13 +331,11 @@ def cmd_push(args: argparse.Namespace) -> int:
         file_path=file_path,
         visibility=visibility,
         tags=tags,
-        format_hint=(args.format or "").strip(),
     )
 
     record = payload.get("record") or {}
     print(f"pushed record: {record.get('id')}")
     print(f"visibility: {record.get('visibility')}")
-    print(f"format: {record.get('format')}")
     if tags:
         print(f"tags: {tags}")
     return 0
@@ -388,7 +383,6 @@ def build_parser() -> argparse.ArgumentParser:
     push_parser.add_argument("--file", help="file path to upload")
     push_parser.add_argument("--visibility", default="private", choices=["public", "private"])
     push_parser.add_argument("--tags", default="", help="comma-separated tags")
-    push_parser.add_argument("--format", default="", help="format hint")
     push_parser.set_defaults(func=cmd_push)
 
     return parser

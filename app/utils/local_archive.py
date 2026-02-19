@@ -713,6 +713,7 @@ def _record_payload(record, *, max_file_bytes: int, day_value: date) -> dict:
         text_value = _read_text_content(content)
         content_payload = {
             "kind": "text",
+            "file_type": "text",
             "text": text_value,
             "media_type": "text",
         }
@@ -735,6 +736,7 @@ def _record_payload(record, *, max_file_bytes: int, day_value: date) -> dict:
         content_type = str(getattr(content, "content_type", "") or "").strip() or "application/octet-stream"
         content_payload = {
             "kind": "file",
+            "file_type": str(getattr(content, "file_type", "") or ""),
             "filename": filename,
             "content_type": content_type,
             "media_type": _content_media_type(content_type=content_type, filename=filename),
@@ -760,7 +762,6 @@ def _record_payload(record, *, max_file_bytes: int, day_value: date) -> dict:
     return {
         "id": int(getattr(record, "id", 0) or 0),
         "record_no": int(getattr(record, "id", 0) or 0),
-        "format": str(getattr(record, "format", "") or ""),
         "visibility": str(getattr(record, "visibility", "") or "private"),
         "preview": preview,
         "tags": list(getattr(record, "get_tags", lambda: [])() or []),

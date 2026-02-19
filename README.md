@@ -106,7 +106,6 @@ data/
 - `id`：主键（也作为记录号）。
 - `user_id`：记录作者。
 - `content_id`：关联 `Content`，并且 `unique=True`，表示“一条记录对应一个内容实体”。
-- `format`：展示格式提示（如 `text/html/image/audio/video/log/database/archive/document/file`）。
 - `visibility`：`public` 或 `private`。
 - `tags_json`：标签 JSON 字符串（例如 `["math","python"]`）。
 - `preview`：预览文本。
@@ -220,22 +219,21 @@ data/
 3. 判断是否上传文件：
    - 有文件：走 `_file_to_content`，先保存到临时目录 `data/uploads/`，计算 `sha256`，上传到 OSS（或本地对象目录），生成 `Content(kind=file)`。
    - 无文件：要求 `text` 非空，生成 `Content(kind=text)`。
-4. 创建 `Record` 并关联 `Content`，写入 `preview/format/tags/visibility`。
+4. 创建 `Record` 并关联 `Content`，写入 `preview/tags/visibility`。
 5. `db.session.commit()`。
 6. 返回记录摘要 JSON。
 
-`format` 判定规则（`_detect_format`）：
-- 若请求显式传 `format`，优先使用；其中 `web/html` 会归一化为 `html`（仅在 HTML 内容场景下）。
-- 若请求传的是 `format=file`（通用文件），会按真实文件元数据自动推断更具体格式。
-- `kind=text` 且未显式指定时，默认 `text`。
-- 文件记录命中 HTML 特征（`text/html` / `application/xhtml+xml` / `.html/.htm/.xhtml`）时，自动记为 `html`。
-- 其他文件按 `_detect_file_format` 推断为：
+文件类型判定规则（`_detect_file_type`）：
+- `kind=text` 直接记为 `text`。
+- 文件记录按 `content_type + 扩展名` 推断为：
+  - `web`（HTML/XHTML）
   - `image/video/audio/text`
   - `log`（如 `.log/.out/.err`）
   - `database`（如 `.db/.sqlite/.sqlite3`）
   - `archive`（如 `.zip/.tar/.gz/.7z/.rar`）
   - `document`（如 `.pdf/.docx/.pptx/.xlsx/.odt`）
   - 兜底 `file`
+- 推断结果写入数据库 `Content.file_type`（以及 `GeneratedAsset.file_type`），读取时会做复查。
 
 ### 6.2 读取记录列表
 
@@ -257,7 +255,7 @@ data/
 
 规则：
 - 只有作者可改（`record.user_id == current_user.id`）。
-- 可改 `visibility/tags/text/format/file`。
+- 可改 `visibility/tags/text/file`。
 - 若替换文件，会删除旧对象存储文件（尽力删除，失败不阻塞主流程）。
 
 ### 6.4 删除记录
@@ -283,17 +281,16 @@ data/
 这是最容易混淆的点，当前实现分三层：
 
 1. 存储层（DB）：
-   - `Content.kind` 只有 `text | file`，表示“存储形态”而不是媒体类型。
-2. 记录层（Record）：
-   - `Record.format` 表示业务展示格式，可是 `text/html/image/audio/video/log/database/archive/document/file` 等。
+   - `Content.kind` 只有 `text | file`，表示“存储形态”；
+   - `Content.file_type` 保存统一文件类型（`text/web/image/video/audio/log/database/archive/document/file`）。
+2. 资产层（GeneratedAsset）：
+   - `GeneratedAsset.file_type` 保存资产类型（同一套枚举）。
 3. 渲染/筛选层（Echoes）：
-   - 通过 MIME + 后缀 + 资产 `kind` 计算 `file_type`，用于筛选和徽标展示。
-   - 目前分类为：`text/web/image/video/audio/log/database/archive/document/file`。
+   - 使用统一 `file_type` 规则做筛选和徽标展示；读取时会按元数据复查类型。
 
 代码对应：
-- 文件格式推断（复用入口）：`app/routes/api.py::_detect_file_format`
+- 文件类型推断（复用入口）：`app/routes/api.py::_detect_file_type`
 - 通用媒体推断（渲染用）：`app/routes/api.py::_content_media_type`
-- 记录格式判定：`app/routes/api.py::_detect_format`
 - Echoes 记录/资产分类：`app/routes/api.py::_record_echo_file_type`、`_asset_echo_file_type`
 - Echoes 后端筛选：`app/routes/api.py::_record_file_type_filter`、`_asset_file_type_filter`
 - Echoes 前端标签映射：`app/static/js/site.js` 中 `echoFileTypeLabels`
@@ -370,7 +367,6 @@ data/
 {
   "id": 12,
   "record_no": 12,
-  "format": "text",
   "visibility": "public",
   "tags": ["math", "algebra"],
   "preview": "今天完成了线性代数习题...",
@@ -382,12 +378,14 @@ data/
   "content": {
     "id": 33,
     "kind": "text",
+    "file_type": "text",
     "text": "完整文本..."
   }
 }
 ```
 
 文件内容 `content` 额外字段：
+- `file_type`（`text/web/image/video/audio/log/database/archive/document/file`）
 - `filename`
 - `content_type`
 - `size_bytes`
