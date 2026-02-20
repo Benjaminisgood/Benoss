@@ -2734,30 +2734,63 @@
     const content = text.trim() ? text : "<p class=\"muted\">博客源码为空</p>";
     const previewStyle = `
 <style id="benoss-board-preview-style">
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
   html,
   body {
+    width: 100%;
     max-width: 100%;
-    overflow-x: hidden;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow-x: hidden !important;
+  }
+  body {
+    display: block !important;
+    padding: clamp(16px, 2.8vw, 28px) clamp(14px, 2.8vw, 26px) !important;
+  }
+  body > :not(style):not(script):not(link):not(meta):not(title):not(base) {
+    width: min(100%, 900px) !important;
+    max-width: min(100%, 900px) !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
   }
   img,
   video,
   iframe,
   canvas,
   svg {
+    display: block !important;
+    width: auto !important;
     max-width: 100% !important;
     height: auto !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
   }
   figure {
+    display: block !important;
+    width: min(100%, 900px) !important;
     max-width: 100% !important;
-    margin-left: auto;
-    margin-right: auto;
+    margin: 1rem auto !important;
+  }
+  figure > :is(img, video, iframe, canvas, svg) {
+    width: 100% !important;
+    max-width: 100% !important;
   }
   pre,
   table {
-    max-width: 100%;
-    overflow-x: auto;
+    max-width: 100% !important;
+    overflow-x: auto !important;
+  }
+  table {
+    display: block;
   }
 </style>`;
+    if (/<\/head>/i.test(content)) {
+      return content.replace(/<\/head>/i, `${previewStyle}</head>`);
+    }
     if (/<head[\s>]/i.test(content)) {
       return content.replace(/<head(\b[^>]*)>/i, `<head$1>${previewStyle}`);
     }
