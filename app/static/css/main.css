@@ -2110,6 +2110,17 @@ button.echoes-chip.active {
   margin: 0;
 }
 
+.record-dialog-preview {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.record-dialog-preview :is(img, video, iframe) {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
 .record-edit-file-hint,
 .record-edit-feedback {
   margin: 0;

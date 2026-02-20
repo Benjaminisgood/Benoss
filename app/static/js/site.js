@@ -1095,6 +1095,10 @@
     dialogState.asset = null;
     dialogState.assetHtmlOriginal = "";
     dialogState.mode = "view";
+    const detailContentHtml =
+      record?.content?.kind === "file"
+        ? `<div class="record-edit-preview record-dialog-preview">${contentHtml(record.content)}</div>`
+        : contentHtml(record.content);
 
     dialogTitle.textContent = `记录 #${record.record_no}`;
     const actions = [];
@@ -1117,7 +1121,7 @@
         <div class="action-line">${actions.join("")}</div>
         <section>
           <h4>具体内容</h4>
-          ${contentHtml(record.content)}
+          ${detailContentHtml}
         </section>
         <section>
           <h4>评论</h4>
