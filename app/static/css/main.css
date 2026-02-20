@@ -1372,6 +1372,22 @@ a.tag-pill:hover {
   font-size: 0.82rem;
 }
 
+.admin-digest-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.6rem;
+}
+
+.admin-digest-controls label {
+  gap: 0.2rem;
+  font-size: 0.82rem;
+}
+
+.admin-digest-controls label span {
+  color: var(--muted);
+}
+
 .admin-group {
   border: 1px solid var(--line);
   border-radius: 0.75rem;

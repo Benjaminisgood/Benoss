@@ -1,6 +1,6 @@
 # Benoss
 
-Benoss 是一个“学习记录流”应用：用户可以发布文本或文件记录，按标签筛选、评论互动；Notice 页面用于筛选并拼接整页内容，系统会在自然日结束后自动基于上一日公开内容生成日报资产（博客/播客/海报），并支持多 Agent 协作、多图多音频与原图自动插段落。
+Benoss 是一个“学习记录流”应用：用户可以发布文本或文件记录，按标签筛选、评论互动；Notice 页面用于筛选并拼接整页内容，系统会在自然日结束后自动基于上一日公开内容生成日报资产（博客/播客/海报），并支持多 Agent 协作、多图多音频与原图/原始音视频自动插段落。
 
 项目当前是一个完整的 Flask 单体应用（Web 页面 + API + 数据库 + 对象存储 + AI 调用）。
 
@@ -23,7 +23,8 @@ Benoss 是一个“学习记录流”应用：用户可以发布文本或文件�
   - AI 生成播客音频（本地脚本 + TTS，支持对话/演讲/访谈/播报风格）；
   - AI 生成海报图片（png，失败时可本地兜底为 svg）；
   - 日报协作链路（Planner -> Writer -> Critic）可按章节生成多段音频与多张配图；
-  - 可自动抽取记录原图并分配到对应章节，注入博客对应段落。
+  - 可自动抽取记录原图并分配到对应章节，注入博客对应段落；
+  - 可自动把记录中的原始音频/视频注入博客（边听边读 / 边看边读）。
   - 自动按天保存本地归档（JSON），向量库采用本地持久化 + embedding 增量 upsert。
   - Home 页内置本地向量问答机器人（RAG 检索 + 可选 AI 回答）。
 
@@ -345,11 +346,30 @@ data/
 - `_build_digest_collab_plan`：Planner Agent 先把日报拆为多章节（每章可声明图片/音频数量）。
 - `_build_collab_blog_html` + `_collab_blog_review_feedback` + `_collab_blog_rewrite`：Writer/Critic 迭代生成博客 HTML。
 - `_assign_source_images_to_slots`：把原始记录图片分配到章节 slot（支持 AI 分配 + 回退策略）。
+- `_source_audios_from_records` / `_source_videos_from_records`：抽取记录原始音频/视频，作为博客内可播放媒体源。
 - `_inject_slot_media_markers`：把 `<!-- BENOSS_SLOT:slot-id -->` 标记替换成章节媒体块。
+- `_digest_media_section_assets_html`：统一渲染原图/原始音视频/生成海报/生成播客媒体块。
+- `_prefer_oss_media_src`：媒体优先走 OSS 短签名 URL，失败自动回退后端 blob URL，提高可用性。
 - `_generate_podcast_asset`：先生成多风格播客脚本，再调用 TTS；外部 TTS 全失败时可本机 `say` 兜底（`audio/aiff`）。
 - `_ai_generate_poster_image`：调用 `/images/generations`；外部图像接口全失败时可本地 SVG 兜底。
 - `_save_generated_asset`：将 AI 结果写入对象存储 + `GeneratedAsset` 表。
-- `build_daily_public_digest`：按日汇总公开内容；协作模式可生成“单博客 + 多播客 + 多海报 + 原图插段落”，传统模式走单次生成。
+- `build_daily_public_digest`：按日汇总公开内容；协作模式可生成“单博客 + 多播客 + 多海报 + 原图/原始音视频插段落”，传统模式走单次生成。
+
+### 7.4 日报媒体注入优化（边听边读 / 边看边读）
+
+这次优化的目标是让博客不只“看图文”，还能直接播放你上传的音频和视频，且不明显拖慢页面。
+
+- 注入策略：
+  - 章节内优先注入“与 slot 对齐”的媒体；
+  - 未命中的媒体会进入“补充媒体”区块，避免媒体丢失。
+- 源地址策略：
+  - 优先 OSS 短签名 URL；
+  - 若签名或跨域受限，自动回退 `/api/.../blob`。
+- 播放策略：
+  - 音频使用 `preload="none"`，减少无点击时流量与首屏负载；
+  - 视频使用 `preload="metadata"`，先加载时长/封面等基础信息，避免整段预拉取。
+- 兼容策略：
+  - `<audio>/<video>` 都有 fallback source 或错误回退，尽量保障不同网络与 OSS 配置下可播放。
 
 ## 8. 对象存储设计（OSS 与本地兜底）
 
@@ -427,6 +447,7 @@ Echoes 的 `entries[]` 额外字段：
 - Board 页面：
   - 主表：`GET /api/board`
   - 点击行/列/单元格触发对应详情 API
+  - 右侧博客预览读取 `blog_html` 原文（iframe `srcdoc`），会直接展示博客内的 `<audio>/<video>` 媒体控件
 - Echoes 页面：
   - `GET /api/echoes`（默认记录 + 资产均含“公开 + 自己私密”）
 - Notice 页面：
@@ -504,6 +525,7 @@ Echoes 的 `entries[]` 额外字段：
 3. 移动端优先防溢出：优先保证“不炸版”，通过 `min-width: 0`、断词、局部滚动容器组合解决。  
 4. 渐进增强：直传 OSS、AI 能力均做失败回退，优先保证发布和阅读主流程可用。  
 5. 对输入法友好：标签自动识别避开 composition 阶段，减少中文输入过程误识别。  
+6. 媒体阅读体验优先：博客支持“边读边听/边读边看”，并通过 `preload` 策略控制带宽与首屏负载。  
 
 ## 11. 本地运行（开发）
 
@@ -661,7 +683,7 @@ benoss-sync pull --username alice --content-source full --output ./pulled_record
 - `DIGEST_COLLAB_ENABLED`（日报是否启用 Planner/Writer/Critic 协作链路）
 - `DIGEST_COLLAB_MAX_SECTIONS`（单次日报最多章节数）
 - `DIGEST_COLLAB_MAX_IMAGE_ASSETS`（单次日报最多生成图片资产数）
-- `DIGEST_COLLAB_MAX_SOURCE_IMAGES`（单次日报最多注入原始记录图片数）
+- `DIGEST_COLLAB_MAX_SOURCE_IMAGES`（单次日报最多注入原始记录媒体数；当前实现用于原图/原始音频/原始视频）
 - `DIGEST_COLLAB_MAX_AUDIO_ASSETS`（单次日报最多生成音频资产数）
 - `DIGEST_COLLAB_REVIEW_ROUNDS`（Writer/Critic 最大审稿轮次）
 - `ARCHIVE_RETENTION_DAYS`（默认 `7`，`0` 表示永久保留）

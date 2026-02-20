@@ -13,6 +13,9 @@
   const onlyOverridesInput = document.getElementById("admin-only-overrides");
   const vectorRebuildBtn = document.getElementById("admin-vector-rebuild-btn");
   const vectorStatusEl = document.getElementById("admin-vector-status");
+  const digestForceBuildBtn = document.getElementById("admin-digest-force-build-btn");
+  const digestDayInput = document.getElementById("admin-digest-day-input");
+  const digestStatusEl = document.getElementById("admin-digest-status");
 
   let pendingReset = new Set();
   let latestGroups = [];
@@ -148,6 +151,14 @@
     }
     vectorStatusEl.textContent = text || "";
     vectorStatusEl.style.color = isError ? "#8d2200" : "";
+  }
+
+  function setDigestStatus(text, isError = false) {
+    if (!digestStatusEl) {
+      return;
+    }
+    digestStatusEl.textContent = text || "";
+    digestStatusEl.style.color = isError ? "#8d2200" : "";
   }
 
   function setButtonBusy(button, busy, busyText = "处理中...") {
@@ -444,6 +455,35 @@
         setVectorStatus(`重建失败: ${error.message || "未知错误"}`, true);
       } finally {
         setButtonBusy(vectorRebuildBtn, false);
+      }
+    });
+  }
+
+  if (digestForceBuildBtn) {
+    digestForceBuildBtn.addEventListener("click", async () => {
+      const dayValue = String(digestDayInput && digestDayInput.value ? digestDayInput.value : "").trim();
+      const payload = { force: true };
+      if (dayValue) {
+        payload.day = dayValue;
+      }
+
+      setButtonBusy(digestForceBuildBtn, true, "重建中...");
+      setDigestStatus(dayValue ? `正在重建 ${dayValue} 的日报资产...` : "正在重建日报资产（默认昨天）...");
+      try {
+        const data = await api("/api/digest/daily", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const dayText = String(data.day || dayValue || "").trim();
+        const statusText = String(data.status || "ready").trim();
+        const count = Array.isArray(data.assets) ? data.assets.length : 0;
+        const suffix = dayText ? `${dayText}` : "目标日期";
+        setDigestStatus(`重建完成：${suffix}，状态 ${statusText}，返回资产 ${count} 条。`);
+      } catch (error) {
+        setDigestStatus(`重建失败: ${error.message || "未知错误"}`, true);
+      } finally {
+        setButtonBusy(digestForceBuildBtn, false);
       }
     });
   }

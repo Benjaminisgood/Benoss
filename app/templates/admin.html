@@ -64,4 +64,20 @@
   <p class="muted"><code>VECTOR_TOP_K</code> 与 <code>BOARD_DEFAULT_DAYS</code> 已统一在本页运行时配置中管理。</p>
   <p id="admin-vector-status" class="muted"></p>
 </section>
+
+<section class="card" data-reveal="120">
+  <div class="section-head">
+    <h3>日报维护</h3>
+    <div class="admin-digest-controls">
+      <label for="admin-digest-day-input">
+        <span>日期</span>
+        <input type="date" id="admin-digest-day-input" aria-label="日报日期">
+      </label>
+      <button type="button" class="secondary" id="admin-digest-force-build-btn">按日期 force 重建日报</button>
+    </div>
+  </div>
+  <p class="muted">选择日期后执行；留空时默认按系统 <code>DIGEST_TIMEZONE</code> 的“昨天”。</p>
+  <p class="muted">该入口会调用 <code>/api/digest/daily</code>，并使用 <code>force=true</code> 强制重建该日资产。</p>
+  <p id="admin-digest-status" class="muted"></p>
+</section>
 {% endblock %}

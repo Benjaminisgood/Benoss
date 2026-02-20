@@ -80,6 +80,7 @@ _DIGEST_MEDIA_APPENDIX_RE = re.compile(
     re.IGNORECASE,
 )
 _BLOG_SLOT_MARKER_RE = re.compile(r"<!--\s*BENOSS_SLOT:([a-z0-9][a-z0-9_-]{0,63})\s*-->", re.IGNORECASE)
+_BLOG_MEDIA_SIGNED_URL_EXPIRES_SECONDS = 1800
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _DIRECT_UPLOAD_TOKEN_SALT = "benoss.direct-upload.v1"
 _PODCAST_STYLE_GUIDE = {
@@ -1962,13 +1963,118 @@ def _source_images_from_records(records: list[Record], *, max_items: int) -> lis
         note = " | ".join(note_parts)
 
         index = len(items) + 1
+        fallback_src = f"/api/contents/{content_id}/blob"
+        src, fallback_media_src = _prefer_oss_media_src(oss_key=content.oss_key, fallback_src=fallback_src)
         items.append(
             {
                 "id": f"img-{index}",
                 "record_id": int(record.id),
                 "content_id": content_id,
                 "slot_hint": _normalize_slot_name(tags[0] if tags else "", fallback_index=index),
-                "src": f"/api/contents/{content_id}/blob",
+                "src": src,
+                "fallback_src": fallback_media_src,
+                "title": filename[:120],
+                "caption": preview[:200] if preview else filename[:120],
+                "note": note[:480],
+            }
+        )
+    return items
+
+
+def _source_audios_from_records(records: list[Record], *, max_items: int) -> list[dict]:
+    limit = max(0, min(int(max_items or 0), 60))
+    if limit <= 0:
+        return []
+
+    items: list[dict] = []
+    seen_content_ids: set[int] = set()
+    for record in records:
+        if len(items) >= limit:
+            break
+        content = record.content
+        if not content or str(content.kind or "").strip().lower() != "file":
+            continue
+        if _rechecked_content_file_type(content) != "audio":
+            continue
+
+        content_id = int(content.id or 0)
+        if content_id <= 0 or content_id in seen_content_ids:
+            continue
+        seen_content_ids.add(content_id)
+
+        tags = [item for item in record.get_tags() if item]
+        tags_text = ", ".join(tags[:5])
+        preview = _trim_text_balanced(_normalize_prompt_text(record.preview or ""), limit=180)
+        filename = str(content.filename or "").strip() or f"record-{int(record.id)}.audio"
+
+        note_parts = [f"record#{int(record.id)}"]
+        if tags_text:
+            note_parts.append(f"tags={tags_text}")
+        if preview:
+            note_parts.append(f"preview={preview}")
+        note = " | ".join(note_parts)
+
+        index = len(items) + 1
+        fallback_src = f"/api/contents/{content_id}/blob"
+        src, fallback_media_src = _prefer_oss_media_src(oss_key=content.oss_key, fallback_src=fallback_src)
+        items.append(
+            {
+                "id": f"aud-{index}",
+                "record_id": int(record.id),
+                "content_id": content_id,
+                "src": src,
+                "fallback_src": fallback_media_src,
+                "title": filename[:120],
+                "caption": preview[:200] if preview else filename[:120],
+                "note": note[:480],
+            }
+        )
+    return items
+
+
+def _source_videos_from_records(records: list[Record], *, max_items: int) -> list[dict]:
+    limit = max(0, min(int(max_items or 0), 60))
+    if limit <= 0:
+        return []
+
+    items: list[dict] = []
+    seen_content_ids: set[int] = set()
+    for record in records:
+        if len(items) >= limit:
+            break
+        content = record.content
+        if not content or str(content.kind or "").strip().lower() != "file":
+            continue
+        if _rechecked_content_file_type(content) != "video":
+            continue
+
+        content_id = int(content.id or 0)
+        if content_id <= 0 or content_id in seen_content_ids:
+            continue
+        seen_content_ids.add(content_id)
+
+        tags = [item for item in record.get_tags() if item]
+        tags_text = ", ".join(tags[:5])
+        preview = _trim_text_balanced(_normalize_prompt_text(record.preview or ""), limit=180)
+        filename = str(content.filename or "").strip() or f"record-{int(record.id)}.video"
+
+        note_parts = [f"record#{int(record.id)}"]
+        if tags_text:
+            note_parts.append(f"tags={tags_text}")
+        if preview:
+            note_parts.append(f"preview={preview}")
+        note = " | ".join(note_parts)
+
+        index = len(items) + 1
+        fallback_src = f"/api/contents/{content_id}/blob"
+        src, fallback_media_src = _prefer_oss_media_src(oss_key=content.oss_key, fallback_src=fallback_src)
+        items.append(
+            {
+                "id": f"vid-{index}",
+                "record_id": int(record.id),
+                "content_id": content_id,
+                "src": src,
+                "fallback_src": fallback_media_src,
                 "title": filename[:120],
                 "caption": preview[:200] if preview else filename[:120],
                 "note": note[:480],
@@ -3436,28 +3542,125 @@ def _inject_html_after_opening_tag(doc_html: str, snippet_html: str, tag_name: s
     return f"{raw[:index]}\n{snippet}\n{raw[index:]}"
 
 
+def _prefer_oss_media_src(
+    *,
+    oss_key: str | None,
+    fallback_src: str,
+    expires: int = _BLOG_MEDIA_SIGNED_URL_EXPIRES_SECONDS,
+) -> tuple[str, str]:
+    fallback = str(fallback_src or "").strip()
+    if not fallback:
+        return "", ""
+    signed = _signed_url_if_enabled(
+        oss_key,
+        enabled=True,
+        expires=_normalize_signed_url_expires(expires, default=_BLOG_MEDIA_SIGNED_URL_EXPIRES_SECONDS),
+    )
+    primary = signed or fallback
+    backup = fallback if signed and signed != fallback else ""
+    return primary, backup
+
+
+def _generated_asset_media_src(asset: GeneratedAsset | None) -> tuple[str, str]:
+    if not asset or not asset.id:
+        return "", ""
+    fallback = f"/api/generated-assets/{int(asset.id)}/blob"
+    return _prefer_oss_media_src(oss_key=asset.oss_key, fallback_src=fallback)
+
+
+def _generated_asset_media_src_by_id(asset_id: int | None) -> tuple[str, str]:
+    if not asset_id:
+        return "", ""
+    fallback = f"/api/generated-assets/{int(asset_id)}/blob"
+    asset = GeneratedAsset.query.filter(GeneratedAsset.id == int(asset_id)).first()
+    oss_key = str(asset.oss_key or "").strip() if asset else ""
+    return _prefer_oss_media_src(oss_key=oss_key, fallback_src=fallback)
+
+
+def _digest_image_tag(*, src: str, alt: str, fallback_src: str = "") -> str:
+    primary = str(src or "").strip()
+    if not primary:
+        return ""
+
+    attrs = [
+        f'src="{html.escape(primary, quote=True)}"',
+        f'alt="{html.escape(alt or "", quote=True)}"',
+    ]
+    fallback = str(fallback_src or "").strip()
+    if fallback and fallback != primary:
+        attrs.append(f'data-fallback-src="{html.escape(fallback, quote=True)}"')
+        attrs.append(
+            'onerror="if(this.dataset.fallbackTried!==\'1\'&&this.dataset.fallbackSrc){'
+            "this.dataset.fallbackTried='1';this.src=this.dataset.fallbackSrc;}"
+            '"'
+        )
+    return f"<img {' '.join(attrs)}>"
+
+
+def _digest_audio_tag(*, src: str, fallback_src: str = "") -> str:
+    primary = str(src or "").strip()
+    if not primary:
+        return ""
+
+    fallback = str(fallback_src or "").strip()
+    primary_escaped = html.escape(primary, quote=True)
+    if fallback and fallback != primary:
+        fallback_escaped = html.escape(fallback, quote=True)
+        return (
+            f"<audio controls preload=\"none\" data-fallback-src=\"{fallback_escaped}\" "
+            "onerror=\"if(this.dataset.fallbackTried!=='1'&&this.dataset.fallbackSrc){"
+            "this.dataset.fallbackTried='1';this.src=this.dataset.fallbackSrc;this.load();}\">"
+            f"<source src=\"{primary_escaped}\">"
+            f"<source src=\"{fallback_escaped}\">"
+            "</audio>"
+        )
+    return f'<audio controls preload="none" src="{primary_escaped}"></audio>'
+
+
+def _digest_video_tag(*, src: str, fallback_src: str = "") -> str:
+    primary = str(src or "").strip()
+    if not primary:
+        return ""
+
+    fallback = str(fallback_src or "").strip()
+    primary_escaped = html.escape(primary, quote=True)
+    if fallback and fallback != primary:
+        fallback_escaped = html.escape(fallback, quote=True)
+        return (
+            f"<video controls preload=\"metadata\" data-fallback-src=\"{fallback_escaped}\" "
+            "onerror=\"if(this.dataset.fallbackTried!=='1'&&this.dataset.fallbackSrc){"
+            "this.dataset.fallbackTried='1';this.src=this.dataset.fallbackSrc;this.load();}\">"
+            f"<source src=\"{primary_escaped}\">"
+            f"<source src=\"{fallback_escaped}\">"
+            "</video>"
+        )
+    return f'<video controls preload="metadata" src="{primary_escaped}"></video>'
+
+
 def _digest_media_section_html(*, poster_asset_id: int | None, podcast_asset_id: int | None) -> str:
-    poster_src = f"/api/generated-assets/{int(poster_asset_id)}/blob" if poster_asset_id else ""
-    podcast_src = f"/api/generated-assets/{int(podcast_asset_id)}/blob" if podcast_asset_id else ""
+    poster_src, poster_fallback = _generated_asset_media_src_by_id(poster_asset_id)
+    podcast_src, podcast_fallback = _generated_asset_media_src_by_id(podcast_asset_id)
     if not poster_src and not podcast_src:
         return ""
 
     items: list[str] = ['<section class="benoss-media-appendix">']
     if poster_src:
+        poster_tag = _digest_image_tag(src=poster_src, alt="日报海报", fallback_src=poster_fallback)
         items.extend(
             [
                 "<figure>",
-                f'  <img src="{html.escape(poster_src, quote=True)}" alt="日报海报">',
+                f"  {poster_tag}",
                 "  <figcaption>日报配图</figcaption>",
                 "</figure>",
             ]
         )
     if podcast_src:
+        podcast_tag = _digest_audio_tag(src=podcast_src, fallback_src=podcast_fallback)
         items.extend(
             [
                 "<div>",
                 "  <h3>日报播客</h3>",
-                f'  <audio controls preload="none" src="{html.escape(podcast_src, quote=True)}"></audio>',
+                f"  {podcast_tag}",
                 "</div>",
             ]
         )
@@ -3470,13 +3673,17 @@ def _digest_media_section_assets_html(
     poster_assets: list[GeneratedAsset],
     podcast_assets: list[GeneratedAsset],
     source_images: list[dict] | None = None,
+    source_audios: list[dict] | None = None,
+    source_videos: list[dict] | None = None,
     heading: str = "日报多媒体",
     class_name: str = "benoss-media-appendix",
 ) -> str:
     posters = [item for item in poster_assets if item]
     podcasts = [item for item in podcast_assets if item]
-    sources = [item for item in (source_images or []) if isinstance(item, dict)]
-    if not posters and not podcasts and not sources:
+    image_sources = [item for item in (source_images or []) if isinstance(item, dict)]
+    audio_sources = [item for item in (source_audios or []) if isinstance(item, dict)]
+    video_sources = [item for item in (source_videos or []) if isinstance(item, dict)]
+    if not posters and not podcasts and not image_sources and not audio_sources and not video_sources:
         return ""
 
     class_token = html.escape((class_name or "benoss-media-appendix").strip(), quote=True)
@@ -3485,41 +3692,93 @@ def _digest_media_section_assets_html(
     if heading_text:
         lines.append(f"  <h3>{heading_text}</h3>")
 
-    for source in sources:
-        src = str(source.get("src") or "").strip()
+    for source in image_sources:
+        src = str(source.get("src") or source.get("fallback_src") or "").strip()
         if not src:
             continue
-        title = html.escape((source.get("title") or "原图").strip() or "原图", quote=False)
-        caption = html.escape((source.get("caption") or title).strip() or title, quote=False)
+        fallback_src = str(source.get("fallback_src") or "").strip()
+        title_raw = str(source.get("title") or "").strip() or "原图"
+        caption_raw = str(source.get("caption") or "").strip() or title_raw
+        title = html.escape(title_raw, quote=False)
+        caption = html.escape(caption_raw, quote=False)
+        image_tag = _digest_image_tag(src=src, alt=title_raw, fallback_src=fallback_src)
         lines.extend(
             [
                 "  <figure>",
-                f'    <img src="{html.escape(src, quote=True)}" alt="{title}">',
+                f"    {image_tag}",
                 f"    <figcaption>{caption}</figcaption>",
                 "  </figure>",
             ]
         )
 
+    for source in audio_sources:
+        src = str(source.get("src") or source.get("fallback_src") or "").strip()
+        if not src:
+            continue
+        fallback_src = str(source.get("fallback_src") or "").strip()
+        title_raw = str(source.get("title") or "").strip() or "原始音频"
+        caption_raw = str(source.get("caption") or "").strip() or title_raw
+        title = html.escape(title_raw, quote=False)
+        caption = html.escape(caption_raw, quote=False)
+        audio_tag = _digest_audio_tag(src=src, fallback_src=fallback_src)
+        lines.extend(
+            [
+                '  <div class="benoss-media-audio-item">',
+                f"    <h4>{title}</h4>",
+                f"    {audio_tag}",
+                f"    <p>{caption}</p>",
+                "  </div>",
+            ]
+        )
+
+    for source in video_sources:
+        src = str(source.get("src") or source.get("fallback_src") or "").strip()
+        if not src:
+            continue
+        fallback_src = str(source.get("fallback_src") or "").strip()
+        title_raw = str(source.get("title") or "").strip() or "原始视频"
+        caption_raw = str(source.get("caption") or "").strip() or title_raw
+        title = html.escape(title_raw, quote=False)
+        caption = html.escape(caption_raw, quote=False)
+        video_tag = _digest_video_tag(src=src, fallback_src=fallback_src)
+        lines.extend(
+            [
+                '  <div class="benoss-media-video-item">',
+                f"    <h4>{title}</h4>",
+                f"    {video_tag}",
+                f"    <p>{caption}</p>",
+                "  </div>",
+            ]
+        )
+
     for asset in posters:
-        src = f"/api/generated-assets/{int(asset.id)}/blob"
-        caption = html.escape((asset.title or "日报配图").strip() or "日报配图", quote=False)
+        src, fallback_src = _generated_asset_media_src(asset)
+        if not src:
+            continue
+        caption_raw = str(asset.title or "").strip() or "日报配图"
+        caption = html.escape(caption_raw, quote=False)
+        image_tag = _digest_image_tag(src=src, alt=caption_raw, fallback_src=fallback_src)
         lines.extend(
             [
                 "  <figure>",
-                f'    <img src="{html.escape(src, quote=True)}" alt="{caption}">',
+                f"    {image_tag}",
                 f"    <figcaption>{caption}</figcaption>",
                 "  </figure>",
             ]
         )
 
     for asset in podcasts:
-        src = f"/api/generated-assets/{int(asset.id)}/blob"
-        title = html.escape((asset.title or "日报播客").strip() or "日报播客", quote=False)
+        src, fallback_src = _generated_asset_media_src(asset)
+        if not src:
+            continue
+        title_raw = str(asset.title or "").strip() or "日报播客"
+        title = html.escape(title_raw, quote=False)
+        audio_tag = _digest_audio_tag(src=src, fallback_src=fallback_src)
         lines.extend(
             [
                 '  <div class="benoss-media-audio-item">',
                 f"    <h4>{title}</h4>",
-                f'    <audio controls preload="none" src="{html.escape(src, quote=True)}"></audio>',
+                f"    {audio_tag}",
                 "  </div>",
             ]
         )
@@ -3581,6 +3840,7 @@ def _refresh_existing_blog_asset_media(
     *,
     poster_asset_id: int | None,
     podcast_asset_id: int | None,
+    extra_media_html: str = "",
 ) -> bool:
     if str(asset.kind or "").strip().lower() != "blog_html":
         return False
@@ -3597,6 +3857,7 @@ def _refresh_existing_blog_asset_media(
         title=asset.title or "Daily Digest",
         poster_asset_id=poster_asset_id,
         podcast_asset_id=podcast_asset_id,
+        extra_media_html=extra_media_html,
     )
     refreshed_bytes = refreshed_html.encode("utf-8")
     if refreshed_bytes == original_bytes:
@@ -3619,12 +3880,16 @@ def _wrap_blog_html_document(
     title: str,
     poster_asset_id: int | None = None,
     podcast_asset_id: int | None = None,
+    extra_media_html: str = "",
 ) -> str:
     raw = _strip_markdown_code_fence(body_html)
-    media_html = _digest_media_section_html(
+    primary_media_html = _digest_media_section_html(
         poster_asset_id=poster_asset_id,
         podcast_asset_id=podcast_asset_id,
     )
+    extra_media = str(extra_media_html or "").strip()
+    media_parts = [part for part in [extra_media, primary_media_html] if part]
+    media_html = "\n".join(media_parts).strip()
     if "<html" in raw.lower():
         doc = raw
         if media_html:
@@ -3661,6 +3926,7 @@ def _wrap_blog_html_document(
         "    .benoss-media-appendix figure, .benoss-slot-media figure { margin: 0 auto 12px; width: min(560px, 100%); }\n"
         "    .benoss-media-appendix img, .benoss-slot-media img { display: block; width: 100%; height: auto; border-radius: 10px; }\n"
         "    .benoss-media-appendix audio, .benoss-slot-media audio { width: min(560px, 100%); }\n"
+        "    .benoss-media-appendix video, .benoss-slot-media video { width: min(560px, 100%); }\n"
         "    .benoss-media-appendix figcaption, .benoss-slot-media figcaption { margin-top: 6px; color: #64748b; font-size: 0.92rem; }\n"
         "  </style>\n"
         "</head>\n"
@@ -3684,6 +3950,7 @@ def _generate_blog_asset(
     visibility: str,
     poster_asset_id: int | None = None,
     podcast_asset_id: int | None = None,
+    extra_media_html: str = "",
     source_day: date | None = None,
     is_daily_digest: bool = False,
 ) -> tuple[GeneratedAsset, str]:
@@ -3697,6 +3964,7 @@ def _generate_blog_asset(
         title=title,
         poster_asset_id=poster_asset_id,
         podcast_asset_id=podcast_asset_id,
+        extra_media_html=extra_media_html,
     )
     asset = _save_generated_asset(
         user=user,
@@ -3884,6 +4152,17 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
     records_text = _records_for_ai_prompt_from_archive(rows_for_generation)
     image_urls = _notice_image_urls_from_archive_rows(rows_for_generation)
     source_images = _source_images_from_records(records, max_items=_digest_collab_max_source_images())
+    source_audios = _source_audios_from_records(records, max_items=_digest_collab_max_source_images())
+    source_videos = _source_videos_from_records(records, max_items=_digest_collab_max_source_images())
+    source_media_html = _digest_media_section_assets_html(
+        poster_assets=[],
+        podcast_assets=[],
+        source_images=[],
+        source_audios=source_audios,
+        source_videos=source_videos,
+        heading="记录原始媒体",
+        class_name="benoss-media-appendix",
+    )
     record_count_total = len(archive_rows) if archive_rows else len(records)
     if not records_text:
         records_text = _records_for_ai_prompt(records[:generation_limit])
@@ -3952,6 +4231,7 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
                 blog_asset,
                 poster_asset_id=poster_assets[0].id if poster_assets else None,
                 podcast_asset_id=podcast_assets[0].id if podcast_assets else None,
+                extra_media_html=source_media_html,
             )
         except Exception as exc:
             current_app.logger.warning("daily digest blog media refresh failed: %s", exc)
@@ -3999,6 +4279,7 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
                     visibility="public",
                     poster_asset_id=poster_assets[0].id if poster_assets else None,
                     podcast_asset_id=podcast_assets[0].id if podcast_assets else None,
+                    extra_media_html=source_media_html,
                     source_day=day_value,
                     is_daily_digest=True,
                 )
@@ -4166,11 +4447,13 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
                     for item in source_images
                     if str(item.get("id") or "").strip() and str(item.get("id") or "").strip() not in used_source_ids
                 ]
-                if leftover_posters or leftover_podcasts or leftover_source_images:
+                if leftover_posters or leftover_podcasts or leftover_source_images or source_audios or source_videos:
                     leftover_html = _digest_media_section_assets_html(
                         poster_assets=leftover_posters,
                         podcast_assets=leftover_podcasts,
                         source_images=leftover_source_images,
+                        source_audios=source_audios,
+                        source_videos=source_videos,
                         heading="补充媒体",
                         class_name="benoss-media-appendix",
                     )
@@ -4231,6 +4514,7 @@ def build_daily_public_digest(*, day_value: date, force: bool = False, timezone_
                         visibility="public",
                         poster_asset_id=primary_poster_id,
                         podcast_asset_id=primary_podcast_id,
+                        extra_media_html=source_media_html,
                         source_day=day_value,
                         is_daily_digest=True,
                     )
