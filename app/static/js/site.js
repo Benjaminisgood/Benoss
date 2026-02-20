@@ -2731,10 +2731,37 @@
 
   function boardDigestPreviewHtml() {
     const text = String(boardDigestState.sourceHtml || "");
-    if (text.trim()) {
-      return text;
+    const content = text.trim() ? text : "<p class=\"muted\">博客源码为空</p>";
+    const previewStyle = `
+<style id="benoss-board-preview-style">
+  html,
+  body {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+  img,
+  video,
+  iframe,
+  canvas,
+  svg {
+    max-width: 100% !important;
+    height: auto !important;
+  }
+  figure {
+    max-width: 100% !important;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  pre,
+  table {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+</style>`;
+    if (/<head[\s>]/i.test(content)) {
+      return content.replace(/<head(\b[^>]*)>/i, `<head$1>${previewStyle}`);
     }
-    return "<p class=\"muted\">博客源码为空</p>";
+    return `${previewStyle}${content}`;
   }
 
   function updateBoardDigestPreviewNow() {
