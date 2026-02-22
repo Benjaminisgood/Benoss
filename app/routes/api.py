@@ -310,6 +310,10 @@ def _apply_record_tag_filter(query, raw_tag: str):
     return query.filter(Record.tags.any(Tag.name_norm == tag_text.lower())), tag_text
 
 
+def _cleanup_orphan_tags() -> None:
+    db.session.query(Tag).filter(~Tag.records.any()).delete(synchronize_session=False)
+
+
 def _auto_tags_from_text(raw: str) -> list[str]:
     text = str(raw or "")
     if not text:
@@ -1223,10 +1227,10 @@ def _create_record_for_user(user: User):
             visibility=visibility,
             preview=_preview_text(text_value),
         )
-        text_record.set_tags(tags)
-        created_records.append(text_record)
         db.session.add(text_content)
         db.session.add(text_record)
+        text_record.set_tags(tags)
+        created_records.append(text_record)
         if text_content.oss_key:
             uploaded_oss_keys.append(text_content.oss_key)
 
@@ -1238,10 +1242,10 @@ def _create_record_for_user(user: User):
             visibility=visibility,
             preview=preview,
         )
-        file_record.set_tags(tags)
-        created_records.append(file_record)
         db.session.add(file_content)
         db.session.add(file_record)
+        file_record.set_tags(tags)
+        created_records.append(file_record)
         if file_content.oss_key:
             uploaded_oss_keys.append(file_content.oss_key)
 
@@ -1252,10 +1256,10 @@ def _create_record_for_user(user: User):
             visibility=visibility,
             preview=preview,
         )
-        file_record.set_tags(tags)
-        created_records.append(file_record)
         db.session.add(file_content)
         db.session.add(file_record)
+        file_record.set_tags(tags)
+        created_records.append(file_record)
         if file_content.oss_key:
             uploaded_oss_keys.append(file_content.oss_key)
 
@@ -4953,6 +4957,7 @@ def update_record(record_id: int):
     uploaded_oss_keys: list[str] = []
     stale_oss_keys: list[str] = []
     next_tags = record.get_tags()
+    tags_changed = False
 
     if "visibility" in payload:
         record.visibility = _normalize_visibility(payload.get("visibility"), default=record.visibility)
@@ -4987,6 +4992,7 @@ def update_record(record_id: int):
 
     if "tags" in payload or (record.content.kind == "text" and "text" in payload):
         record.set_tags(next_tags)
+        tags_changed = True
 
     new_file = request.files.get("file")
     if new_file and uploaded_file_token:
@@ -5036,6 +5042,9 @@ def update_record(record_id: int):
             stale_oss_keys.append(old_key)
 
     try:
+        if tags_changed:
+            db.session.flush()
+            _cleanup_orphan_tags()
         db.session.commit()
     except Exception:
         db.session.rollback()
@@ -5070,6 +5079,8 @@ def delete_record(record_id: int):
     db.session.delete(record)
     if content:
         db.session.delete(content)
+    db.session.flush()
+    _cleanup_orphan_tags()
     db.session.commit()
 
     if oss_key:
@@ -5135,10 +5146,9 @@ def clone_record(record_id: int):
         visibility=visibility,
         preview=source_record.preview or "",
     )
-    cloned_record.set_tags(source_record.get_tags())
-
     db.session.add(cloned_content)
     db.session.add(cloned_record)
+    cloned_record.set_tags(source_record.get_tags())
     try:
         db.session.commit()
     except Exception:

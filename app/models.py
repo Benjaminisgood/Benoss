@@ -62,7 +62,7 @@ record_tags = db.Table(
 class Tag(db.Model, TimestampMixin):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(40), nullable=False)
-    name_norm = db.Column(db.String(40), nullable=False, unique=True, index=True)
+    name_norm = db.Column(db.String(40), nullable=False, unique=True)
 
 
 class Record(db.Model, TimestampMixin):
@@ -79,6 +79,7 @@ class Record(db.Model, TimestampMixin):
         "Tag",
         secondary=record_tags,
         lazy="selectin",
+        backref=db.backref("records", lazy="selectin"),
     )
     preview = db.Column(db.Text, nullable=False, default="")
 
