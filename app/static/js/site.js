@@ -2736,11 +2736,16 @@
 
     const dates = Array.isArray(data?.dates) ? data.dates : [];
     const dayCount = dates.length || 0;
+    const configuredDaysRaw = Number(data?.top_public_tags_days);
+    const hasConfiguredDays = Number.isFinite(configuredDaysRaw) && configuredDaysRaw >= 0;
+    const dayWindowText = hasConfiguredDays
+      ? (configuredDaysRaw === 0 ? "历史全部" : `近 ${configuredDaysRaw} 天`)
+      : (dayCount > 0 ? `近 ${dayCount} 天` : "历史全部");
     const limit = Number(data?.top_public_tags_limit || topTags.length || 0);
     const activeTag = String(activeTagValue || "").trim().toLowerCase();
 
     if (!topTags.length) {
-      wrap.innerHTML = `<span class="muted">近 ${dayCount || "-"} 天暂无可用公开标签</span>`;
+      wrap.innerHTML = `<span class="muted">${dayWindowText}暂无可用公开标签</span>`;
       return;
     }
 
@@ -2765,7 +2770,7 @@
 
     wrap.innerHTML = `
       <div class="board-hot-tags-head">
-        <p class="board-hot-tags-title">近 ${dayCount} 天公开标签 TOP ${Math.max(limit, topTags.length)}</p>
+        <p class="board-hot-tags-title">${dayWindowText}公开标签 TOP ${Math.max(limit, topTags.length)}</p>
         ${clearButton}
       </div>
       <div class="board-hot-tags-list">${chipsHtml}</div>

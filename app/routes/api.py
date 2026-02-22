@@ -5259,7 +5259,9 @@ def board_summary():
 
     days = int(request.args.get("days") or get_setting_int("BOARD_DEFAULT_DAYS", default=7))
     days = min(max(days, 1), 30)
-    top_tags_limit = min(max(int(request.args.get("top_tags_limit") or 10), 1), 30)
+    top_tags_days = int(request.args.get("top_tags_days") or get_setting_int("BOARD_TOP_TAGS_DAYS", default=0))
+    top_tags_days = min(max(top_tags_days, 0), 36500)
+    top_tags_limit = min(max(int(request.args.get("top_tags_limit") or get_setting_int("BOARD_TOP_TAGS_LIMIT", default=10)), 1), 100)
 
     tag = str(request.args.get("tag") or "").strip()
 
@@ -5287,12 +5289,20 @@ def board_summary():
         day_key = str(date_str)
         matrix.setdefault(uid, {})[day_key] = int(count or 0)
 
-    top_tag_rows = (
+    top_tags_query = (
         db.session.query(Tag.name, func.count(Record.id))
         .select_from(Record)
         .join(Record.tags)
-        .filter(Record.created_at >= start_dt, Record.created_at < end_dt)
         .filter(Record.visibility == "public")
+    )
+    if top_tags_days > 0:
+        top_start_day = today - timedelta(days=top_tags_days - 1)
+        top_start_dt, _ = _day_bounds(top_start_day)
+        _, top_end_dt = _day_bounds(today)
+        top_tags_query = top_tags_query.filter(Record.created_at >= top_start_dt, Record.created_at < top_end_dt)
+
+    top_tag_rows = (
+        top_tags_query
         .group_by(Tag.id, Tag.name, Tag.name_norm)
         .order_by(func.count(Record.id).desc(), Tag.name_norm.asc())
         .limit(top_tags_limit)
@@ -5310,6 +5320,7 @@ def board_summary():
             "active_tag": active_tag,
             "top_public_tags": top_public_tags,
             "top_public_tags_limit": top_tags_limit,
+            "top_public_tags_days": top_tags_days,
         }
     )
 
