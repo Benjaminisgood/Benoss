@@ -3297,6 +3297,12 @@
     return `<span class="echo-badge file-${normalized}">${escapeHtml(label)}</span>`;
   }
 
+  function echoVisibilityBadgeHtml(visibility) {
+    const normalized = normalizeVisibility(visibility, "private");
+    const label = normalized === "public" ? "公开" : "私密";
+    return `<span class="echo-badge visibility-${normalized}">${label}</span>`;
+  }
+
   function setEchoesStatus(text, tone = "neutral") {
     const statusEl = qs("#echoes-status");
     if (statusEl) {
@@ -3474,6 +3480,7 @@
           <div class="echo-badge-line">
             ${echoSourceBadgeHtml("record")}
             ${echoFileBadgeHtml(fileType)}
+            ${echoVisibilityBadgeHtml(record.visibility)}
           </div>
           <span class="muted">${escapeHtml(formatTime(record.created_at))}</span>
         </header>
@@ -3529,6 +3536,7 @@
           <div class="echo-badge-line">
             ${echoSourceBadgeHtml("asset")}
             ${echoFileBadgeHtml(fileType)}
+            ${echoVisibilityBadgeHtml(asset.visibility)}
           </div>
           <span class="muted">${escapeHtml(formatTime(asset.created_at))}</span>
         </header>

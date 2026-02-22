@@ -1946,6 +1946,18 @@ button.echoes-chip.active {
   color: #4a5f71;
 }
 
+.echo-badge.visibility-public {
+  background: #ecf8f1;
+  border-color: #cfe9dd;
+  color: #1f6b46;
+}
+
+.echo-badge.visibility-private {
+  background: #fff3f0;
+  border-color: #f5d6cf;
+  color: #9a3f35;
+}
+
 .echo-card-media {
   display: grid;
   gap: 0.5rem;
