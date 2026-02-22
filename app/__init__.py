@@ -123,7 +123,9 @@ def _ensure_schema_shape() -> None:
         "user": {"id", "username", "password_hash", "role", "is_active"},
         "app_setting": {"id", "key", "value"},
         "content": {"id", "kind", "file_type", "text_content", "oss_key"},
-        "record": {"id", "user_id", "content_id", "visibility", "tags_json"},
+        "tag": {"id", "name", "name_norm"},
+        "record": {"id", "user_id", "content_id", "visibility"},
+        "record_tags": {"record_id", "tag_id"},
         "comment": {"id", "record_id", "user_id", "body"},
         "generated_asset": {"id", "user_id", "kind", "file_type", "content_type", "oss_key"},
     }

@@ -22,7 +22,7 @@ from sqlalchemy.orm import joinedload
 from werkzeug.utils import secure_filename
 
 from ..extensions import db
-from ..models import Comment, Content, DailyDigestJob, GeneratedAsset, Record, User
+from ..models import Comment, Content, DailyDigestJob, GeneratedAsset, Record, Tag, User
 from ..oss import (
     copy_object,
     delete_object,
@@ -294,6 +294,20 @@ def _parse_tags(raw) -> list[str]:
         if len(result) >= 20:
             break
     return result
+
+
+def _normalize_single_tag(raw) -> str:
+    tags = _parse_tags(raw)
+    if not tags:
+        return ""
+    return tags[0]
+
+
+def _apply_record_tag_filter(query, raw_tag: str):
+    tag_text = _normalize_single_tag(raw_tag)
+    if not tag_text:
+        return query, ""
+    return query.filter(Record.tags.any(Tag.name_norm == tag_text.lower())), tag_text
 
 
 def _auto_tags_from_text(raw: str) -> list[str]:
@@ -1097,7 +1111,7 @@ def _apply_filter_values(query, *, user_id: str = "", tag: str = "", day: str = 
 
     tag = str(tag or "").strip()
     if tag:
-        query = query.filter(Record.tags_json.contains(f'"{tag}"'))
+        query, _ = _apply_record_tag_filter(query, tag)
 
     day = str(day or "").strip()
     if day:
@@ -5235,6 +5249,7 @@ def board_summary():
 
     days = int(request.args.get("days") or get_setting_int("BOARD_DEFAULT_DAYS", default=7))
     days = min(max(days, 1), 30)
+    top_tags_limit = min(max(int(request.args.get("top_tags_limit") or 10), 1), 30)
 
     tag = str(request.args.get("tag") or "").strip()
 
@@ -5250,8 +5265,9 @@ def board_summary():
         .filter(Record.created_at >= start_dt, Record.created_at < end_dt)
         .filter(_visible_filter(user.id, public_only=False))
     )
+    active_tag = ""
     if tag:
-        query = query.filter(Record.tags_json.contains(f'"{tag}"'))
+        query, active_tag = _apply_record_tag_filter(query, tag)
 
     rows = query.group_by(Record.user_id, func.date(Record.created_at)).all()
 
@@ -5261,6 +5277,19 @@ def board_summary():
         day_key = str(date_str)
         matrix.setdefault(uid, {})[day_key] = int(count or 0)
 
+    top_tag_rows = (
+        db.session.query(Tag.name, func.count(Record.id))
+        .select_from(Record)
+        .join(Record.tags)
+        .filter(Record.created_at >= start_dt, Record.created_at < end_dt)
+        .filter(Record.visibility == "public")
+        .group_by(Tag.id, Tag.name, Tag.name_norm)
+        .order_by(func.count(Record.id).desc(), Tag.name_norm.asc())
+        .limit(top_tags_limit)
+        .all()
+    )
+    top_public_tags = [{"tag": str(name), "count": int(count or 0)} for name, count in top_tag_rows]
+
     users = User.query.filter_by(is_active=True).order_by(User.username.asc()).all()
 
     return jsonify(
@@ -5268,6 +5297,9 @@ def board_summary():
             "dates": dates,
             "users": [{"id": item.id, "username": item.username} for item in users],
             "matrix": matrix,
+            "active_tag": active_tag,
+            "top_public_tags": top_public_tags,
+            "top_public_tags_limit": top_tags_limit,
         }
     )
 
@@ -5296,7 +5328,7 @@ def board_cell_records():
         .filter(Record.created_at >= start, Record.created_at < end)
     )
     if tag:
-        query = query.filter(Record.tags_json.contains(f'"{tag}"'))
+        query, _ = _apply_record_tag_filter(query, tag)
 
     records = query.order_by(Record.created_at.desc(), Record.id.desc()).all()
     return jsonify(
@@ -5317,7 +5349,7 @@ def board_user_records(user_id: int):
 
     query = _record_query_for(user, include_comments=False, public_only=False).filter(Record.user_id == user_id)
     if tag:
-        query = query.filter(Record.tags_json.contains(f'"{tag}"'))
+        query, _ = _apply_record_tag_filter(query, tag)
 
     records = query.order_by(Record.created_at.desc(), Record.id.desc()).limit(500).all()
     return jsonify(
@@ -5347,7 +5379,7 @@ def board_day_records(day: str):
         .filter(Record.created_at >= start, Record.created_at < end)
     )
     if tag:
-        query = query.filter(Record.tags_json.contains(f'"{tag}"'))
+        query, _ = _apply_record_tag_filter(query, tag)
 
     records = query.order_by(Record.created_at.desc(), Record.id.desc()).limit(1000).all()
     return jsonify(
@@ -5378,7 +5410,7 @@ def echoes_feed():
 
     tag = str(request.args.get("tag") or "").strip()
     if tag:
-        records_query = records_query.filter(Record.tags_json.contains(f'"{tag}"'))
+        records_query, _ = _apply_record_tag_filter(records_query, tag)
         assets_query = assets_query.filter(GeneratedAsset.source_filters_json.contains(f'"tag": "{tag}"'))
 
     day = str(request.args.get("day") or "").strip()

@@ -2716,6 +2716,62 @@
     window.location.assign(path);
   }
 
+  function renderBoardHotTags(data, activeTagValue = "") {
+    const wrap = qs("#board-hot-tags");
+    if (!wrap) {
+      return;
+    }
+
+    const topTagsRaw = Array.isArray(data?.top_public_tags) ? data.top_public_tags : [];
+    const topTags = topTagsRaw
+      .map((item) => {
+        const tag = String(item?.tag || "").trim();
+        const count = Number(item?.count || 0);
+        if (!tag || !Number.isFinite(count) || count <= 0) {
+          return null;
+        }
+        return { tag, count };
+      })
+      .filter(Boolean);
+
+    const dates = Array.isArray(data?.dates) ? data.dates : [];
+    const dayCount = dates.length || 0;
+    const limit = Number(data?.top_public_tags_limit || topTags.length || 0);
+    const activeTag = String(activeTagValue || "").trim().toLowerCase();
+
+    if (!topTags.length) {
+      wrap.innerHTML = `<span class="muted">近 ${dayCount || "-"} 天暂无可用公开标签</span>`;
+      return;
+    }
+
+    const chipsHtml = topTags
+      .map(({ tag, count }) => {
+        const escapedTag = escapeHtml(tag);
+        const escapedCount = escapeHtml(String(count));
+        const isActive = activeTag && tag.toLowerCase() === activeTag;
+        const activeClass = isActive ? " is-active" : "";
+        return `
+          <button type="button" class="board-hot-tag-btn${activeClass}" data-board-hot-tag="${escapedTag}" title="按 #${escapedTag} 筛选">
+            <span class="board-hot-tag-name">#${escapedTag}</span>
+            <span class="board-hot-tag-count">${escapedCount}</span>
+          </button>
+        `;
+      })
+      .join("");
+
+    const clearButton = activeTag
+      ? `<button type="button" class="board-hot-tag-clear" data-board-hot-tag-clear>清除筛选</button>`
+      : "";
+
+    wrap.innerHTML = `
+      <div class="board-hot-tags-head">
+        <p class="board-hot-tags-title">近 ${dayCount} 天公开标签 TOP ${Math.max(limit, topTags.length)}</p>
+        ${clearButton}
+      </div>
+      <div class="board-hot-tags-list">${chipsHtml}</div>
+    `;
+  }
+
   const boardDigestState = {
     asset: null,
     sourceHtml: "",
@@ -3074,20 +3130,35 @@
     const form = qs("#board-filter-form");
     const submitBtn = form ? qs('button[type="submit"]', form) : null;
     const wrap = qs("#board-table-wrap");
+    const hotTagsWrap = qs("#board-hot-tags");
     if (wrap) {
       wrap.innerHTML = boardTableLoadingHtml();
     }
+    if (hotTagsWrap) {
+      hotTagsWrap.innerHTML = `<span class="muted">正在刷新公开标签统计...</span>`;
+    }
     setButtonBusy(submitBtn, true, { busyText: "刷新中..." });
-    const formData = new FormData(form);
+    const formData = form ? new FormData(form) : new FormData();
     const tag = String(formData.get("tag") || "").trim();
     const query = buildQuery({ tag });
     const path = query ? `/api/board?${query}` : "/api/board";
     try {
       const data = await api(path);
-      renderBoardTable(data, tag);
+      const activeTag = String(data?.active_tag || tag || "").trim();
+      if (form) {
+        const tagInput = qs('input[name="tag"]', form);
+        if (tagInput instanceof HTMLInputElement && tagInput.value !== activeTag) {
+          tagInput.value = activeTag;
+        }
+      }
+      renderBoardTable(data, activeTag);
+      renderBoardHotTags(data, activeTag);
     } catch (error) {
       if (wrap) {
         wrap.innerHTML = `<p class="feedback-inline" data-tone="error">Board 加载失败: ${escapeHtml(error.message || "未知错误")}</p>`;
+      }
+      if (hotTagsWrap) {
+        hotTagsWrap.innerHTML = `<p class="feedback-inline" data-tone="error">标签统计加载失败: ${escapeHtml(error.message || "未知错误")}</p>`;
       }
     } finally {
       setButtonBusy(submitBtn, false);
@@ -3103,6 +3174,40 @@
         event.preventDefault();
         loadBoard().catch((error) => window.console.error(error));
         loadBoardDigestBlog(digestDay).catch((error) => window.console.error(error));
+      });
+    }
+
+    const hotTagsWrap = qs("#board-hot-tags");
+    if (hotTagsWrap && form) {
+      hotTagsWrap.addEventListener("click", (event) => {
+        if (!(event.target instanceof Element)) {
+          return;
+        }
+        const tagTrigger = event.target.closest("[data-board-hot-tag]");
+        const clearTrigger = event.target.closest("[data-board-hot-tag-clear]");
+        if (!tagTrigger && !clearTrigger) {
+          return;
+        }
+
+        const tagInput = qs('input[name="tag"]', form);
+        if (!(tagInput instanceof HTMLInputElement)) {
+          return;
+        }
+
+        if (clearTrigger) {
+          if (!tagInput.value.trim()) {
+            return;
+          }
+          tagInput.value = "";
+        } else if (tagTrigger) {
+          const nextTag = String(tagTrigger.getAttribute("data-board-hot-tag") || "").trim();
+          if (!nextTag || tagInput.value.trim() === nextTag) {
+            return;
+          }
+          tagInput.value = nextTag;
+        }
+
+        loadBoard().catch((error) => window.console.error(error));
       });
     }
 

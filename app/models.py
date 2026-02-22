@@ -1,5 +1,5 @@
-import json
 from datetime import datetime
+from typing import Iterable
 
 from sqlalchemy import Index
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -52,6 +52,19 @@ class Content(db.Model, TimestampMixin):
     sha256 = db.Column(db.String(64), nullable=False, default="")
 
 
+record_tags = db.Table(
+    "record_tags",
+    db.Column("record_id", db.Integer, db.ForeignKey("record.id", ondelete="CASCADE"), primary_key=True),
+    db.Column("tag_id", db.Integer, db.ForeignKey("tag.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+class Tag(db.Model, TimestampMixin):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(40), nullable=False)
+    name_norm = db.Column(db.String(40), nullable=False, unique=True, index=True)
+
+
 class Record(db.Model, TimestampMixin):
     id = db.Column(db.Integer, primary_key=True)
 
@@ -62,36 +75,67 @@ class Record(db.Model, TimestampMixin):
     content = db.relationship("Content", backref=db.backref("record", uselist=False))
 
     visibility = db.Column(db.String(16), nullable=False, default="private")  # public | private
-    tags_json = db.Column(db.Text, nullable=False, default="[]")
+    tags = db.relationship(
+        "Tag",
+        secondary=record_tags,
+        lazy="selectin",
+    )
     preview = db.Column(db.Text, nullable=False, default="")
 
     def get_tags(self) -> list[str]:
-        try:
-            raw = json.loads(self.tags_json or "[]")
-        except Exception:
-            return []
-        if not isinstance(raw, list):
-            return []
         output: list[str] = []
-        for item in raw:
-            text = str(item or "").strip()
-            if text:
-                output.append(text)
-        return output
-
-    def set_tags(self, tags: list[str]) -> None:
-        cleaned: list[str] = []
         seen = set()
-        for item in tags:
-            text = str(item or "").strip()
+        for item in self.tags or []:
+            text = str(getattr(item, "name", "") or "").strip()
             if not text:
                 continue
             lowered = text.lower()
             if lowered in seen:
                 continue
             seen.add(lowered)
-            cleaned.append(text)
-        self.tags_json = json.dumps(cleaned, ensure_ascii=False)
+            output.append(text)
+        return output
+
+    def set_tags(self, tags: list[str]) -> None:
+        cleaned = _clean_tag_names(tags)
+        if not cleaned:
+            self.tags = []
+            return
+
+        normalized = [text.lower() for text in cleaned]
+        existing = Tag.query.filter(Tag.name_norm.in_(normalized)).all()
+        existing_map = {item.name_norm: item for item in existing}
+
+        next_tags: list[Tag] = []
+        for text in cleaned:
+            norm = text.lower()
+            tag = existing_map.get(norm)
+            if tag is None:
+                tag = Tag(name=text, name_norm=norm)
+                db.session.add(tag)
+                existing_map[norm] = tag
+            next_tags.append(tag)
+
+        self.tags = next_tags
+
+
+def _clean_tag_names(values: Iterable[str]) -> list[str]:
+    result: list[str] = []
+    seen = set()
+    for item in values:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        if len(text) > 40:
+            text = text[:40]
+        lowered = text.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        result.append(text)
+        if len(result) >= 20:
+            break
+    return result
 
 
 class Comment(db.Model, TimestampMixin):
@@ -153,6 +197,8 @@ class DailyDigestJob(db.Model, TimestampMixin):
 
 Index("ix_record_user_created", Record.user_id, Record.created_at)
 Index("ix_record_visibility_created", Record.visibility, Record.created_at)
+Index("ix_record_tags_record_tag", record_tags.c.record_id, record_tags.c.tag_id)
+Index("ix_record_tags_tag_record", record_tags.c.tag_id, record_tags.c.record_id)
 Index("ix_comment_record_created", Comment.record_id, Comment.created_at)
 Index("ix_generated_asset_user_created", GeneratedAsset.user_id, GeneratedAsset.created_at)
 Index("ix_generated_asset_public_day_created", GeneratedAsset.visibility, GeneratedAsset.source_day, GeneratedAsset.created_at)

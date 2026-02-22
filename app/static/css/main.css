@@ -3051,6 +3051,94 @@ button.echoes-chip.active {
   padding: 0.88rem;
 }
 
+.board-hot-tags {
+  margin-top: 0.62rem;
+  display: grid;
+  gap: 0.42rem;
+}
+
+.board-hot-tags-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.board-hot-tags-title {
+  margin: 0;
+  color: #4d687c;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.board-hot-tags-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.board-hot-tag-btn {
+  border: 1px solid #c8dae8;
+  border-radius: 999px;
+  background: #fff;
+  color: #224b67;
+  padding: 0.16rem 0.48rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  font-size: 0.74rem;
+  line-height: 1.2;
+}
+
+.board-hot-tag-btn:hover {
+  filter: none;
+  background: #eaf4fd;
+}
+
+.board-hot-tag-btn.is-active {
+  border-color: transparent;
+  background: linear-gradient(135deg, #0f6677, #10889d);
+  color: #fff;
+  box-shadow: 0 8px 16px rgba(12, 96, 113, 0.24);
+}
+
+.board-hot-tag-name {
+  font-weight: 600;
+}
+
+.board-hot-tag-count {
+  border: 1px solid #d2e2ee;
+  border-radius: 999px;
+  background: #f7fbff;
+  color: #3d5f76;
+  padding: 0.08rem 0.34rem;
+  min-width: 1.3rem;
+  text-align: center;
+  font-size: 0.69rem;
+}
+
+.board-hot-tag-btn.is-active .board-hot-tag-count {
+  border-color: rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+.board-hot-tag-clear {
+  border: 1px solid #c8dae8;
+  border-radius: 999px;
+  background: #f5f9fd;
+  color: #2f5268;
+  padding: 0.18rem 0.58rem;
+  font-size: 0.72rem;
+  line-height: 1.2;
+}
+
+.board-hot-tag-clear:hover {
+  filter: none;
+  background: #eaf3fb;
+}
+
 .board-side {
   display: grid;
   gap: 0.62rem;
@@ -3599,6 +3687,10 @@ button.echoes-chip.active {
 
   .board-table {
     min-width: 660px;
+  }
+
+  .board-hot-tags-head {
+    justify-content: flex-start;
   }
 
   .notice-reader-toolbar {
